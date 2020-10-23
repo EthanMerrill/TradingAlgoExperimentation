@@ -30,16 +30,16 @@ def get_MKT_Cap(symbol):
     attempts=0
     while attempts<5:
         try:
-            time.sleep(1.1)
+            time.sleep(1.01)
             r = requests.get(f'https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={finnhubKey}')
-            print(f"success for symbol:{symbol}")
+            mktCap = r.json().get("marketCapitalization")
+            print(f"success for symbol:{symbol} at market cap: {mktCap}")
             break
         except Exception as e:
             attempts +=1
-            print(f"error in get_MKT_Cap function: {e}")
+            print(f"error in get_MKT_Cap function: {e} \n Symbol {symbol} \n MKTCAP {mktCap}")
     
-    return (r.json().get("marketCapitalization"))
-
+    return (mktCap)
 
 
 #First, Filter by market cap using the finnhub api which has a higher rate limit (30 requests/second), but only market cap information. 
@@ -50,7 +50,17 @@ allTickers["mktCap"] = allTickers.symbol.apply(get_MKT_Cap)
 allTickers.to_pickle(f"Stock_universe_{date.today()}")
 
 
+
 #%%
+# Depickle and filter by market cap larger than x
+allTickers = pd.read_pickle(f"Stock_universe_{date.today()}")
+
+allTickers = allTickers.loc[allTickers['mktCap']>=300 ]
+
+
+#%%
+
+
 msft = yf.Ticker("MSFT")
 msft.info
 #%%
