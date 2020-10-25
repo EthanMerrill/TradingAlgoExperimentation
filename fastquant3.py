@@ -1,7 +1,7 @@
 #%%
 
 from fastquant import get_stock_data
-from fastquant import backtest
+import custom_backtest as backtest
 
 import yfinance as yf
 import requests 
@@ -56,7 +56,7 @@ def get_All_Tickers(date = (date.today())):
 def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_date, end_date=date.today(), init_cash=1000):
     # Start the timer!
     start_time = time()
-    # overly complex date handling system to add one day to end date:
+    # overly complex date handling system to add one day to end date (I assume this is needde because of the base 0 system):
     if (type(end_date)==str):
         end_date = datetime.strptime(end_date, '%Y-%m-%d')
     end_date = end_date+timedelta(days=1)
@@ -173,21 +173,23 @@ def multi_stock_rsi_optimize(df_of_stocks):
         symbol_dict = rsi_optimizer([3,18,4], [24,35,5],[64,75,5], symbol, "2020-01-01", "2020-10-23")
         results_df = results_df.append(symbol_dict, ignore_index=True)
         # Temp save function to salvage some data from a very long test
-        if (symbol_count % 3 == 0):
-            newDf.to_pickle(f"Partial_Backtest_Save_{date}")
-        symbol_count=+1
+        if (symbol_count % 50 == 0):
+            results_df.to_pickle(f"Partial_Backtest_Save")
+        print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
+        symbol_count = symbol_count+1
 
 
     end_time = time()
     time_basic = end_time-start_time
     return results_df, time_basic
 
-#%%
-all_ticks = get_All_Tickers("2020-10-23").loc[0:3]
-# if all_ticks.empty==True :
-#     print("could not find ticks")
-newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
-newDf.to_pickle(f"Full_Backtest_{date}")
+# #%%
+# all_ticks = get_All_Tickers("2020-10-23")#.loc[0:-1]
+# # if all_ticks.empty==True :
+# #     print("could not find ticks")
+# newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
+# todayStr=datetime.strftime(date.today(), "%Y-%m-%d")
+# newDf.to_pickle(f"Full_Backtest_{todayStr}")
 # print(newDf,time_basic)
 # # %%
 # stock_data_df = get_stock_data("nvda", "2020-01-01", "2020-10-27")
@@ -201,4 +203,16 @@ newDf.to_pickle(f"Full_Backtest_{date}")
 # ''')
 
 # print((stock_data_df["close"].iloc[-1]-stock_data_df["close"].iloc[0])/stock_data_df["close"].iloc[0])
+#%%
+Partial_Backtest = pd.read_pickle(f"Partial_Backtest_Save")
+# %%
+Partial_Backtest["improvement"] = Partial_Backtest["roi"]-Partial_Backtest["buy_and_hold"]
+# %%
 
+
+## Get Live Data!
+
+
+#this module will work for one stock. Gets historical data, current RSI, then determines if a buy should be triggered
+def get_current_rsi(symbol, rsi_period):
+    bt.indicators.RelativeStrengthIndex(rsi_period)
