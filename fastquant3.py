@@ -183,14 +183,14 @@ def multi_stock_rsi_optimize(df_of_stocks):
     time_basic = end_time-start_time
     return results_df, time_basic
 
-# #%%
-# all_ticks = get_All_Tickers("2020-10-23")#.loc[0:-1]
-# # if all_ticks.empty==True :
-# #     print("could not find ticks")
-# newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
-# todayStr=datetime.strftime(date.today(), "%Y-%m-%d")
-# newDf.to_pickle(f"Full_Backtest_{todayStr}")
-# print(newDf,time_basic)
+#%%
+all_ticks = get_All_Tickers("2020-10-23")#.loc[0:-1]
+# if all_ticks.empty==True :
+#     print("could not find ticks")
+newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
+todayStr=datetime.strftime(date.today(), "%Y-%m-%d")
+newDf.to_pickle(f"Full_Backtest_{todayStr}")
+print(newDf,time_basic)
 # # %%
 # stock_data_df = get_stock_data("nvda", "2020-01-01", "2020-10-27")
 

@@ -128,9 +128,9 @@ class BasicRSI(bt.Strategy):
             self.live_bars = True
 
     params = dict(
-        rsi_period = 11,
-        rsi_lower = 34,
-        rsi_upper = 74
+        rsi_period,
+        rsi_lowe,
+        rsi_upper
     )
     # The logging function for this strategy
 
@@ -157,7 +157,7 @@ class BasicRSI(bt.Strategy):
     # Below is where all the decisions happen 
     def __init__(self):
         self.live_bars = False
-        self.RSI = bt.ind.RelativeStrengthIndex(self.data0, period=self.params.rsi_period)
+        self.RSI = bt.ind.RelativeStrengthIndex(self.data0, period=self.p.rsi_period)
         # sma2 = bt.ind.SMA(self.data0, period=self.p.pslow)
         # self.crossover0 = bt.ind.CrossOver(sma1, sma2)
 
@@ -167,10 +167,10 @@ class BasicRSI(bt.Strategy):
             # ignore if we are backtesting
             return
         # If crosses RSI_UPPER, Sell
-        if self.positionsbyname[symbol].size and self.RSI > self.params.rsi_upper:
+        if self.positionsbyname[symbol].size and self.RSI > self.p.rsi_upper:
             self.close(data=data0)  # close long position
         # If crosses RSI_Lower, buy
-        if not self.positionsbyname[symbol].size and self.RSI < self.params.rsi_lower:
+        if not self.positionsbyname[symbol].size and self.RSI < self.p.rsi_lower:
             self.buy(data=data0, size=5)  # enter long
 
 
@@ -178,9 +178,11 @@ class BasicRSI(bt.Strategy):
 if __name__ == '__main__':
     import logging
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
+    # setup params
+
     # Create a cerebro entity
     cerebro = bt.Cerebro()
-    cerebro.addstrategy(BasicRSI)
+    cerebro.addstrategy(BasicRSI,rsi_period = 11,rsi_lower = 34,rsi_upper = 74)
 
     store = alpaca_backtrader_api.AlpacaStore(
         key_id=ALPACA_API_KEY,
