@@ -4,7 +4,8 @@ from datetime import datetime
 import backtrader as bt
 import alpaca_backtrader_api
 import keys
-
+import backtrader.analyzers as btanalyzers
+#%%
 # class RelativeStrengthIndexStrategy(bt.SignalStrategy):
 #     def __init__(self):
 #         self.index = bt.ind.RelativeStrengthIndex()
@@ -48,7 +49,7 @@ You have 3 options:
 """
 IS_BACKTEST = True
 IS_LIVE = False
-symbol = "WORK"
+# symbol = "WORK"
 USE_POLYGON = True
 
 
@@ -113,6 +114,9 @@ class SmaCross1(bt.Strategy):
             self.close(data=data0)  # close long position
 
 
+##########################################
+# Custom RSI Strat 
+#%%
 class BasicRSI(bt.Strategy):
     def notify_fund(self, cash, value, fundvalue, shares):
         super().notify_fund(cash, value, fundvalue, shares)
@@ -126,11 +130,13 @@ class BasicRSI(bt.Strategy):
         print('*' * 5, 'DATA NOTIF:', data._getstatusname(status), *args)
         if data._getstatusname(status) == "LIVE":
             self.live_bars = True
-
+    # stuff that can be passed to the class: https://www.backtrader.com/docu/concepts/
     params = dict(
-        rsi_period,
-        rsi_lowe,
-        rsi_upper
+        data0 = "data0",
+        symbol = "NA",
+        rsi_period= 1,
+        rsi_lower= 1,
+        rsi_upper= 1
     )
     # The logging function for this strategy
 
@@ -138,6 +144,10 @@ class BasicRSI(bt.Strategy):
         dt = dt or self.data.datetime[0]
         dt = bt.num2date(dt)
         print('%s, %s' % (dt.isoformat(), txt))
+
+    def start(self):
+        self.entering = 0
+        self.start_val = self.broker.get_value()
 
     def notify_trade(self, trade):
         self.log("placing trade for {}. target size: {}".format(
@@ -149,6 +159,8 @@ class BasicRSI(bt.Strategy):
         print(f"Order info. status{order.info}.")
 
     def stop(self):
+        self.stop_val = self.broker.get_value()
+        self.pnl_val = self.stop_val - self.start_val
         print('==================================================')
         print('Starting Value - %.2f' % self.broker.startingcash)
         print('Ending   Value - %.2f' % self.broker.getvalue())
@@ -167,55 +179,113 @@ class BasicRSI(bt.Strategy):
             # ignore if we are backtesting
             return
         # If crosses RSI_UPPER, Sell
-        if self.positionsbyname[symbol].size and self.RSI > self.p.rsi_upper:
-            self.close(data=data0)  # close long position
+        if self.positionsbyname[self.p.symbol].size and self.RSI > self.p.rsi_upper:
+            self.close(data=self.p.data0)  # close long position
         # If crosses RSI_Lower, buy
-        if not self.positionsbyname[symbol].size and self.RSI < self.p.rsi_lower:
-            self.buy(data=data0, size=5)  # enter long
+        if not self.positionsbyname[self.p.symbol].size and self.RSI < self.p.rsi_lower:
+            self.buy(data=self.p.data0, size=5)  # enter long
 
 
+#%%
+def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, cash):
 
-if __name__ == '__main__':
-    import logging
-    logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
-    # setup params
-
-    # Create a cerebro entity
+    # import logging
+    # logging.basicConfig(format='%(asctime)s %(message)s', level=logging.info())
+# Create a cerebro entity
     cerebro = bt.Cerebro()
-    cerebro.addstrategy(BasicRSI,rsi_period = 11,rsi_lower = 34,rsi_upper = 74)
+    
 
     store = alpaca_backtrader_api.AlpacaStore(
-        key_id=ALPACA_API_KEY,
-        secret_key=ALPACA_SECRET_KEY,
-        paper=not IS_LIVE,
-        usePolygon=USE_POLYGON
+        key_id= keys.keys.get("alpaca"),
+        secret_key=keys.keys.get("alpaca_secret"),
+        paper=not False,
+        usePolygon=True
     )
-
     DataFactory = store.getdata  # or use alpaca_backtrader_api.AlpacaData
-    if IS_BACKTEST:
-        data0 = DataFactory(dataname=symbol,
-                            historical=True,
-                            fromdate=datetime(2020, 1, 1),
-                            todate=datetime(2020, 10, 11),
-                            timeframe=bt.TimeFrame.Days)
-    else:
-        data0 = DataFactory(dataname=symbol,
-                            historical=False,
-                            timeframe=bt.TimeFrame.Days,
-                            backfill_start=True,
-                            )
-        # or just alpaca_backtrader_api.AlpacaBroker()
-        broker = store.getbroker()
-        cerebro.setbroker(broker)
+
+    data0 = DataFactory(dataname=symbol1,
+                        historical=True,
+                        fromdate=start_date,
+                        todate=end_date,
+                        timeframe=bt.TimeFrame.Days)
+
+    # broker = store.getbroker()
+    # cerebro.setbroker(broker)
+    #DATA
     cerebro.adddata(data0)
+    #STRATEGY
+    cerebro.addstrategy(BasicRSI,data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper)
+    # backtrader broker set initial simulated cash
+    cerebro.broker.setcash(cash)
 
-    if IS_BACKTEST:
-        # backtrader broker set initial simulated cash
-        cerebro.broker.setcash(100000.0)
+    # Apply Total, Average, Compound and Annualized Returns calculated using a logarithmic approach
+    #ANALYZER
+    cerebro.addanalyzer(btanalyzers.Returns, _name="returns")
+    cerebro.addanalyzer(btanalyzers.SharpeRatio, _name="mysharpe")
+    # cerebro.addanalyzer(btanalyzers.DrawDown, _name="drawdown")
+    # cerebro.addanalyzer(btanalyzers.TimeDrawDown, _name="timedraw")
 
-    print('Starting Portfolio Value: {}'.format(cerebro.broker.getvalue()))
-    cerebro.run()
-    print('Final Portfolio Value: {}'.format(cerebro.broker.getvalue()))
-    cerebro.plot()
+    theStrats = cerebro.run(cpu=4)
+
+    return theStrats[0]
+# results.analyzers.mysharpe.get_analysis
+
+
+# results = callable_rsi_backtest("NVDA",datetime(2020, 1, 1), datetime(2020, 10, 1),5, 30, 70,10000)
+#%%
+
+
+# if __name__ == '__main__':
+    # import logging
+    # logging.basicConfig(format='%(asctime)s %(message)s', level=logging.info())
+    # setup params
+
+    # # Create a cerebro entity
+    # cerebro = bt.Cerebro()
+    # cerebro.addstrategy(BasicRSI,rsi_period = 11,rsi_lower = 34,rsi_upper = 74)
+
+    # store = alpaca_backtrader_api.AlpacaStore(
+    #     key_id=ALPACA_API_KEY,
+    #     secret_key=ALPACA_SECRET_KEY,
+    #     paper=not IS_LIVE,
+    #     usePolygon=USE_POLYGON
+    # )
+
+    # DataFactory = store.getdata  # or use alpaca_backtrader_api.AlpacaData
+    # if IS_BACKTEST:
+    #     data0 = DataFactory(dataname=symbol,
+    #                         historical=True,
+    #                         fromdate=datetime(2020, 1, 1),
+    #                         todate=datetime(2020, 10, 11),
+    #                         timeframe=bt.TimeFrame.Days)
+    # else:
+    #     data0 = DataFactory(dataname=symbol,
+    #                         historical=False,
+    #                         timeframe=bt.TimeFrame.Days,
+    #                         backfill_start=True,
+    #                         )
+    #     # or just alpaca_backtrader_api.AlpacaBroker()
+    #     broker = store.getbroker()
+    #     cerebro.setbroker(broker)
+    # cerebro.adddata(data0)
+
+    # if IS_BACKTEST:
+    #     # backtrader broker set initial simulated cash
+    #     cerebro.broker.setcash(100000.0)
+
+    #     # Apply Total, Average, Compound and Annualized Returns calculated using a logarithmic approach
+    # cerebro.addanalyzer(btanalyzers.Returns, _name="returns")
+    # cerebro.addanalyzer(btanalyzers.SharpeRatio, _name="mysharpe")
+    # cerebro.addanalyzer(btanalyzers.DrawDown, _name="drawdown")
+    # cerebro.addanalyzer(btanalyzers.TimeDrawDown, _name="timedraw")
+
+    # print('Starting Portfolio Value: {}'.format(cerebro.broker.getvalue()))
+    # cerebro.run()
+    # print('Final Portfolio Value: {}'.format(cerebro.broker.getvalue()))
+    # cerebro.plot()
+
+
+
+# %%
 
 # %%
