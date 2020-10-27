@@ -119,10 +119,15 @@ class BasicRSI(bt.Strategy):
         verbose = False,
         data0 = "data0",
         symbol = "NA",
+        sizer = "none", # Determines what amount to acquire
         rsi_period= 1,
         rsi_lower= 1,
-        rsi_upper= 1
+        rsi_upper= 1,
+        atrperiod=1,  # measure volatility over x days
+        emaperiod=10,  # smooth out period for atr volatility
+        stopfactor=4.0,  # actual stop distance for smoothed atr
     )
+
     # The logging function for this strategy
 
     def log(self, txt, dt=None):
@@ -158,21 +163,76 @@ class BasicRSI(bt.Strategy):
     def __init__(self):
         self.live_bars = False
         self.RSI = bt.ind.RelativeStrengthIndex(self.data0, period=self.p.rsi_period)
-        # sma2 = bt.ind.SMA(self.data0, period=self.p.pslow)
-        # self.crossover0 = bt.ind.CrossOver(sma1, sma2)
+
+                # Trailing Stop Indicator
+        self.stoptrailer = st = StopTrailer(atrperiod=self.p.atrperiod,
+                                            emaperiod=self.p.emaperiod,
+                                            stopfactor=self.p.stopfactor)
+        # Exit Criteria (Stop Trail) for long / short positions
+        self.exit_long = bt.ind.CrossDown(self.data,
+                                          st.stop_long, plotname='Exit Long')
+        self.exit_short = bt.ind.CrossUp(self.data,
+                                         st.stop_short, plotname='Exit Short')
+        
+        if self.p.sizer is not None:
+            self.sizer = self.p.sizer
 
     def next(self):
         if not self.live_bars and not IS_BACKTEST:
             # only run code if we have live bars (today's bars).
             # ignore if we are backtesting
             return
+
+                # logic
+        closing = None
+        if self.position.size > 0:  # In the market - Long
+            # self.log('Long Stop Price: {:.2f}', self.stoptrailer.stop_long[0])
+            if self.exit_long:
+                closing = self.close()
         # If crosses RSI_UPPER, Sell
         if self.positionsbyname[self.p.symbol].size and self.RSI > self.p.rsi_upper:
             self.close(data=self.p.data0)  # close long position
         # If crosses RSI_Lower, buy
         if not self.positionsbyname[self.p.symbol].size and self.RSI < self.p.rsi_lower:
-            self.buy(data=self.p.data0, size=1)  # enter long
+            self.buy(data=self.p.data0)  # enter long
+#########################################
+#  https://www.backtrader.com/blog/2019-08-22-practical-backtesting-replication/practical-replication/
+class StopTrailer(bt.Indicator):
+    _nextforce = True  # force system into step by step calcs
 
+    lines = ('stop_long', 'stop_short',)
+    plotinfo = dict(subplot=False, plotlinelabels=True)
+
+    params = dict(
+        atrperiod=14,
+        emaperiod=10,
+        stopfactor=3.0,
+    )
+
+    def __init__(self):
+        self.strat = self._owner  # alias for clarity
+
+        # Volatility which determines stop distance
+        atr = bt.ind.ATR(self.data, period=self.p.atrperiod)
+        emaatr = bt.ind.EMA(atr, period=self.p.emaperiod)
+        self.stop_dist = emaatr * self.p.stopfactor
+
+        # Running stop price calc, applied in next according to market pos
+        self.s_l = self.data - self.stop_dist
+        self.s_s = self.data + self.stop_dist
+
+    def next(self):
+        # When entering the market, the stop has to be set
+        if self.strat.entering > 0:  # entering long
+            self.l.stop_long[0] = self.s_l[0]
+        elif self.strat.entering < 0:  # entering short
+            self.l.stop_short[0] = self.s_s[0]
+
+        else:  # In the market, adjust stop only in the direction of the trade
+            if self.strat.position.size > 0:
+                self.l.stop_long[0] = max(self.s_l[0], self.l.stop_long[-1])
+            elif self.strat.position.size < 0:
+                self.l.stop_short[0] = min(self.s_s[0], self.l.stop_short[-1])
 
 
 ##################
@@ -215,7 +275,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     #DATA
     cerebro.adddata(data0)
     #STRATEGY
-    cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper)
+    cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, sizer = bt.sizers.AllInSizer())
     # cerebro.addstrategy(BuyAndHold_1)
     # backtrader broker set initial simulated cash
     cerebro.broker.setcash(cash)
@@ -230,8 +290,9 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
 
     # cerebro.optstrategy(StFetcher, idx=[0,1])
     theStrats = cerebro.run(cpu = 4)
-    # Run the Buy n hold strat
-
+    
+    # cerebro.plot()
+    
     return theStrats[0]
 # results.analyzers.mysharpe.get_analysis
 

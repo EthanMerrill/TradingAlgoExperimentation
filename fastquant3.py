@@ -4,6 +4,7 @@ import keys
 import json
 import pandas as pd
 from time import time
+import time as tm
 from datetime import datetime, timedelta, date
 import numpy as np
 from simple_rsi import callable_rsi_backtest
@@ -64,7 +65,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     periods_list = np.arange(periods_list[0],periods_list[1],periods_list[2], dtype=int)
     rsi_lower_list = np.arange(rsi_lower_list[0],rsi_lower_list[1],rsi_lower_list[2], dtype=int)
     rsi_upper_list = np.arange(rsi_upper_list[0],rsi_upper_list[1],rsi_upper_list[2], dtype=int)
-
+    print(f"total possiblities:{len(periods_list)*len(rsi_lower_list)*len(rsi_upper_list)}")
     # Make a 3grid of 0 placeholders
     period_grid = np.zeros(shape=(len(periods_list),len(rsi_lower_list),len(rsi_upper_list)))
  
@@ -87,7 +88,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     except Exception as e:
         print(f"error occured in rsi_optimizer: {e}")     
 
-        return null_return_dict
+        return null_return_dict, 0
   
     # Find highest profit
     best_params_position = np.unravel_index(period_grid.argmax(), period_grid.shape)
@@ -121,7 +122,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     end_time = time()
     time_basic = end_time-start_time
 
-    return return_dict
+    return return_dict, time_basic
 
 
 #%%
@@ -132,8 +133,14 @@ def multi_stock_rsi_optimize(df_of_stocks):
     symbol_count=0
     for symbol in df_of_stocks["T"]:
 
-        symbol_dict = rsi_optimizer([3,18,4], [24,35,5],[64,75,5], symbol, datetime(2020, 1, 1), datetime(2020, 10, 1))
+        symbol_dict, time_one_symbol = rsi_optimizer([3,34,15],[30,41,5],[64,75,5], symbol, datetime(2020, 1, 1), datetime(2020, 10, 1))
         results_df = results_df.append(symbol_dict, ignore_index=True)
+
+        # Time calculation function
+        time_left = ((len(df_of_stocks)-(symbol_count+1))*time_one_symbol)
+        # time_left = tm.strptime((str(time_left)), %S)
+        # time_left = tm.strftime("%H:%M:%S", time_left)
+        print(f"projected time left: {time_left/60} Minutes")
         # Temp save function to salvage some data from a very long test
         if (symbol_count % 50 == 0):
             results_df.to_pickle(f"Partial_Backtest_Save")
@@ -143,23 +150,25 @@ def multi_stock_rsi_optimize(df_of_stocks):
 
     end_time = time()
     time_basic = end_time-start_time
+
+
     return results_df, time_basic
 
 #%%
-all_ticks = get_All_Tickers("2020-10-23").loc[0:5]
+all_ticks = get_All_Tickers("2020-10-23").loc[0:10]
 # if all_ticks.empty==True :
 #     print("could not find ticks")
 newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
 todayStr=datetime.strftime(date.today(), "%Y-%m-%d")
-newDf.to_pickle(f"Full_Backtest_{todayStr}")
+newDf.to_pickle(f"Full_Backtest_With_Stops{todayStr}")
 print(newDf,time_basic)
 
 #%%
-Backtest = pd.read_pickle(f"Full_Backtest_{date.today()}")
+Backtest = pd.read_pickle(f"Full_Backtest_With_Stops{todayStr}")
 # %%
 Backtest["improvement"] = Backtest["roi"]-Backtest["buy_and_hold"]
 
-print(Backtest.head())
+# print(Backtest.head())
 # # 4 hours 
 # #%%
 # def add_business_days(d, business_days_to_add):
