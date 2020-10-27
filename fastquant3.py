@@ -40,7 +40,7 @@ def get_All_Tickers(date = (date.today())):
     # Filter 
     # Volume over 1mil, close price over 15&under 200
     polygon_tickers_dataframe = polygon_tickers_dataframe.loc[(polygon_tickers_dataframe["v"]>=1000000 ) & (polygon_tickers_dataframe["c"]>=15 ) & (polygon_tickers_dataframe["c"]<=200)]
-    polygon_tickers_dataframe.sort_values(by=['T'])
+    polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=['T'])
     polygon_tickers_dataframe.reset_index(inplace = True)
     polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
     return polygon_tickers_dataframe
@@ -73,20 +73,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
         for i, rsi_period in enumerate(periods_list):
             for j, rsi_lower in enumerate(rsi_lower_list):
                 for k, rsi_upper in enumerate(rsi_upper_list):
-                    # results = backtest('rsi',
-                    #                     stock_data_df,
-                    #                     rsi_period=rsi_period,
-                    #                     rsi_lower=rsi_lower,
-                    #                     rsi_upper=rsi_upper,
-                    #                     init_cash=init_cash,
-                    #                     verbose=False,
-                    #                     plot=False
-                                        
-                    # )
-                    # net_profit = results.final_value.values[0]-init_cash
-                    # period_grid[i,j,k] = net_profit
-
-                    results1 = callable_rsi_backtest(symbol1 = symbol, 
+                    results = callable_rsi_backtest(symbol1 = symbol, 
                                                     start_date = start_date, 
                                                     end_date =  end_date, 
                                                     period = rsi_period, 
@@ -94,7 +81,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
                                                     upper = rsi_upper, 
                                                     cash = init_cash
                                                     )
-                    net_profit1 = results1.pnl_val
+                    net_profit1 = results.pnl_val
                     period_grid[i,j,k] = net_profit1
 
     except Exception as e:
@@ -113,8 +100,11 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     #calculate the percent return of the strategy (ROI)
     roi = profit/init_cash
 
-    # calculate change in the equity over the time period
-    buy_and_hold = (stock_data_df["close"].iloc[-1]-stock_data_df["close"].iloc[0])/stock_data_df["close"].iloc[0]
+    # calculate change in the equity over the time period 
+    # buy_and_hold = (stock_data_df["close"].iloc[-1]-stock_data_df["close"].iloc[0])/stock_data_df["close"].iloc[0]
+    buy_and_hold = results.analyzers.getbyname("basereturn").get_analysis()
+    #TO get the data out, you have to do this: it basically takes the data out of its ordered list, or collection, then gets it within 2 indexes...
+    buy_and_hold = list(buy_and_hold.items())[0][1]
 
     # make a dict with the values to return
     return_dict = {
@@ -124,20 +114,12 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
         "optimal_rsi_upper" : optimal_rsi_upper,
         "profit":profit,
         "roi": roi,
-        "buy_and_hold": buy_and_hold
+        "buy_and_hold": buy_and_hold ### !!! TEMP NOT WORKING
     }
 
     # Calculate total time taken by the function
     end_time = time()
     time_basic = end_time-start_time
-        # print(f''''
-    # profit: {profit}
-    # Best rsi_period:{optimal_rsi_period}
-    # Best rsi_lower:{optimal_rsi_lower}
-    # best rsi_upper:{optimal_rsi_upper}
-    # Basic grid search took {:.1f} sec
-    # '''.format(time_basic))
-    
 
     return return_dict
 
@@ -164,7 +146,7 @@ def multi_stock_rsi_optimize(df_of_stocks):
     return results_df, time_basic
 
 #%%
-all_ticks = get_All_Tickers("2020-10-23")#.loc[0:-1]
+all_ticks = get_All_Tickers("2020-10-23").loc[0:5]
 # if all_ticks.empty==True :
 #     print("could not find ticks")
 newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
@@ -173,6 +155,34 @@ newDf.to_pickle(f"Full_Backtest_{todayStr}")
 print(newDf,time_basic)
 
 #%%
-Backtest = pd.read_pickle(f"Partial_Backtest_Save")
+Backtest = pd.read_pickle(f"Full_Backtest_{date.today()}")
 # %%
 Backtest["improvement"] = Backtest["roi"]-Backtest["buy_and_hold"]
+
+print(Backtest.head())
+# # 4 hours 
+# #%%
+# def add_business_days(d, business_days_to_add):
+#     num_whole_weeks  = business_days_to_add / 5
+#     extra_days       = num_whole_weeks * 2
+
+#     first_weekday    = d.weekday()
+#     remainder_days   = business_days_to_add % 5
+
+#     natural_day      = first_weekday + remainder_days
+#     if natural_day > 4:
+#         if first_weekday == 5:
+#             extra_days += 1
+#         elif first_weekday != 6:
+#             extra_days += 2
+
+#     return d + timedelta(business_days_to_add + extra_days)
+# #%%
+# def current_rsi(symbol, lookback_period):
+
+#     start_date = add_business_days(date.today-lookback_period)
+    
+#     historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{date.today()}?unadjusted=false&sort=asc&apiKey={alpacaKey}").json().get("results")
+#     return historic_symbol_data
+# temp = current_rsi("AAPL", 4)
+# %%

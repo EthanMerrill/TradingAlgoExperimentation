@@ -5,37 +5,6 @@ import backtrader as bt
 import alpaca_backtrader_api
 import keys
 import backtrader.analyzers as btanalyzers
-#%%
-# class RelativeStrengthIndexStrategy(bt.SignalStrategy):
-#     def __init__(self):
-#         self.index = bt.ind.RelativeStrengthIndex()
-
-#     def next(self):
-#         if self.index < 40 and self.datas[0].close[0] > self.datas[-1].close[-1]:
-#             self.buy(size=0.5)
-
-#         elif self.index > 70 and self.datas[0].close[0] < self.datas[-1].close[-1]:
-#             self.close(size=0.5)
-
-#         if self.datas[0].datetime.date(0) == datetime(2020, 1, 29).date():
-#             self.close()
-
-
-# cerebro = bt.Cerebro(stdstats=True)
-# cerebro.addobserver(bt.observers.BuySell)
-# print('Starting Portfolio Value: %.2f' % cerebro.broker.getvalue())
-# print('Starting Portfolio Cash: %.2f' % cerebro.broker.get_cash())
-# cerebro.addstrategy(RelativeStrengthIndexStrategy)
-# data0 = bt.feeds.YahooFinanceData(dataname='^NSEI', fromdate=datetime(2016, 1, 1),
-#                                   todate=datetime(2020, 1, 30))
-
-# cerebro.adddata(data0)
-# cerebro.run()
-# print('Final Portfolio Value: %.2f' % cerebro.broker.getvalue())
-# print('Final Portfolio Cash: %.2f' % cerebro.broker.get_cash())
-# cerebro.plot()
-
-# https://github.com/alpacahq/alpaca-backtrader-api/blob/master/sample/strategy_sma_crossover.py
 
 # Your credentials here
 ALPACA_API_KEY = keys.keys.get("alpaca")
@@ -49,7 +18,6 @@ You have 3 options:
 """
 IS_BACKTEST = True
 IS_LIVE = False
-# symbol = "WORK"
 USE_POLYGON = True
 
 
@@ -112,6 +80,21 @@ class SmaCross1(bt.Strategy):
         # in the market & cross to the downside
         if self.positionsbyname[symbol].size and self.crossover0 <= 0:
             self.close(data=data0)  # close long position
+#########################################
+# Buy and hold strat: https://www.backtrader.com/blog/2019-06-13-buy-and-hold/buy-and-hold/
+class BuyAndHold_1(bt.Strategy):
+    def start(self):
+        self.val_start = self.broker.get_cash()  # keep the starting cash
+
+    def nextstart(self):
+        # Buy all the available cash
+        size = int(self.broker.get_cash() / self.data)
+        self.buy(size=size)
+
+    def stop(self):
+        # calculate the actual returns
+        self.roi = (self.broker.get_value() / self.val_start) - 1.0
+        print('ROI:        {:.2f}%'.format(100.0 * self.roi))
 
 
 ##########################################
@@ -127,11 +110,13 @@ class BasicRSI(bt.Strategy):
 
     def notify_data(self, data, status, *args, **kwargs):
         super().notify_data(data, status, *args, **kwargs)
-        print('*' * 5, 'DATA NOTIF:', data._getstatusname(status), *args)
+        if self.p.verbose == True: 
+             print('*' * 5, 'DATA NOTIF:', data._getstatusname(status), *args)
         if data._getstatusname(status) == "LIVE":
             self.live_bars = True
     # stuff that can be passed to the class: https://www.backtrader.com/docu/concepts/
     params = dict(
+        verbose = False,
         data0 = "data0",
         symbol = "NA",
         rsi_period= 1,
@@ -150,21 +135,24 @@ class BasicRSI(bt.Strategy):
         self.start_val = self.broker.get_value()
 
     def notify_trade(self, trade):
-        self.log("placing trade for {}. target size: {}".format(
-            trade.getdataname(),
-            trade.size))
+        if self.p.verbose == True:
+            self.log("placing trade for {}. target size: {}".format(
+                trade.getdataname(),
+                trade.size))
 
     def notify_order(self, order):
-        print(f"Order notification. status{order.getstatusname()}.")
-        print(f"Order info. status{order.info}.")
+        if self.p.verbose == True:
+            print(f"Order notification. status{order.getstatusname()}.")
+            print(f"Order info. status{order.info}.")
 
     def stop(self):
         self.stop_val = self.broker.get_value()
         self.pnl_val = self.stop_val - self.start_val
-        print('==================================================')
-        print('Starting Value - %.2f' % self.broker.startingcash)
-        print('Ending   Value - %.2f' % self.broker.getvalue())
-        print('==================================================')
+        if self.p.verbose == True:
+            print('==================================================')
+            print('Starting Value - %.2f' % self.broker.startingcash)
+            print('Ending   Value - %.2f' % self.broker.getvalue())
+            print('==================================================')
 
     # Below is where all the decisions happen 
     def __init__(self):
@@ -183,8 +171,20 @@ class BasicRSI(bt.Strategy):
             self.close(data=self.p.data0)  # close long position
         # If crosses RSI_Lower, buy
         if not self.positionsbyname[self.p.symbol].size and self.RSI < self.p.rsi_lower:
-            self.buy(data=self.p.data0, size=5)  # enter long
+            self.buy(data=self.p.data0, size=1)  # enter long
 
+
+
+##################
+# used for running multiple distinct classes...https://www.backtrader.com/blog/posts/2016-10-29-strategy-selection/strategy-selection/
+class StFetcher(object):
+    _STRATS = [BasicRSI, BuyAndHold_1]
+
+    def __new__(cls, *args, **kwargs):
+        idx = kwargs.pop('idx')
+
+        obj = cls._STRATS[idx](*args, **kwargs)
+        return obj
 
 #%%
 def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, cash):
@@ -192,9 +192,10 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     # import logging
     # logging.basicConfig(format='%(asctime)s %(message)s', level=logging.info())
 # Create a cerebro entity
+
+    
     cerebro = bt.Cerebro()
     
-
     store = alpaca_backtrader_api.AlpacaStore(
         key_id= keys.keys.get("alpaca"),
         secret_key=keys.keys.get("alpaca_secret"),
@@ -214,7 +215,8 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     #DATA
     cerebro.adddata(data0)
     #STRATEGY
-    cerebro.addstrategy(BasicRSI,data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper)
+    cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper)
+    # cerebro.addstrategy(BuyAndHold_1)
     # backtrader broker set initial simulated cash
     cerebro.broker.setcash(cash)
 
@@ -222,16 +224,19 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     #ANALYZER
     cerebro.addanalyzer(btanalyzers.Returns, _name="returns")
     cerebro.addanalyzer(btanalyzers.SharpeRatio, _name="mysharpe")
-    # cerebro.addanalyzer(btanalyzers.DrawDown, _name="drawdown")
-    # cerebro.addanalyzer(btanalyzers.TimeDrawDown, _name="timedraw")
+    cerebro.addanalyzer(btanalyzers.DrawDown, _name="drawdown")
+    cerebro.addanalyzer(btanalyzers.TimeDrawDown, _name="timedraw")
+    cerebro.addanalyzer(btanalyzers.TimeReturn, timeframe=bt.TimeFrame.NoTimeFrame, data = data0, _name="basereturn")
 
-    theStrats = cerebro.run(cpu=4)
+    # cerebro.optstrategy(StFetcher, idx=[0,1])
+    theStrats = cerebro.run(cpu = 4)
+    # Run the Buy n hold strat
 
     return theStrats[0]
 # results.analyzers.mysharpe.get_analysis
 
 
-# results = callable_rsi_backtest("NVDA",datetime(2020, 1, 1), datetime(2020, 10, 1),5, 30, 70,10000)
+returnedStrats = callable_rsi_backtest("AAPL",datetime(2019, 1, 1), datetime(2020, 10, 26),5, 30, 70,10000)
 #%%
 
 
