@@ -8,8 +8,7 @@ import time as tm
 from datetime import datetime, timedelta, date
 import numpy as np
 from simple_rsi import callable_rsi_backtest
-# import polygon
-# from polygon import RESTClient"
+
 
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
@@ -155,19 +154,35 @@ def multi_stock_rsi_optimize(df_of_stocks):
     return results_df, time_basic
 
 #%%
-all_ticks = get_All_Tickers("2020-10-23").loc[0:10]
-# if all_ticks.empty==True :
-#     print("could not find ticks")
+all_ticks = get_All_Tickers("2020-10-27")#.loc[0:400]
+# # if all_ticks.empty==True :
+# #     print("could not find ticks")
 newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
 todayStr=datetime.strftime(date.today(), "%Y-%m-%d")
 newDf.to_pickle(f"Full_Backtest_With_Stops{todayStr}")
 print(newDf,time_basic)
 
 #%%
+todayStr=datetime.(date.today(), "%Y-%m-%d")
 Backtest = pd.read_pickle(f"Full_Backtest_With_Stops{todayStr}")
 # %%
 Backtest["improvement"] = Backtest["roi"]-Backtest["buy_and_hold"]
 
+
+#%%
+# drop empty rows
+Backtest.dropna(
+    axis=0,
+    how='any',
+    thresh=None,
+    subset=None,
+    inplace=True
+)
+#%%
+total_results = len(Backtest)
+#%%
+positive_alpha = len(Backtest.loc[Backtest["improvement"]>1])
+pct_positive_alpha = positive_alpha/total_results
 # print(Backtest.head())
 # # 4 hours 
 # #%%
