@@ -9,9 +9,34 @@ import numpy as np
 
 symbol = "AAPL"
 start_date = "2020-08-01"
-alpacaKey = alpacaKey = keys.keys.get("alpaca")
+alpaca_secret = keys.keys.get("alpaca_secret")
+alpaca_secret_live = keys.keys.get("alpaca_secret_live")
+alpaca_live = keys.keys.get("alpaca_live")
+alpaca_paper = keys.keys.get("alpaca_paper")
+
+  # Set varables depending on paper trading or not
+PAPER_TRADE = False
+
+if PAPER_TRADE==True:
+    api_base = 'https://paper-api.alpaca.markets'
+    headers = {
+    "APCA-API-KEY-ID": alpaca_paper, 
+    "APCA-API-SECRET-KEY": alpaca_secret
+    }
+elif PAPER_TRADE==False:
+    api_base ="https://api.alpaca.markets"
+    headers = {
+    "APCA-API-KEY-ID": alpaca_live,
+    "APCA-API-SECRET-KEY": alpaca_secret_live
+    }
+# Setuo the API globally 
+# rest methods https://pypi.org/project/alpaca-trade-api/
+api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET-KEY") , base_url=api_base)
+
+#################################################
+
 #%%
-historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{date.today()}?unadjusted=false&sort=asc&apiKey={alpacaKey}").json().get("results")
+historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{date.today()}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
 # %%
 symboldf = pd.DataFrame(historic_symbol_data)
 
@@ -35,7 +60,7 @@ def RSI_parser(symbol, end_date, period):
     start_date = datetime.strftime(start_date, "%Y-%m-%d")
     end_date = datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
-    historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpacaKey}").json().get("results")
+    historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
     #shove it in a dataframe real quick:
     historic_symbol_data = pd.DataFrame.from_dict(historic_symbol_data)
     #fix dates 
@@ -101,9 +126,6 @@ def get_entries(backtest):
 
     return buying_opp
 
-
-#%%
-temp = get_exits(Backtest)
 #%%
 
 # Exit Conditions Evaluation
@@ -134,6 +156,10 @@ def get_stop(symbol, end_date, ema_period, atr_period, stop_factor=3):
     '''
     should really have a description of the function here
     calculates the Exponential Moving Average of the Average True Range. Designed so that it can be iterated through via numpy vectorize
+
+    #  Volatility of the market is determined by a 10-day Exponential Moving Average of the Average True Range
+    # Trailing stop at distance from the close 3-times the volatility
+    # The stop could only move in the direction of the trade
     '''
     period = max(ema_period, atr_period)*2
     offset_days = -(period+((period//7)*2)+(period%7)+2)*2
@@ -142,7 +168,7 @@ def get_stop(symbol, end_date, ema_period, atr_period, stop_factor=3):
     start_date = datetime.strftime(start_date, "%Y-%m-%d")
     end_date = datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
-    df = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpacaKey}").json().get("results")
+    df = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
 
      #shove it in a dataframe real quick:
     df = pd.DataFrame.from_dict(df)
@@ -217,33 +243,83 @@ def ATR(df, period, ohlc=['Open', 'High', 'Low', 'Close']):
     
     return df
 
-#  Volatility of the market is determined by a 10-day Exponential Moving Average of the Average True Range
-# Trailing stop at distance from the close 3-times the volatility
-# The stop could only move in the direction of the trade
-def update_prices(df):
-    """simply queries polgon for the latest daily closing price of each sumbol and returns a df with a col
-    called price
-    """
 
-class Place_Order():
-    '''
-    a class used for interacting with the alpaca api to place buy and sell orders
-    '''
 
-    def stop_order:
+##################################
+def get_positions(df = None):
+    '''
+    This function updates the positions Dataframe, the old positions dataframe can be passed as an argument or it will be searched for using the REST API
+    '''
+    if df is not None:
+        old_positions = df
+    else:
+        try:
+            old_positions = pd.read_pickle('old_positions')
+        except:
+            print("old_positions pickled table not found")
+            old_positions = None
+            pass
+    positions = (api.list_positions())
+    new_positions = pd.DataFrame({
+    # 'asset_class': [x.asset_class for x in positions],
+    # 'assset_id': [x.assset_id for x in positions],
+    'symbol': [x.symbol for x in positions],
+    'qty': [x.qty for x in positions],
+    'avg_entry_price': [x.avg_entry_price for x in positions],
+    'change_today': [x.change_today for x in positions],
+    'cost_basis': [x.cost_basis for x in positions],
+    'current_price': [x.current_price for x in positions],
+    'exchange': [x.exchange for x in positions],
+    'lastday_price': [x.lastday_price for x in positions],
+    'market_value': [x.market_value for x in positions],
+    'side': [x.side for x in positions],
+    'unrealized_intraday_pl': [x.unrealized_intraday_pl for x in positions],
+    'unrealized_intraday_plpc': [x.unrealized_intraday_plpc for x in positions],
+    'unrealized_pl': [x.unrealized_pl for x in positions],
+    })
+    new_positions.set_index('symbol')
+
+    if old_positions is not None:
+        new_positions = old_positions.update(new_positions)
     
-    def buy_order:
-    
-    def get_positions:
+    return new_positions
 
 #%%
 if __name__ == "__main__":
 
+    # create empty current positions list:
+    current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
+
+    current_positions.set_index('symbol')
+    #%%
+    ##Dummy Data:
+    current_positions['symbol'] = 'nvda'
+    current_positions['symbol'] = 'aapl'
+    current_positions['symbol'] = 'amzn'
+
+    new_positions = get_positions()
+#%%
+    # add any positions not already in current positions to it
+    # current_positions = current_positions.append(positions_df)
+    # dropping ALL duplicte values 
+    # current_positions.drop_duplicates(subset = "symbol", keep = False, inplace = True) 
+
+
+    # current_positions = current_positions.append(temp[0])
+#%%
+
+    # current_positions = requests.get(f"{api_base}/v2/positions", headers=headers).json()
+    # current_positions = pd.DataFrame(current_positions)
     #get backtest data
     
-    Backtest = pd.read_pickle(f"Partial_Backtest_Save")
-    get_entries(Backtest)
+    # Backtest = pd.read_pickle(f"Partial_Backtest_Save")
 
+    # get_entries(Backtest)
+
+#%%
+#######
+
+#%%
 """
 get exits runs every day
 Backtester runs when entries are needed

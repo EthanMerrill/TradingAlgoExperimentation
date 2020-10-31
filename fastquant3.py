@@ -161,7 +161,6 @@ newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
 todayStr=datetime.strftime(date.today(), "%Y-%m-%d")
 newDf.to_pickle(f"Full_Backtest_With_Stops{todayStr}")
 print(newDf,time_basic)
-
 #%%
 todayStr=datetime.(date.today(), "%Y-%m-%d")
 Backtest = pd.read_pickle(f"Full_Backtest_With_Stops{todayStr}")
