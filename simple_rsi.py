@@ -7,9 +7,9 @@ import keys
 import backtrader.analyzers as btanalyzers
 
 # Your credentials here
-ALPACA_API_KEY = keys.keys.get("alpaca")
+ALPACA_API_KEY = keys.keys.get("alpaca_paper")
 ALPACA_SECRET_KEY = keys.keys.get("alpaca_secret")
-
+ALPACA_API_SECRET_KEY = keys.keys.get("alpaca_secret")
 """
 You have 3 options: 
  - backtest (IS_BACKTEST=True, IS_LIVE=False)
@@ -257,7 +257,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     cerebro = bt.Cerebro()
     
     store = alpaca_backtrader_api.AlpacaStore(
-        key_id= keys.keys.get("alpaca"),
+        key_id= keys.keys.get("alpaca_paper"),
         secret_key=keys.keys.get("alpaca_secret"),
         paper=not False,
         usePolygon=True

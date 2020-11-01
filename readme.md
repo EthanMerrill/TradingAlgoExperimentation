@@ -10,8 +10,14 @@ todo:
 - [x] Remove all dependency on yfinance
 - [x] Make algo built on backtrader not fastquant on top of backtrader. (cut out the middle package!)
 
-- [ ] make a function which evaluates and updates trailing stops
-- [ ] compare current rsi to rsi entry limits in entry calculator function
-- [ ] function to place buy and sell orders (switch for paper vs non paper trading)
-- [ ] simple comparator for rsi exit conditions
-- [ ] Check the RMA EMA functions, something is a little off there.
+- [x] make a function which evaluates and updates trailing stops
+- [x] compare current rsi to rsi entry limits in entry calculator function
+- [x] function to place buy and sell orders (switch for paper vs non paper trading)
+- [x] simple comparator for rsi exit conditions
+- [ ] Check the RMA EMA functions, something is a little off there. 
+- 
+- [ ] Clean up the key management to use only environ variables. 
+- [ ] Confirmation, update positions df on buy and sell orders. 
+- 
+- [ ] More complex buy ordering. Limit orders, not market orders
+- 

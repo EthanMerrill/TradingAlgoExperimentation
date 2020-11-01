@@ -6,6 +6,7 @@ import datetime as dt
 import pandas as pd
 import alpaca_trade_api as tradeapi
 import numpy as np
+import fastquant3
 
 symbol = "AAPL"
 start_date = "2020-08-01"
@@ -13,9 +14,9 @@ alpaca_secret = keys.keys.get("alpaca_secret")
 alpaca_secret_live = keys.keys.get("alpaca_secret_live")
 alpaca_live = keys.keys.get("alpaca_live")
 alpaca_paper = keys.keys.get("alpaca_paper")
-
+api_version='v2'
   # Set varables depending on paper trading or not
-PAPER_TRADE = False
+PAPER_TRADE = True
 
 if PAPER_TRADE==True:
     api_base = 'https://paper-api.alpaca.markets'
@@ -139,12 +140,14 @@ def get_exits(current_positions):
     Positions DF:
     symbol|rsi_period|rsi_lower|rsi_upper|current_rsi|modeled_returns|alpha|entry_date|entry_price|exit_date|exit|price
     """
+    if current_positions.empty == True:
+        return current_positions
     current_positions["temp_stop_price"] = np.vectorize(get_stop)(current_positions["symbol"],
                                     date.today(),
                                     current_positions["optimal_rsi_period"],
                                     (current_positions["optimal_rsi_period"]*2),
                                     stop_factor=3)
-
+    #only move stop higher
     if current_positions["stop_price"]<current_positions["temp_stop_price"] or current_positions["stop_price"] == NoneType:
         current_positions["stop_price"]=current_positions["temp_stop_price"]
 
@@ -284,20 +287,111 @@ def get_positions(df = None):
     
     return new_positions
 
+def sell_order(symbol,qty, price=None):
+    if price != None:
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side='sell',
+            type='stop',
+            limit_price = price,
+            time_in_force='gtc'
+        )
+
+    api.submit_order(
+        symbol=symbol,
+        qty=qty,
+        side='sell',
+        type='market',
+        time_in_force='gtc'
+    )
+
+def buy_order(symbol, qty):
+    api.submit_order(
+        symbol=symbol,
+        qty=qty,
+        side='buy',
+        type='market',
+        time_in_force='gtc'
+    )
+
+
+def orderer(df, long_market_value, cash):
+    '''
+    scans the positions df and places orders to fill in the gaps.
+    '''
+    # if RSI level is above top limit, sell
+    rsi_upper_exceeded = df.loc[df["optimized_rsi_upper"]>=df["rsi"]]
+    np.vectorize(sell_order)(rsi_upper_exceeded['symbol'], rsi_upper_exceeded['qty'])
+    # update all trailing limit orders with new prices
+    np.vectorize(sell_order)(df["symbol"], df['qty'], df["stop_price"])
+
+    # if there is no quantity of a position, open an order to acquire it
+
+    new_positions = df.loc[(df['qty']==None)]
+    
+    if len(new_positions)>0:
+        #THis might be too simple, bit this just gets the highest alpha strategy, and buys that one. 
+        new_positions = new_positions['alpha'].max()
+        #need to size the purchase orders appropriately...
+        # each asset aims to be approx 10% of portfolio at purchase. 
+        # get appropriate purchase value:
+        equity = long_market_value+cash
+        purchase_cash = (equity*.1)
+        # find number of shares which can be purchased with that amount
+        askprice = api.get_last_quote(new_positions['symbol'][0]).askprice
+        shares = purchase_cash/askprice
+        buy_order(new_positions['symbol'][0],shares)
+        new_positions
+    return df
+
+def most_recent_weekday():
+    '''
+    does what it says on th tin
+    '''
+    today = date.today()
+
+    offset = max(1, (today.weekday() + 6) % 7 - 3)
+
+    time_delta = timedelta(offset)
+
+    most_recent = today - time_delta
+    return most_recent
+
 #%%
 if __name__ == "__main__":
+    most_recent_weekday = most_recent_weekday()
+    # # create empty current positions list:
+    # current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
 
-    # create empty current positions list:
-    current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
-
-    current_positions.set_index('symbol')
+    # current_positions.set_index('symbol')
     #%%
-    ##Dummy Data:
-    current_positions['symbol'] = 'nvda'
-    current_positions['symbol'] = 'aapl'
-    current_positions['symbol'] = 'amzn'
+    cash = int(api.get_account().cash)
+    long_mkt_val = int(api.get_account().long_market_value)
 
+    # get current positions
     new_positions = get_positions()
+    #Update Stops
+    new_positions = get_exits(new_positions)
+    #update RSI
+    if new_positions.empty != True:
+        new_positions["RSI"] = np.vectorize(RSI_parser)(new_positions["symbol"],most_recent_weekday, new_positions["RSI_period"])
+    # First, cancel all existing orders for the Day
+        api.cancel_all_orders
+    # then update stops and rsi:
+        new_positions = orderer(new_positions, long_mkt_val, cash)
+    #then, determine if new acquisitions can occur
+    equity = cash+long_mkt_val
+    if cash > (equity*.1):
+        #get opportunities:
+        ### NEED FUNCTION TO GET MOST RECENT WEEKDAY
+        backtest = fastquant3.run_strategy_generator(most_recent_weekday)
+        buying_opp = get_entries(backtest)
+        # get the top buying opp:
+        purchase = buying_opp.loc[0]
+        # Update the final df
+        new_positions.append(purchase)
+
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)
@@ -325,4 +419,3 @@ get exits runs every day
 Backtester runs when entries are needed
 Get entries runs when entries are needed
 """
-# %%

@@ -12,7 +12,7 @@ from simple_rsi import callable_rsi_backtest
 
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
-alpacaKey = keys.keys.get("alpaca")
+alpacaKey = keys.keys.get("alpaca_paper")
 # IEXKey = keys.keys.get("iex")
 
 # MIsc global options
@@ -125,14 +125,14 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
 
 
 #%%
-def multi_stock_rsi_optimize(df_of_stocks):
+def multi_stock_rsi_optimize(df_of_stocks, end_date):
     start_time = time()
     # Add empty columns to dataframe
     results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
     symbol_count=0
     for symbol in df_of_stocks["T"]:
 
-        symbol_dict, time_one_symbol = rsi_optimizer([3,34,15],[30,41,5],[64,75,5], symbol, datetime(2020, 1, 1), datetime(2020, 10, 1))
+        symbol_dict, time_one_symbol = rsi_optimizer([3,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date)
         results_df = results_df.append(symbol_dict, ignore_index=True)
 
         # Time calculation function
@@ -154,34 +154,6 @@ def multi_stock_rsi_optimize(df_of_stocks):
     return results_df, time_basic
 
 #%%
-all_ticks = get_All_Tickers("2020-10-27")#.loc[0:400]
-# # if all_ticks.empty==True :
-# #     print("could not find ticks")
-newDf, time_basic = multi_stock_rsi_optimize(all_ticks)
-todayStr=datetime.strftime(date.today(), "%Y-%m-%d")
-newDf.to_pickle(f"Full_Backtest_With_Stops{todayStr}")
-print(newDf,time_basic)
-#%%
-todayStr=datetime.(date.today(), "%Y-%m-%d")
-Backtest = pd.read_pickle(f"Full_Backtest_With_Stops{todayStr}")
-# %%
-Backtest["improvement"] = Backtest["roi"]-Backtest["buy_and_hold"]
-
-
-#%%
-# drop empty rows
-Backtest.dropna(
-    axis=0,
-    how='any',
-    thresh=None,
-    subset=None,
-    inplace=True
-)
-#%%
-total_results = len(Backtest)
-#%%
-positive_alpha = len(Backtest.loc[Backtest["improvement"]>1])
-pct_positive_alpha = positive_alpha/total_results
 # print(Backtest.head())
 # # 4 hours 
 # #%%
@@ -209,3 +181,35 @@ pct_positive_alpha = positive_alpha/total_results
 #     return historic_symbol_data
 # temp = current_rsi("AAPL", 4)
 # %%
+def run_strategy_generator(date):
+    # convert the passed date to string:
+    date_str=datetime.strftime(date, "%Y-%m-%d")
+    all_ticks = get_All_Tickers(date_str)#.loc[0:400]
+    if all_ticks.empty==True :
+        print("could not find tickers")
+        raise 
+    # RUn the mult stock rsi Optimizer
+    newDf, time_basic = multi_stock_rsi_optimize(all_ticks, date)
+    # Pickle the results of the multistock Optimizer
+    newDf.to_pickle(f"Backtesting/{date_str}")
+    #print the total time to complete
+    print(f"time to complete backtester: {time_basic}")
+
+    # Backtest = pd.read_pickle(f"Full_Backtest_With_Stops{date_str}")
+
+    # newDf["alpha"] = newDf["roi"]-newDf["buy_and_hold"]
+
+    # drop empty rows
+    newDf.dropna(
+        axis=0,
+        how='any',
+        thresh=None,
+        subset=None,
+        inplace=True
+    )
+    # good information for logging in the future:
+    total_results = len(Backtest)
+    positive_alpha = len(Backtest.loc[Backtest["alpha"]>1])
+    pct_positive_alpha = positive_alpha/total_results
+
+    return newDf
