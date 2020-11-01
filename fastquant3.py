@@ -124,6 +124,12 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     return return_dict, time_basic
 
 
+# https://bbs.archlinux.org/viewtopic.php?id=77634
+def humanize_time(secs):
+    mins, secs = divmod(secs, 60)
+    hours, mins = divmod(mins, 60)
+    return '%02d:%02d:%02d' % (hours, mins, secs)
+
 #%%
 def multi_stock_rsi_optimize(df_of_stocks, end_date):
     start_time = time()
@@ -137,12 +143,10 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
 
         # Time calculation function
         time_left = ((len(df_of_stocks)-(symbol_count+1))*time_one_symbol)
-        # time_left = tm.strptime((str(time_left)), %S)
-        # time_left = tm.strftime("%H:%M:%S", time_left)
-        print(f"projected time left: {time_left/60} Minutes")
+        print(f"projected time left: {humanize_time(time_left)}")
         # Temp save function to salvage some data from a very long test
         if (symbol_count % 50 == 0):
-            results_df.to_pickle(f"Partial_Backtest_Save")
+            results_df.to_pickle(f"Backtesting/Partials/{date_str}_Partial_Backtest_Save")
         print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
         symbol_count = symbol_count+1
 
@@ -189,18 +193,18 @@ def run_strategy_generator(date):
         print("could not find tickers")
         raise 
     # RUn the mult stock rsi Optimizer
-    newDf, time_basic = multi_stock_rsi_optimize(all_ticks, date)
+    backtest, time_basic = multi_stock_rsi_optimize(all_ticks, date)
     # Pickle the results of the multistock Optimizer
-    newDf.to_pickle(f"Backtesting/{date_str}")
+    backtest.to_pickle(f"Backtesting/{date_str}")
     #print the total time to complete
     print(f"time to complete backtester: {time_basic}")
 
     # Backtest = pd.read_pickle(f"Full_Backtest_With_Stops{date_str}")
 
-    # newDf["alpha"] = newDf["roi"]-newDf["buy_and_hold"]
+
 
     # drop empty rows
-    newDf.dropna(
+    backtest.dropna(
         axis=0,
         how='any',
         thresh=None,
@@ -208,8 +212,9 @@ def run_strategy_generator(date):
         inplace=True
     )
     # good information for logging in the future:
-    total_results = len(Backtest)
-    positive_alpha = len(Backtest.loc[Backtest["alpha"]>1])
-    pct_positive_alpha = positive_alpha/total_results
+    # newDf["alpha"] = newDf["roi"]-newDf["buy_and_hold"]
+    # total_results = len(backtest)
+    # positive_alpha = len(backtest.loc[Backtest["alpha"]>1])
+    # pct_positive_alpha = positive_alpha/total_results
 
     return newDf

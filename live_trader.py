@@ -115,14 +115,14 @@ def get_entries(backtest):
     # find the current RSI of every positive alpha item:
     backtest = backtest.loc[backtest["alpha"]>0]
     # include only profitable strategies:
-    backtest = backtest.loc[backtest["proft"]>0]
+    backtest = backtest.loc[backtest["profit"]>0]
     # Get the Current RSI for each symbol given the RSI period. 
     backtest["RSI_current"] = np.vectorize(RSI_parser)(backtest['symbol'],date.today(),backtest["optimal_rsi_period"])
     # Of all items tested, get only those where the Current RSI is lower than the Optimal low RSI entry pt
     buying_opp = backtest.loc[backtest["optimal_rsi_lower"]>backtest["RSI_current"]]
 
     #sort and re-index the new dataframe before returning
-    buying_opp = buying_opp.sort_values(by=['alpha'])
+    buying_opp = buying_opp.sort_values(by=['alpha'], ascending=False)
     buying_opp.reset_index(inplace=True)
 
     return buying_opp
@@ -320,19 +320,22 @@ def orderer(df, long_market_value, cash):
     '''
     scans the positions df and places orders to fill in the gaps.
     '''
-    # if RSI level is above top limit, sell
-    rsi_upper_exceeded = df.loc[df["optimized_rsi_upper"]>=df["rsi"]]
-    np.vectorize(sell_order)(rsi_upper_exceeded['symbol'], rsi_upper_exceeded['qty'])
-    # update all trailing limit orders with new prices
-    np.vectorize(sell_order)(df["symbol"], df['qty'], df["stop_price"])
+    #first, see if there are any positions:
+    if (df['qty'].notnull().values.any()==True):
+        # if RSI level is above top limit, sell
+        rsi_upper_exceeded = df.loc[df["optimal_rsi_upper"]<=df["RSI_current"]]
+        if rsi_upper_exceeded.empty == False:
+            np.vectorize(sell_order)(rsi_upper_exceeded['symbol'], rsi_upper_exceeded['qty'])
+        # update all trailing limit orders with new prices
+        # df['stop_price'] = np.nan
+        np.vectorize(sell_order)(df["symbol"], df['qty'], df["stop_price"])
 
     # if there is no quantity of a position, open an order to acquire it
 
-    new_positions = df.loc[(df['qty']==None)]
+    new_positions = df[df['qty'].isnull()]
     
     if len(new_positions)>0:
         #THis might be too simple, bit this just gets the highest alpha strategy, and buys that one. 
-        new_positions = new_positions['alpha'].max()
         #need to size the purchase orders appropriately...
         # each asset aims to be approx 10% of portfolio at purchase. 
         # get appropriate purchase value:
@@ -340,9 +343,9 @@ def orderer(df, long_market_value, cash):
         purchase_cash = (equity*.1)
         # find number of shares which can be purchased with that amount
         askprice = api.get_last_quote(new_positions['symbol'][0]).askprice
-        shares = purchase_cash/askprice
+        shares = purchase_cash//askprice
         buy_order(new_positions['symbol'][0],shares)
-        new_positions
+        
     return df
 
 def most_recent_weekday():
@@ -378,20 +381,24 @@ if __name__ == "__main__":
         new_positions["RSI"] = np.vectorize(RSI_parser)(new_positions["symbol"],most_recent_weekday, new_positions["RSI_period"])
     # First, cancel all existing orders for the Day
         api.cancel_all_orders
-    # then update stops and rsi:
-        new_positions = orderer(new_positions, long_mkt_val, cash)
+
     #then, determine if new acquisitions can occur
     equity = cash+long_mkt_val
     if cash > (equity*.1):
         #get opportunities:
         ### NEED FUNCTION TO GET MOST RECENT WEEKDAY
-        backtest = fastquant3.run_strategy_generator(most_recent_weekday)
+        # backtest = fastquant3.run_strategy_generator(most_recent_weekday)
+        backtest = pd.read_pickle(f"Backtesting/2020-10-30")
+        backtest.set_index('symbol')
         buying_opp = get_entries(backtest)
         # get the top buying opp:
         purchase = buying_opp.loc[0]
         # Update the final df
-        new_positions.append(purchase)
-
+        # purchase.transpose
+        new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
+        # new_positions.loc[len(new_positions)] = purchase
+    # then update stops and rsi, and place any necessary puchase orders:
+    new_positions = orderer(new_positions, long_mkt_val, cash)
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)
