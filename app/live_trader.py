@@ -6,7 +6,7 @@ import datetime as dt
 import pandas as pd
 import alpaca_trade_api as tradeapi
 import numpy as np
-import fastquant3
+# import fastquant3
 
 symbol = "AAPL"
 start_date = "2020-08-01"
@@ -289,9 +289,8 @@ def get_positions(df = None):
 
 #%%
 class order():
-'''
-class keeps all the order types tidy
-'''
+# class keeps all the order types tidy
+
     def limit_sell(symbol, qty, price):
         api.submit_order(
             symbol=symbol,
@@ -422,7 +421,7 @@ if __name__ == "__main__":
         new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
-    new_positions = orderer(new_positions, long_mkt_val, cash)
+    # new_positions = orderer(new_positions, long_mkt_val, cash)
     new_positions.to_pickle("Positions/old_positions")
 #%%
     # add any positions not already in current positions to it
