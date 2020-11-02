@@ -257,7 +257,7 @@ def get_positions(df = None):
         old_positions = df
     else:
         try:
-            old_positions = pd.read_pickle('old_positions')
+            old_positions = pd.read_pickle('Positions/old_positions')
         except:
             print("old_positions pickled table not found")
             old_positions = None
@@ -287,8 +287,12 @@ def get_positions(df = None):
     
     return new_positions
 
-def sell_order(symbol,qty, price=None):
-    if price != None:
+#%%
+class order():
+'''
+class keeps all the order types tidy
+'''
+    def limit_sell(symbol, qty, price):
         api.submit_order(
             symbol=symbol,
             qty=qty,
@@ -298,23 +302,43 @@ def sell_order(symbol,qty, price=None):
             time_in_force='gtc'
         )
 
-    api.submit_order(
-        symbol=symbol,
-        qty=qty,
-        side='sell',
-        type='market',
-        time_in_force='gtc'
-    )
+    def sell(symbol, qty):
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side='sell',
+            type='market',
+            time_in_force='gtc'
+        )
 
-def buy_order(symbol, qty):
-    api.submit_order(
-        symbol=symbol,
-        qty=qty,
-        side='buy',
-        type='market',
-        time_in_force='gtc'
-    )
+    def buy(symbol, qty):
+        api.submit_order(
+            symbol=symbol,
+            qty=qty,
+            side='buy',
+            type='market',
+            time_in_force='gtc'
+        )
+    
+    def oco(symbol, qty, stop_price, limit_price):
+        api.submit_order(
+            side= "buy",
+            symbol= symbol,
+            type= "market",
+            qty= qty,
+            time_in_force= "gtc",
+            order_class= "bracket",
+            take_profit= dict(
+                limit_price = limit_price
+            ),
+            stop_loss= dict(
+                stop_price= stop_price,
+                limit_price= stop_price
+            )
+        )
 
+
+#%%
 
 def orderer(df, long_market_value, cash):
     '''
@@ -325,10 +349,10 @@ def orderer(df, long_market_value, cash):
         # if RSI level is above top limit, sell
         rsi_upper_exceeded = df.loc[df["optimal_rsi_upper"]<=df["RSI_current"]]
         if rsi_upper_exceeded.empty == False:
-            np.vectorize(sell_order)(rsi_upper_exceeded['symbol'], rsi_upper_exceeded['qty'])
+            np.vectorize(order.sell())(rsi_upper_exceeded['symbol'], rsi_upper_exceeded['qty'])
         # update all trailing limit orders with new prices
         # df['stop_price'] = np.nan
-        np.vectorize(sell_order)(df["symbol"], df['qty'], df["stop_price"])
+        np.vectorize(order.limit_sell())(df["symbol"], df['qty'], df["stop_price"])
 
     # if there is no quantity of a position, open an order to acquire it
 
@@ -344,7 +368,7 @@ def orderer(df, long_market_value, cash):
         # find number of shares which can be purchased with that amount
         askprice = api.get_last_quote(new_positions['symbol'][0]).askprice
         shares = purchase_cash//askprice
-        buy_order(new_positions['symbol'][0],shares)
+        order.buy(new_positions['symbol'][0],shares)
         
     return df
 
@@ -380,7 +404,7 @@ if __name__ == "__main__":
     if new_positions.empty != True:
         new_positions["RSI"] = np.vectorize(RSI_parser)(new_positions["symbol"],most_recent_weekday, new_positions["RSI_period"])
     # First, cancel all existing orders for the Day
-        api.cancel_all_orders
+        api.cancel_all_orders()
 
     #then, determine if new acquisitions can occur
     equity = cash+long_mkt_val
@@ -399,6 +423,7 @@ if __name__ == "__main__":
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
     new_positions = orderer(new_positions, long_mkt_val, cash)
+    new_positions.to_pickle("Positions/old_positions")
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)

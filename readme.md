@@ -19,5 +19,6 @@ todo:
 - [ ] Clean up the key management to use only environ variables. 
 - [ ] Confirmation, update positions df on buy and sell orders. 
 - 
-- [ ] More complex buy ordering. Limit orders, not market orders
-- 
+- [x] More complex buy ordering. Limit orders, not market orders
+    - [ ] Implement oco order on initial position
+- [ ] Set up containerization
