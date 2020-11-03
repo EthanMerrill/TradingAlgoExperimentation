@@ -195,7 +195,7 @@ def run_strategy_generator(date):
     # RUn the mult stock rsi Optimizer
     backtest, time_basic = multi_stock_rsi_optimize(all_ticks, date)
     # Pickle the results of the multistock Optimizer
-    backtest.to_pickle(f"Backtesting/{date_str}")
+    backtest.to_pickle(backtests_path / date_str)
     #print the total time to complete
     print(f"time to complete backtester: {time_basic}")
 

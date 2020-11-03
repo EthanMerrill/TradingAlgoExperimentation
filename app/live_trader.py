@@ -6,7 +6,7 @@ import datetime as dt
 import pandas as pd
 import alpaca_trade_api as tradeapi
 import numpy as np
-# import fastquant3
+# from pathlib import *
 
 symbol = "AAPL"
 start_date = "2020-08-01"
@@ -14,7 +14,6 @@ alpaca_secret = keys.keys.get("alpaca_secret")
 alpaca_secret_live = keys.keys.get("alpaca_secret_live")
 alpaca_live = keys.keys.get("alpaca_live")
 alpaca_paper = keys.keys.get("alpaca_paper")
-api_version='v2'
   # Set varables depending on paper trading or not
 PAPER_TRADE = True
 
@@ -257,7 +256,7 @@ def get_positions(df = None):
         old_positions = df
     else:
         try:
-            old_positions = pd.read_pickle('Positions/old_positions')
+            old_positions = pd.read_pickle('app/Positions/old_positions')
         except:
             print("old_positions pickled table not found")
             old_positions = None
@@ -392,10 +391,10 @@ if __name__ == "__main__":
 
     # current_positions.set_index('symbol')
     #%%
-    cash = int(api.get_account().cash)
-    long_mkt_val = int(api.get_account().long_market_value)
+    cash = float(api.get_account().cash)
+    long_mkt_val = float(api.get_account().long_market_value)
 
-    # get current positions
+    # # get current positions
     new_positions = get_positions()
     #Update Stops
     new_positions = get_exits(new_positions)
@@ -411,7 +410,7 @@ if __name__ == "__main__":
         #get opportunities:
         ### NEED FUNCTION TO GET MOST RECENT WEEKDAY
         # backtest = fastquant3.run_strategy_generator(most_recent_weekday)
-        backtest = pd.read_pickle(f"Backtesting/2020-10-30")
+        backtest = pd.read_pickle(f"app/Backtesting/2020-10-30")
         backtest.set_index('symbol')
         buying_opp = get_entries(backtest)
         # get the top buying opp:
@@ -421,8 +420,8 @@ if __name__ == "__main__":
         new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
-    # new_positions = orderer(new_positions, long_mkt_val, cash)
-    new_positions.to_pickle("Positions/old_positions")
+    new_positions = orderer(new_positions, long_mkt_val, cash)
+    new_positions.to_pickle(backtests_path / most_recent_weekday)
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)

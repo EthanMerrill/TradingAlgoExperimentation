@@ -16,9 +16,14 @@ todo:
 - [x] simple comparator for rsi exit conditions
 - [ ] Check the RMA EMA functions, something is a little off there. 
 - 
-- [ ] Clean up the key management to use only environ variables. 
-- [ ] Confirmation, update positions df on buy and sell orders. 
-- 
-- [x] More complex buy ordering. Limit orders, not market orders
+- [ ] Clean up the key/path/variable management to use only environ variables. 
+- [x] Manually update positions df on buy and sell orders. 
+    - [ ] may want to build more error handling in in the future to handle manual buy and sell orders amongst other things. Just a better way to reconcile strategies and positions 
+- [ ] More complex buy ordering. Limit orders, not market orders
     - [ ] Implement oco order on initial position
+    - [x] create a class for order types
 - [ ] Set up containerization
+    - [x] Create docker file
+    - [ ] Make a working build
+
+- [x] Make the Paths Portable: https://docs.python.org/3/library/os.path.html
