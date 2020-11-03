@@ -146,7 +146,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
         print(f"projected time left: {humanize_time(time_left)}")
         # Temp save function to salvage some data from a very long test
         if (symbol_count % 50 == 0):
-            results_df.to_pickle(f"Backtesting/Partials/{date_str}_Partial_Backtest_Save")
+            results_df.to_pickle(keys.backtests_path/'Partials'/f"{end_date}_Partial_Backtest_Save")
         print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
         symbol_count = symbol_count+1
 
@@ -195,7 +195,7 @@ def run_strategy_generator(date):
     # RUn the mult stock rsi Optimizer
     backtest, time_basic = multi_stock_rsi_optimize(all_ticks, date)
     # Pickle the results of the multistock Optimizer
-    backtest.to_pickle(backtests_path / date_str)
+    backtest.to_pickle(keys.backtests_path / date_str)
     #print the total time to complete
     print(f"time to complete backtester: {time_basic}")
 
@@ -217,4 +217,4 @@ def run_strategy_generator(date):
     # positive_alpha = len(backtest.loc[Backtest["alpha"]>1])
     # pct_positive_alpha = positive_alpha/total_results
 
-    return newDf
+    return backtest

@@ -26,4 +26,10 @@ todo:
     - [x] Create docker file
     - [ ] Make a working build
 
+- [ ] Check that NYSE volumes are not 2x!!!
 - [x] Make the Paths Portable: https://docs.python.org/3/library/os.path.html
+- [ ] put all variables in one place. and make a log of this data as a sort of metadata file.
+    - stop price multiplier
+    - volatility stop multiple
+    - rsi_optimizer inputs
+    - number of positions
