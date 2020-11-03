@@ -259,6 +259,7 @@ def ATR(df, period, ohlc=['Open', 'High', 'Low', 'Close']):
 
 ##################################
 def get_positions(df = None):
+    print('getting positions')
     '''
     This function updates the positions Dataframe, the old positions dataframe can be passed as an argument or it will be searched for using the REST API
     '''
@@ -418,6 +419,7 @@ def most_recent_weekday():
 
 #%%
 if __name__ == "__main__":
+    print("started live trader")
     most_recent_weekday = most_recent_weekday()
     # # create empty current positions list:
     # current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
@@ -434,8 +436,8 @@ if __name__ == "__main__":
     if cash > (equity*.1):
         #get opportunities:
         ### NEED FUNCTION TO GET MOST RECENT WEEKDAY
-        # !!!!!!backtest = fastquant3.run_strategy_generator(most_recent_weekday)
-        backtest = pd.read_pickle(keys.backtests_path / "2020-11-02")
+        backtest = fastquant3.run_strategy_generator(most_recent_weekday)
+        # backtest = pd.read_pickle(keys.backtests_path / "2020-11-02")
         backtest.set_index('symbol')
         buying_opp = get_entries(backtest)
         # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
@@ -461,7 +463,7 @@ if __name__ == "__main__":
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
     new_positions = orderer(new_positions, long_mkt_val, cash)
-    new_positions.to_pickle(keys.backtests_path / most_recent_weekday)
+    new_positions.to_pickle(keys.backtests_path / 'old_positions')
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)
@@ -489,3 +491,4 @@ get exits runs every day
 Backtester runs when entries are needed
 Get entries runs when entries are needed
 """
+# docker build --pull --rm -f "Dockerfile" -t firstziplinealgo:latest "."

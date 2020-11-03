@@ -33,3 +33,5 @@ todo:
     - volatility stop multiple
     - rsi_optimizer inputs
     - number of positions
+- [ ] handle the situation when 10% of portfolio isn't enough to purchase even one share...
+- [ ] CI/CD!! :o
