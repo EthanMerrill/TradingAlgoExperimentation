@@ -35,3 +35,4 @@ todo:
     - number of positions
 - [ ] handle the situation when 10% of portfolio isn't enough to purchase even one share...
 - [ ] CI/CD!! :o
+- [x] optimize ram usage during backtesting

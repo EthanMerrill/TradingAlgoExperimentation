@@ -131,6 +131,12 @@ def get_entries(backtest):
 
 #%%
 
+def exits_helper(stop_price,temp_stop_price):
+    if ((stop_price<temp_stop_price) | (stop_price==None)):
+        return temp_stop_price
+    else:
+        return stop_price
+
 # Exit Conditions Evaluation
 def get_exits(current_positions):
     """
@@ -151,11 +157,10 @@ def get_exits(current_positions):
                                     stop_factor=3)
     # check if stop columns exist:
     if ('stop_price' in current_positions):
-    # !!!!!!!!!!!!!check if there is data in columns if they exist
-    #only move stop higher
-        if current_positions["stop_price"]<current_positions["temp_stop_price"] or current_positions["stop_price"] == NoneType:
-                current_positions["stop_price"]=current_positions["temp_stop_price"]
-    #if columns do not exist, initialize the stops in new columns
+        # !!!!!!!!!!!!!check if there is data in columns if they exist
+        #only move stop higher
+        # make it faster using this:https://stackoverflow.com/questions/27474921/compare-two-columns-using-pandas
+        current_positions['stop_price'] = np.vectorize(exits_helper)(current_positions['stop_price'], current_positions['temp_stop_price'])
     else:
         current_positions["stop_price"]=current_positions["temp_stop_price"]
     del current_positions["temp_stop_price"]
@@ -436,8 +441,8 @@ if __name__ == "__main__":
     if cash > (equity*.1):
         #get opportunities:
         ### NEED FUNCTION TO GET MOST RECENT WEEKDAY
-        backtest = fastquant3.run_strategy_generator(most_recent_weekday)
-        # backtest = pd.read_pickle(keys.backtests_path / "2020-11-02")
+        # backtest = fastquant3.run_strategy_generator(most_recent_weekday)
+        backtest = pd.read_pickle(keys.backtests_path /  "2020-11-03")
         backtest.set_index('symbol')
         buying_opp = get_entries(backtest)
         # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
