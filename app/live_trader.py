@@ -7,14 +7,20 @@ import pandas as pd
 import alpaca_trade_api as tradeapi
 import numpy as np
 import fastquant3
-# from pathlib import *
+import os
 
-symbol = "AAPL"
-start_date = "2020-08-01"
+#google cloud imports
+import io
+from io import BytesIO
+from google.cloud import storage
+
+# symbol = "AAPL"
+# start_date = "2020-08-01"
 alpaca_secret = keys.keys.get("alpaca_secret")
 alpaca_secret_live = keys.keys.get("alpaca_secret_live")
 alpaca_live = keys.keys.get("alpaca_live")
 alpaca_paper = keys.keys.get("alpaca_paper")
+ 
   # Set varables depending on paper trading or not
 PAPER_TRADE = True
 
@@ -34,12 +40,24 @@ elif PAPER_TRADE==False:
 # rest methods https://pypi.org/project/alpaca-trade-api/
 api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET-KEY") , base_url=api_base)
 
+# # Setup Storage client
+# storage_client = storage.Client.from_service_account_json('backtestalgov1-db431f91295d.json')
+# BUCKET_NAME = 'backtests-and-positions'
+# #make bucket object
+# bucket = storage_client.get_bucket(BUCKET_NAME)
+
+# blob = bucket.blob('myfirstblob.pickle')
+
+# blob.upload_from_filename('Backtesting/2020-11-02')
+# blob.download_to_filename("THING")
+# DF = pd.read_pickle("THING")
 #################################################
 
 #%%
-historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{date.today()}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
+# historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{date.today()}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
 # %%
-symboldf = pd.DataFrame(historic_symbol_data)
+# symboldf = pd.DataFrame(historic_symbol_data)
+
 
 
 #Quick convert to normal time from epoch:
@@ -424,7 +442,7 @@ def most_recent_weekday():
 
 #%%
 if __name__ == "__main__":
-    print("started live trader")
+    print(f"started live trader working directory:{os.getcwd()}")
     most_recent_weekday = most_recent_weekday()
     # # create empty current positions list:
     # current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
@@ -441,8 +459,8 @@ if __name__ == "__main__":
     if cash > (equity*.1):
         #get opportunities:
         ### NEED FUNCTION TO GET MOST RECENT WEEKDAY
-        # backtest = fastquant3.run_strategy_generator(most_recent_weekday)
-        backtest = pd.read_pickle(keys.backtests_path /  "2020-11-03")
+        backtest = fastquant3.run_strategy_generator(most_recent_weekday)
+        # backtest = pd.read_pickle(keys.backtests_path /  "2020-11-03")
         backtest.set_index('symbol')
         buying_opp = get_entries(backtest)
         # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
@@ -468,7 +486,7 @@ if __name__ == "__main__":
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
     new_positions = orderer(new_positions, long_mkt_val, cash)
-    new_positions.to_pickle(keys.backtests_path / 'old_positions')
+    new_positions.to_pickle(keys.positions_path / 'old_positions')
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)

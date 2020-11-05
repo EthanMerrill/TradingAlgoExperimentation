@@ -14,25 +14,36 @@ todo:
 - [x] compare current rsi to rsi entry limits in entry calculator function
 - [x] function to place buy and sell orders (switch for paper vs non paper trading)
 - [x] simple comparator for rsi exit conditions
-- [ ] Check the RMA EMA functions, something is a little off there. 
-- 
+- [x] Make the Paths Portable: https://docs.python.org/3/library/os.path.html
+- [x] optimize ram usage during backtesting
+
 - [ ] Clean up the key/path/variable management to use only environ variables. 
 - [x] Manually update positions df on buy and sell orders. 
     - [ ] may want to build more error handling in in the future to handle manual buy and sell orders amongst other things. Just a better way to reconcile strategies and positions 
 - [ ] More complex buy ordering. Limit orders, not market orders
     - [ ] Implement oco order on initial position
     - [x] create a class for order types
-- [ ] Set up containerization
+- [x] Set up containerization
     - [x] Create docker file
-    - [ ] Make a working build
+    - [x] Make a working build
 
 - [ ] Check that NYSE volumes are not 2x!!!
-- [x] Make the Paths Portable: https://docs.python.org/3/library/os.path.html
-- [ ] put all variables in one place. and make a log of this data as a sort of metadata file.
+
+- [ ] put all variables in one place. and make a log of this data as a sort of metadata file. Add arguments on run, at least argument for PAPER_TRADING
     - stop price multiplier
     - volatility stop multiple
     - rsi_optimizer inputs
     - number of positions
 - [ ] handle the situation when 10% of portfolio isn't enough to purchase even one share...
+
+- [ ] Check the RMA EMA functions, something is a little off there. 
+- [ ] use numpy.where instead of vectorize where possible
+- [ ] GCP Cloud bucket!
+- 
+- ## Long term Features:
+- [ ] Use a format better than pickle for long term storage
 - [ ] CI/CD!! :o
-- [x] optimize ram usage during backtesting
+- 
+- pip freeze > requirements.txt
+- 
+- !!! BUG: When existing universe exists, then the container is built, the image will still try to access that locally saved universe and will not be able to

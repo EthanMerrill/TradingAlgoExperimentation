@@ -2,7 +2,7 @@ FROM python:3.8.6-slim-buster
 # ENV http_proxy http://proxy-chain.xxx.com:911/ 
 # ENV https_proxy http://proxy-chain.xxx.com:912/ 
 
-WORKDIR /app
+WORKDIR /
 
 # install dependencies:
 COPY requirements.txt .

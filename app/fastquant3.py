@@ -139,7 +139,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
     results_df.optimal_rsi_period.astype('int16')
     results_df.optimal_rsi_lower.astype('int16')
     results_df.optimal_rsi_upper.astype('int16')
-    results_df.roi.astype('int16')
+    results_df.roi.astype('float16')
     
     symbol_count=0
     for symbol in df_of_stocks["T"]:
@@ -163,33 +163,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
 
     return results_df, time_basic
 
-#%%
-# print(Backtest.head())
-# # 4 hours 
-# #%%
-# def add_business_days(d, business_days_to_add):
-#     num_whole_weeks  = business_days_to_add / 5
-#     extra_days       = num_whole_weeks * 2
 
-#     first_weekday    = d.weekday()
-#     remainder_days   = business_days_to_add % 5
-
-#     natural_day      = first_weekday + remainder_days
-#     if natural_day > 4:
-#         if first_weekday == 5:
-#             extra_days += 1
-#         elif first_weekday != 6:
-#             extra_days += 2
-
-#     return d + timedelta(business_days_to_add + extra_days)
-# #%%
-# def current_rsi(symbol, lookback_period):
-
-#     start_date = add_business_days(date.today-lookback_period)
-    
-#     historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{date.today()}?unadjusted=false&sort=asc&apiKey={alpacaKey}").json().get("results")
-#     return historic_symbol_data
-# temp = current_rsi("AAPL", 4)
 # %%
 def run_strategy_generator(date):
     # convert the passed date to string:

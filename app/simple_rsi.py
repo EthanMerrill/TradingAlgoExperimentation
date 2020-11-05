@@ -238,7 +238,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
 # results.analyzers.mysharpe.get_analysis
 
 
-returnedStrats = callable_rsi_backtest("AAPL",datetime(2019, 1, 1), datetime(2020, 10, 26),5, 30, 70,10000)
+# returnedStrats = callable_rsi_backtest("AAPL",datetime(2019, 1, 1), datetime(2020, 10, 26),5, 30, 70,10000)
 #%%
    
 # if __name__ == '__main__':
