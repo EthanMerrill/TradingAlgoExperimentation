@@ -1,6 +1,5 @@
 #%%
 import requests
-import keys
 from datetime import date, timedelta
 import datetime as dt
 import pandas as pd
@@ -8,18 +7,19 @@ import alpaca_trade_api as tradeapi
 import numpy as np
 import fastquant3
 import os
-
 #google cloud imports
 import io
 from io import BytesIO
 from google.cloud import storage
+try: 
+    import keys
+except Exception as e:
+    print("keys file not found")
 
-# symbol = "AAPL"
-# start_date = "2020-08-01"
-alpaca_secret = keys.keys.get("alpaca_secret")
-alpaca_secret_live = keys.keys.get("alpaca_secret_live")
-alpaca_live = keys.keys.get("alpaca_live")
-alpaca_paper = keys.keys.get("alpaca_paper")
+alpaca_secret_paper= os.environ["alpaca_secret_paper"]
+alpaca_secret_live = os.environ["alpaca_secret_live"]
+alpaca_live = os.environ["alpaca_live"]
+alpaca_paper = os.environ["alpaca_paper"]
  
   # Set varables depending on paper trading or not
 PAPER_TRADE = True
@@ -28,7 +28,7 @@ if PAPER_TRADE==True:
     api_base = 'https://paper-api.alpaca.markets'
     headers = {
     "APCA-API-KEY-ID": alpaca_paper, 
-    "APCA-API-SECRET-KEY": alpaca_secret
+    "APCA-API-SECRET-KEY": alpaca_secret_paper
     }
 elif PAPER_TRADE==False:
     api_base ="https://api.alpaca.markets"
@@ -46,7 +46,7 @@ api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET
 class cloud_object:
     def __init__(self, BUCKET_NAME):
         # Setup Storage client
-        self.storage_client = storage.Client.from_service_account_json('backtestalgov1-db431f91295d.json')
+        self.storage_client = storage.Client.from_service_account_json('app/backtestalgov1-db431f91295d.json')
                 # #make bucket object locally:
         self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
 
@@ -97,7 +97,7 @@ def RSI_parser(symbol, end_date, period):
     # day to account for weekends *** BUT NOT HOLIDAYS, hence roughly XX% day Buffer ** also will not work properly when run on weekends (buffer covers for this flaw also)
     # *2 because there needs to be additional data beyond the lookback period as rsi is recursive
     offset_days = -(period+((period//7)*2)+(period%7)+2)*2
-    start_date = end_date + timedelta(days = offset_days)
+    start_date = end_date + (timedelta(days = offset_days))
     # Unneccessary formatting
     start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
     end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
@@ -491,10 +491,16 @@ if __name__ == "__main__":
     equity = cash+long_mkt_val
     if cash > (equity*.1):
         #get opportunities:
-        backtest = fastquant3.run_strategy_generator(recent_weekday)
+        # first, check if a backtest for the current day exists:
+        try: 
+            backtest = cloud_connection.download_from_backtests(recent_weekday)
+        except :
+            print(f'backtest fror current day not found, running for {recent_weekday} ')
+            backtest = fastquant3.run_strategy_generator(recent_weekday)
         
         # backtest = pd.read_pickle(keys.backtests_path /  "2020-11-03")
         backtest.set_index('symbol')
+        cloud_connection.save_to_backtests(backtest,recent_weekday)
         buying_opp = get_entries(backtest)
         # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
         i = 0
@@ -514,13 +520,14 @@ if __name__ == "__main__":
     new_positions = get_exits(new_positions)
     #update RSI
     if new_positions.empty == False:
-        new_positions["RSI"] = np.vectorize(RSI_parser)(new_positions["symbol"],most_recent_weekday, new_positions["optimal_rsi_period"])
+        new_positions["RSI"] = np.vectorize(RSI_parser)(new_positions["symbol"],recent_weekday, new_positions["optimal_rsi_period"])
    
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
     new_positions = orderer(new_positions, long_mkt_val, cash)
     # save the updated positions to the CLOUD
     cloud_connection.save_to_positions(new_positions, recent_weekday)
+    cloud_connection.save_to_backtests(backtest,recent_weekday)
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)

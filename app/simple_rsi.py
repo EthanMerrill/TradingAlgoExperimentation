@@ -3,13 +3,16 @@
 from datetime import datetime
 import backtrader as bt
 import alpaca_backtrader_api
-import keys
 import backtrader.analyzers as btanalyzers
+import os
+try:
+    import keys
+except Exception as e:
+    print("keys file not found")
 
-# Your credentials here
-ALPACA_API_KEY = keys.keys.get("alpaca_paper")
-ALPACA_SECRET_KEY = keys.keys.get("alpaca_secret")
-ALPACA_API_SECRET_KEY = keys.keys.get("alpaca_secret")
+ALPACA_API_KEY = os.environ['alpaca_paper']
+ALPACA_SECRET_KEY = os.environ['alpaca_secret_paper']
+ALPACA_API_SECRET_KEY = os.environ['alpaca_secret_paper']
 """
 You have 3 options: 
  - backtest (IS_BACKTEST=True, IS_LIVE=False)
@@ -198,8 +201,8 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     cerebro = bt.Cerebro()
     
     store = alpaca_backtrader_api.AlpacaStore(
-        key_id= keys.keys.get("alpaca_paper"),
-        secret_key=keys.keys.get("alpaca_secret"),
+        key_id= os.environ["alpaca_paper"],
+        secret_key=os.environ["alpaca_secret_paper"],
         paper=not False,
         usePolygon=True
     )

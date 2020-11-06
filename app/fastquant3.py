@@ -1,6 +1,5 @@
 #%%
 import requests 
-import keys
 import json
 import pandas as pd
 from time import time
@@ -8,11 +7,14 @@ import time as tm
 from datetime import datetime, timedelta, date
 import numpy as np
 from simple_rsi import callable_rsi_backtest
-
-
+import os
+try:
+    import keys
+except Exception as e:
+    print("keys file not found")
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
-alpacaKey = keys.keys.get("alpaca_paper")
+ALPACA_KEY = os.environ['alpaca_paper']
 # IEXKey = keys.keys.get("iex")
 
 # MIsc global options
@@ -34,7 +36,7 @@ def get_All_Tickers(date = (date.today())):
     # function to find & filter all symbols for any date
     # #Get all tickers:
     try:
-        polygonTickersData = requests.get(f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/STOCKS/{str(date)}?unadjusted=false&apiKey={alpacaKey}").json().get("results")
+        polygonTickersData = requests.get(f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/STOCKS/{str(date)}?unadjusted=false&apiKey={ALPACA_KEY}").json().get("results")
 
         polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
         print(polygon_tickers_dataframe.head())
