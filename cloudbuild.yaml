@@ -1,4 +1,11 @@
 steps:
+- name: 'ubuntu'
+  args: ['bash', './myscript.sh']
+  env:
+  - 'BUILD=$BUILD_ID'
+  - 'PROJECT=$PROJECT_ID'
+  - 'REV=$REVISION_ID'
 - name: 'gcr.io/cloud-builders/docker'
-    entrypoint: 'bash'
-    args: ['build', '-t', 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation, '.']
+    args: ['build', '-t', 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation', '.']
+    images:
+        - 'gcr.io/$PROJECT_ID/my-image'
