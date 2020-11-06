@@ -1,5 +1,14 @@
-
+steps:
+# Uses the ubuntu build step:
+# to run a shell script; and
+# set env variables for its execution
+- name: 'ubuntu'
+  args: ['bash', './myscript.sh']
+  env:
+  - 'BUILD=$BUILD_ID'
+  - 'PROJECT=$PROJECT_ID'
+  - 'REV=$REVISION_ID'
+  
 - name: 'gcr.io/cloud-builders/docker'
   args: ['build', '-t', 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation', '.']
-images:
-    - 'gcr.io/$PROJECT_ID/my-image'
+images: ['gcr.io/$PROJECT_ID/my-image']
