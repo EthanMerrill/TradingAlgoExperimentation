@@ -6,6 +6,6 @@ steps:
   - 'PROJECT=$PROJECT_ID'
   - 'REV=$REVISION_ID'
 - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation', '.']
-    images:
+  args: ['build', '-t', 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation', '.']
+  images:
         - 'gcr.io/$PROJECT_ID/my-image'
