@@ -17,8 +17,7 @@ alpacaKey = keys.keys.get("alpaca_paper")
 
 # MIsc global options
 pd.set_option('display.max_rows', None)
-
-
+pd.set_option('display.max_columns', None)
 # %%
 def get_All_Tickers(date = (date.today())):
 
@@ -34,15 +33,22 @@ def get_All_Tickers(date = (date.today())):
 
     # function to find & filter all symbols for any date
     # #Get all tickers:
-    polygonTickersData = requests.get(f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/STOCKS/{str(date)}?unadjusted=false&apiKey={alpacaKey}").json().get("results")
+    try:
+        polygonTickersData = requests.get(f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/STOCKS/{str(date)}?unadjusted=false&apiKey={alpacaKey}").json().get("results")
 
-    polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
+        polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
+        print(polygon_tickers_dataframe.head())
+        if not polygonTickersData:
+            Print("ERROR No Polygon tickers data found")
+            raise Exception ("empty Polygon Tickers data, check Polygon api status")
+    except Exception as e:
+        print(f"failed to query polygon api {e}")
     # Filter 
     # Volume over 1mil, close price over 15&under 200
     polygon_tickers_dataframe = polygon_tickers_dataframe.loc[(polygon_tickers_dataframe["v"]>=1000000 ) & (polygon_tickers_dataframe["c"]>=15 ) & (polygon_tickers_dataframe["c"]<=200)]
-    polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=['T'])
+    polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=["T"])
     polygon_tickers_dataframe.reset_index(inplace = True)
-    polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
+    # polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
     return polygon_tickers_dataframe
 
 # %%
@@ -142,7 +148,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
     results_df.roi.astype('float16')
     
     symbol_count=0
-    for symbol in df_of_stocks["T"]:
+    for symbol in df_of_stocks:
 
         symbol_dict, time_one_symbol = rsi_optimizer([3,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date)
         results_df = results_df.append(symbol_dict, ignore_index=True)
@@ -150,9 +156,9 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
         # Time calculation function
         time_left = ((len(df_of_stocks)-(symbol_count+1))*time_one_symbol)
         print(f"projected time left: {humanize_time(time_left)}")
-        # Temp save function to salvage some data from a very long test
-        if (symbol_count % 50 == 0):
-            results_df.to_pickle(keys.backtests_path/'Partials'/f"{end_date}_Partial_Backtest_Save")
+        # Temp save function to salvage some data from a very long test [depreciated]
+        # if (symbol_count % 50 == 0):
+        #     results_df.to_pickle(keys.backtests_path/'Partials'/f"{end_date}_Partial_Backtest_Save")
         print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
         symbol_count = symbol_count+1
 
@@ -169,19 +175,17 @@ def run_strategy_generator(date):
     # convert the passed date to string:
     date_str=datetime.strftime(date, "%Y-%m-%d")
     all_ticks = get_All_Tickers(date_str)#.loc[0:400]
+    # just get what you need from all ticks-- the ticks! Should save some ram
+    all_ticks = all_ticks['T']
     if all_ticks.empty==True :
         print("could not find tickers")
         raise 
     # RUn the mult stock rsi Optimizer
     backtest, time_basic = multi_stock_rsi_optimize(all_ticks, date)
     # Pickle the results of the multistock Optimizer
-    backtest.to_pickle(keys.backtests_path / date_str)
+    # backtest.to_pickle(keys.backtests_path / date_str)
     #print the total time to complete
     print(f"time to complete backtester: {time_basic}")
-
-    # Backtest = pd.read_pickle(f"Full_Backtest_With_Stops{date_str}")
-
-
 
     # drop empty rows
     backtest.dropna(

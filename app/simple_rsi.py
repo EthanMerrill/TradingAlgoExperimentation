@@ -147,7 +147,7 @@ class StopTrailer(bt.Indicator):
     params = dict(
         atrperiod=14,
         emaperiod=10,
-        stopfactor=3.0,
+        stopfactor=3,
     )
 
     def __init__(self):

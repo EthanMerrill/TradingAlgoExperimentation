@@ -1,7 +1,7 @@
 #%%
 import requests
 import keys
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 import datetime as dt
 import pandas as pd
 import alpaca_trade_api as tradeapi
@@ -40,17 +40,40 @@ elif PAPER_TRADE==False:
 # rest methods https://pypi.org/project/alpaca-trade-api/
 api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET-KEY") , base_url=api_base)
 
-# # Setup Storage client
-# storage_client = storage.Client.from_service_account_json('backtestalgov1-db431f91295d.json')
-# BUCKET_NAME = 'backtests-and-positions'
-# #make bucket object
-# bucket = storage_client.get_bucket(BUCKET_NAME)
 
-# blob = bucket.blob('myfirstblob.pickle')
+# Create a cloud object which can upload to positions or backtests easily
 
-# blob.upload_from_filename('Backtesting/2020-11-02')
-# blob.download_to_filename("THING")
-# DF = pd.read_pickle("THING")
+class cloud_object:
+    def __init__(self, BUCKET_NAME):
+        # Setup Storage client
+        self.storage_client = storage.Client.from_service_account_json('backtestalgov1-db431f91295d.json')
+                # #make bucket object locally:
+        self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
+
+    def save_to_backtests(self, df, blob_name):
+        pd.to_pickle(df,f"app/tmp/{str(blob_name)}")
+        self.blob = self.bucket.blob(f'Positions/{str(blob_name)}')
+        self.blob.upload_from_filename(f"/tmp/{str(blob_name)}")
+        return (str(blob_name))
+
+    def save_to_positions(self, df, blob_name):
+        pd.to_pickle(df,f"app/tmp/{str(blob_name)}")
+        self.blob = self.bucket.blob(f'Positions/{str(blob_name)}')
+        self.blob.upload_from_filename(f"app/tmp/{str(blob_name)}")
+        return (str(blob_name))
+
+    def download_from_backtests(self, filename):
+        self.blob = self.bucket.blob(f'Backtests/{str(filename)}')
+        self.blob.download_to_filename(filename)
+        unpickle = pd.read_pickle(filename)
+        return unpickle
+
+    def download_from_positions(self, filename):
+        self.blob = self.bucket.blob(f'Positions/{str(filename)}')
+        self.blob.download_to_filename(filename)
+        unpickle = pd.read_pickle(filename)
+        return unpickle
+
 #################################################
 
 #%%
@@ -63,8 +86,8 @@ api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET
 #Quick convert to normal time from epoch:
 def epoch_to_msec(time):
     s = time / 1000.0
-    # new_time=datetime.fromtimestamp(s).strftime('%Y-%m-%d %H:%M:%S.%f')
-    new_time=datetime.fromtimestamp(s).strftime('%Y-%m-%d')
+    # new_time=dt.datetime.fromtimestamp(s).strftime('%Y-%m-%d %H:%M:%S.%f')
+    new_time=dt.datetime.fromtimestamp(s).strftime('%Y-%m-%d')
 
     return new_time
 ######################################
@@ -76,8 +99,8 @@ def RSI_parser(symbol, end_date, period):
     offset_days = -(period+((period//7)*2)+(period%7)+2)*2
     start_date = end_date + timedelta(days = offset_days)
     # Unneccessary formatting
-    start_date = datetime.strftime(start_date, "%Y-%m-%d")
-    end_date = datetime.strftime(date.today(), "%Y-%m-%d")
+    start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
+    end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
     historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
     #shove it in a dataframe real quick:
@@ -200,8 +223,8 @@ def get_stop(symbol, end_date, ema_period, atr_period, stop_factor=3):
     offset_days = -(period+((period//7)*2)+(period%7)+2)*2
     start_date = end_date + timedelta(days = offset_days)
     # Unneccessary formatting
-    start_date = datetime.strftime(start_date, "%Y-%m-%d")
-    end_date = datetime.strftime(date.today(), "%Y-%m-%d")
+    start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
+    end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
     df = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
 
@@ -426,30 +449,40 @@ def orderer(df, long_market_value, cash):
         
     return df
 #%%
-def most_recent_weekday():
+def most_recent_weekday(offset=0):
     '''
     does what it says on th tin
     '''
-    today = date.today()
+
+    today = date.today()+timedelta(offset)
     day_of_week = today.weekday()
     if day_of_week <5:
-        return date.today()
+        return today
     else:
-        time_delta = timedelta(today.weekday()-7)
+        time_delta = timedelta(day_of_week-7)
         most_recent = today - time_delta
   
     return most_recent
 
 #%%
 if __name__ == "__main__":
-    print(f"started live trader working directory:{os.getcwd()}")
-    most_recent_weekday = most_recent_weekday()
+    print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
+    cloud_connection = cloud_object('backtests-and-positions')
+    recent_weekday = most_recent_weekday()
+    # May want to put the logic below into the most recent weekday function with the use of a time_cutoff argument:
+    today8pm = dt.datetime.now().replace(hour=20, minute=0, second=0, microsecond=0)
+    # if today is a weekday and before 8, run with previous current day:
+    if (date.today() == recent_weekday)  & (dt.datetime.now()<=today8pm):
+        recent_weekday = most_recent_weekday(-1)
+    # If none of the above are true, it is a weekday after 8, and the simple most recent weekday will work. 
+
     # # create empty current positions list:
     # current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
- # First, cancel all existing orders for the Day
-    # # get current positions
-    new_positions = get_positions()
 
+    # # get current positions
+    yesterdays_positions = cloud_connection.download_from_positions(str(recent_weekday-timedelta(1)))
+    new_positions = get_positions(yesterdays_positions)
+    # cancel all existing orders for the Day
     api.cancel_all_orders()
 
     cash = float(api.get_account().cash)
@@ -458,8 +491,8 @@ if __name__ == "__main__":
     equity = cash+long_mkt_val
     if cash > (equity*.1):
         #get opportunities:
-        ### NEED FUNCTION TO GET MOST RECENT WEEKDAY
-        backtest = fastquant3.run_strategy_generator(most_recent_weekday)
+        backtest = fastquant3.run_strategy_generator(recent_weekday)
+        
         # backtest = pd.read_pickle(keys.backtests_path /  "2020-11-03")
         backtest.set_index('symbol')
         buying_opp = get_entries(backtest)
@@ -486,7 +519,8 @@ if __name__ == "__main__":
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
     new_positions = orderer(new_positions, long_mkt_val, cash)
-    new_positions.to_pickle(keys.positions_path / 'old_positions')
+    # save the updated positions to the CLOUD
+    cloud_connection.save_to_positions(new_positions, recent_weekday)
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)
