@@ -9,7 +9,7 @@ with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
   GACdata = json.load(f)
 
 # Output: {'name': 'Bob', 'languages': ['English', 'Fench']}
-print(data)
+print(GACdata)
 
 with open('ALPACA_KEYS.json') as m:
   data = json.load(m)
