@@ -1,6 +1,6 @@
 #%%
 import os
-Print("top of live_trader")
+print("top of live_trader")
 print(f"environ Variables: {os.environ}")
 
 import requests
