@@ -1,5 +1,8 @@
 steps:
+- name: gcr.io/cloud-builders/gcloud
+  entrypoint: 'bash'
+  args: [ '-c', "gcloud secrets versions access latest --secret=ALPACA_API --format='get(payload.data)' | tr '_-' '/+' | base64 -d > decrypted-data.txt" ]
 - name: 'gcr.io/cloud-builders/docker'
   args: ['build', '-t', 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation', '.']
 images: 
-  - 'gcr.io/$PROJECT_ID/my-image'
+  - 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation'
