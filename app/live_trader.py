@@ -3,22 +3,8 @@ import os
 import json
 
 print("top of live_trader")
-print(f"environ Variables: {os.environ}")
-
-import requests
-from datetime import date, timedelta
-import datetime as dt
-import pandas as pd
-import alpaca_trade_api as tradeapi
-import numpy as np
-import fastquant3
-import os
-#google cloud imports
-import io
-from io import BytesIO
-from google.cloud import storage
-
-# Set api keys 
+# print(f"environ Variables: {os.environ}")
+# GET KEYS BEFORE IMPORTS (some files require env vars to be set before being called)
 try: 
     import keys
 except Exception as e:
@@ -38,7 +24,6 @@ try:
     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
 
-    # os.environ["PAPER_TRADE"] = True
 except Exception as e:
     print(f"Error loading keys from google key manager: error {e}")
 
@@ -46,8 +31,8 @@ alpaca_secret_paper= os.environ["alpaca_secret_paper"]
 alpaca_secret_live = os.environ["alpaca_secret_live"]
 alpaca_live = os.environ["alpaca_live"]
 alpaca_paper = os.environ["alpaca_paper"]
-service_account_json = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-PAPER_TRADE = os.environ['PAPER_TRADE']
+# service_account_json = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+
   # Set varables depending on paper trading or not
 PAPER_TRADE = True
 
@@ -63,6 +48,21 @@ elif PAPER_TRADE==False:
     "APCA-API-KEY-ID": alpaca_live,
     "APCA-API-SECRET-KEY": alpaca_secret_live
     }
+import requests
+from datetime import date, timedelta
+import datetime as dt
+import pandas as pd
+import alpaca_trade_api as tradeapi
+import numpy as np
+import fastquant3
+import os
+#google cloud imports
+import io
+from io import BytesIO
+from google.cloud import storage
+
+# Set api keys 
+
 # Setuo the API globally 
 # rest methods https://pypi.org/project/alpaca-trade-api/
 api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET-KEY") , base_url=api_base)
@@ -486,15 +486,15 @@ def most_recent_weekday(offset=0):
     if day_of_week <5:
         return today
     else:
-        time_delta = timedelta(day_of_week-7)
+        time_delta = timedelta(day_of_week-4)
         most_recent = today - time_delta
   
     return most_recent
 
 #%%
 if __name__ == "__main__":
-    print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
-    print(f"environ Variables: {os.environ}")
+    # print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
+    # print(f"environ Variables: {os.environ}")
     cloud_connection = cloud_object('backtests-and-positions')
     recent_weekday = most_recent_weekday()
     # May want to put the logic below into the most recent weekday function with the use of a time_cutoff argument:

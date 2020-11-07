@@ -9,5 +9,5 @@ backtesting
 settings.json
 .vscode/settings.json
 app/tmp
-app/alpaca_keys.json
-app/GOOGLE_APPLICATION_CREDENTIALS.json
+alpaca_keys.json
+GOOGLE_APPLICATION_CREDENTIALS.json
