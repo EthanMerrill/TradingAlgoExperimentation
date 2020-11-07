@@ -16,6 +16,9 @@ try:
 except Exception as e:
     print("keys file not found")
 
+print(f"environ Variables: {os.environ}")
+
+
 alpaca_secret_paper= os.environ["alpaca_secret_paper"]
 alpaca_secret_live = os.environ["alpaca_secret_live"]
 alpaca_live = os.environ["alpaca_live"]
