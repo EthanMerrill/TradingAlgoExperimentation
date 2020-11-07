@@ -5,18 +5,6 @@ import json
 print("top of live_trader")
 print(f"environ Variables: {os.environ}")
 
-with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
-  GACdata = json.load(f)
-
-# Output: {'name': 'Bob', 'languages': ['English', 'Fench']}
-print(GACdata)
-
-with open('ALPACA_KEYS.json') as m:
-  data = json.load(m)
-
-# Output: {'name': 'Bob', 'languages': ['English', 'Fench']}
-print(data)
-
 import requests
 from datetime import date, timedelta
 import datetime as dt
@@ -29,17 +17,37 @@ import os
 import io
 from io import BytesIO
 from google.cloud import storage
+
+# Set api keys 
 try: 
     import keys
 except Exception as e:
     print("keys file not found")
 
+try:
+    with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
+    GACdata = json.load(f)
+
+
+    with open('ALPACA_KEYS.json') as m:
+    ALPACA_DATA = json.load(m)
+
+
+    os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
+    os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
+    os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
+    os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
+
+    os.environ["PAPER_TRADE"] = True
+except Exception as e:
+    print(f"Error loading keys from google key manager: error {e}")
 
 alpaca_secret_paper= os.environ["alpaca_secret_paper"]
 alpaca_secret_live = os.environ["alpaca_secret_live"]
 alpaca_live = os.environ["alpaca_live"]
 alpaca_paper = os.environ["alpaca_paper"]
 service_account_json = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
+PAPER_TRADE = os.environ['PAPER_TRADE']
   # Set varables depending on paper trading or not
 PAPER_TRADE = True
 
