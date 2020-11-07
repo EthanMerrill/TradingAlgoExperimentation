@@ -20,7 +20,7 @@ alpaca_secret_paper= os.environ["alpaca_secret_paper"]
 alpaca_secret_live = os.environ["alpaca_secret_live"]
 alpaca_live = os.environ["alpaca_live"]
 alpaca_paper = os.environ["alpaca_paper"]
- 
+service_account_json = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
   # Set varables depending on paper trading or not
 PAPER_TRADE = True
 
@@ -467,6 +467,7 @@ def most_recent_weekday(offset=0):
 #%%
 if __name__ == "__main__":
     print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
+    print(f"environ Variables: {os.environ}")
     cloud_connection = cloud_object('backtests-and-positions')
     recent_weekday = most_recent_weekday()
     # May want to put the logic below into the most recent weekday function with the use of a time_cutoff argument:

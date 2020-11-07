@@ -1,8 +1,18 @@
 steps:
 - name: gcr.io/cloud-builders/gcloud
   entrypoint: 'bash'
-  args: [ '-c', "gcloud secrets versions access latest --secret=ALPACA_API --format='get(payload.data)' | tr '_-' '/+' | base64 -d > decrypted-data.txt" ]
+  args: [ '-c', "gcloud secrets versions access latest --secret=GOOGLE_APPLICATION_CREDENTIALS --format='get(payload.data)' | tr '_-' '/+' | base64 -d > GOOGLE_APPLICATION_CREDENTIALS.json" ]
+- name: gcr.io/cloud-builders/gcloud
+  entrypoint: 'bash'
+  args: [ '-c', "gcloud secrets versions access latest --secret=ALPACA_API --format='get(payload.data)' | tr '_-' '/+' | base64 -d > ALPACA_API.json" ]
 - name: 'gcr.io/cloud-builders/docker'
-  args: ['build', '-t', 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation', '.']
+  args: ['build', 
+        '--build-arg',
+        'GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS.json}',
+        '--build-arg',
+        'ALPACA_KEYS=${ALPACA_KEYS.json}',
+        '-t', 
+        'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation', 
+        '.']
 images: 
   - 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation'

@@ -1,6 +1,12 @@
 FROM python:3.8.6-slim-buster
-# ENV http_proxy http://proxy-chain.xxx.com:911/ 
-# ENV https_proxy http://proxy-chain.xxx.com:912/ 
+
+#get the environment variables with build arg
+ARG GOOGLE_APPLICATION_CREDENTIALS
+ARG ALPACA_KEYS
+#set environment variables
+ENV GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+ENV alpaca_keys=${ALPACA_KEYS}
+
 
 WORKDIR /
 
