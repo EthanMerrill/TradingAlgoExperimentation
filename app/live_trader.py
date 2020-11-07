@@ -1,4 +1,5 @@
 #%%
+import os
 print(f"environ Variables: {os.environ}")
 
 import requests
