@@ -1,4 +1,6 @@
 #%%
+print(f"environ Variables: {os.environ}")
+
 import requests
 from datetime import date, timedelta
 import datetime as dt
@@ -15,8 +17,6 @@ try:
     import keys
 except Exception as e:
     print("keys file not found")
-
-print(f"environ Variables: {os.environ}")
 
 
 alpaca_secret_paper= os.environ["alpaca_secret_paper"]
