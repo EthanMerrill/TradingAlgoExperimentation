@@ -6,13 +6,13 @@ print("top of live_trader")
 print(f"environ Variables: {os.environ}")
 
 with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
-  data = json.load(f)
+  GACdata = json.load(f)
 
 # Output: {'name': 'Bob', 'languages': ['English', 'Fench']}
 print(data)
 
-with open('ALPACA_KEYS.json') as f:
-  data = json.load(f)
+with open('ALPACA_KEYS.json') as m:
+  data = json.load(m)
 
 # Output: {'name': 'Bob', 'languages': ['English', 'Fench']}
 print(data)
@@ -65,7 +65,7 @@ api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET
 class cloud_object:
     def __init__(self, BUCKET_NAME):
         # Setup Storage client
-        self.storage_client = storage.Client.from_service_account_json('app/backtestalgov1-db431f91295d.json')
+        self.storage_client = storage.Client.from_service_account_json('GOOGLE_APPLICATION_CREDENTIALS.json')
                 # #make bucket object locally:
         self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
 
