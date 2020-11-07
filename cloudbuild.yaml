@@ -1,7 +1,7 @@
 steps:
 - name: gcr.io/cloud-builders/gcloud
   entrypoint: 'bash'
-  args: [ '-c', "gcloud secrets versions access latest --secret=GOOGLE_APPLICATION_CREDENTIALS --format='get(payload.data)' | tr '_-' '/+' | base64 -d > GOOGLE_APPLICATION_CREDENTIALS.json" ]
+  args: [ '-c', "gcloud secrets versions access latest --secret=service_account --format='get(payload.data)' | tr '_-' '/+' | base64 -d > GOOGLE_APPLICATION_CREDENTIALS.json" ]
 - name: gcr.io/cloud-builders/gcloud
   entrypoint: 'bash'
   args: [ '-c', "gcloud secrets versions access latest --secret=ALPACA_API --format='get(payload.data)' | tr '_-' '/+' | base64 -d > ALPACA_API.json" ]
