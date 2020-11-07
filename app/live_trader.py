@@ -1,7 +1,21 @@
 #%%
 import os
+import json
+
 print("top of live_trader")
 print(f"environ Variables: {os.environ}")
+
+with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
+  data = json.load(f)
+
+# Output: {'name': 'Bob', 'languages': ['English', 'Fench']}
+print(data)
+
+with open('ALPACA_KEYS.json') as f:
+  data = json.load(f)
+
+# Output: {'name': 'Bob', 'languages': ['English', 'Fench']}
+print(data)
 
 import requests
 from datetime import date, timedelta
