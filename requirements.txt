@@ -13,6 +13,7 @@ certifi==2020.6.20
 cffi==1.14.3
 cfgv==3.2.0
 chardet==3.0.4
+click==7.1.2
 colorama==0.4.4
 cycler==0.10.0
 decorator==4.4.2
@@ -20,6 +21,7 @@ defusedxml==0.6.0
 distlib==0.3.1
 entrypoints==0.3
 filelock==3.0.12
+Flask==1.1.2
 google-api-core==1.23.0
 google-api-python-client==1.12.5
 google-auth==1.23.0
@@ -40,6 +42,7 @@ ipympl==0.5.8
 ipython==7.19.0
 ipython-genutils==0.2.0
 ipywidgets==7.5.1
+itsdangerous==1.1.0
 jedi==0.17.2
 Jinja2==2.11.2
 jsonschema==3.2.0
@@ -117,6 +120,7 @@ wcwidth==0.2.5
 webencodings==0.5.1
 websocket-client==0.57.0
 websockets==8.1
+Werkzeug==1.0.1
 widgetsnbextension==3.5.1
 yarl==1.1.0
 yfinance==0.1.54
