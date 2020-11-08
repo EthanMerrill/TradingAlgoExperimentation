@@ -55,9 +55,9 @@ import pandas as pd
 import alpaca_trade_api as tradeapi
 import numpy as np
 import fastquant3
-from flask import Flask, request
 
-app = Flask(__name__)
+# #start a flask server to appease google cloud run
+# import app
 #google cloud imports
 import io
 from io import BytesIO
@@ -103,12 +103,7 @@ class cloud_object:
         unpickle = pd.read_pickle(filename)
         return unpickle
 
-# Whip up a flask server so google cloud build doesn't freak out
-@app.route("/", methods=["GET"])
-def hello():
-    """ Return a friendly HTTP greeting. """
-    who = request.args.get("who", "World")
-    return f"Hello {who}!\n"
+
 
 
 #################################################
@@ -496,8 +491,7 @@ def most_recent_weekday(offset=0):
 
 #%%
 if __name__ == "__main__":
-    # start the flask server:
-    app.run(host="localhost", port=8080, debug=True)
+
     # print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
     # print(f"environ Variables: {os.environ}")
     cloud_connection = cloud_object('backtests-and-positions')

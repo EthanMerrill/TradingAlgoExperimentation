@@ -8,6 +8,6 @@ positions
 backtesting
 settings.json
 .vscode/settings.json
-app/tmp
+
 alpaca_keys.json
 GOOGLE_APPLICATION_CREDENTIALS.json

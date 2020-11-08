@@ -26,7 +26,7 @@ def get_All_Tickers(date = (date.today())):
     #chech to see if a pickled version for requested date exists, if so, just return that:
     try:
         # SAVE THE DF Locally because this operation uses a lot of api pts wherever you do it. 
-        polygon_tickers_dataframe = pd.read_pickle(f"Stock_universe_{date}")
+        # polygon_tickers_dataframe = pd.read_pickle(f"Stock_universe_{date}")
         print("existing Universe for selected date found, loaded cache")
         return polygon_tickers_dataframe
     except:
