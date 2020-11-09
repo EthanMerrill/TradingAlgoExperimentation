@@ -59,7 +59,7 @@ import fastquant3
 import io
 from io import BytesIO
 from google.cloud import storage
-
+import math
 # Set api keys 
 
 # Setuo the API globally 
@@ -195,11 +195,17 @@ def get_entries(backtest):
 #%%
 
 def exits_helper(stop_price,temp_stop_price):
-    if ((stop_price<temp_stop_price) | (stop_price==None)):
+    try:
+        if ((stop_price<temp_stop_price) | (math.isnan(stop_price)==True) ):
+            return temp_stop_price
+        else:
+            print(type(stop_price), stop_price)
+            return stop_price
+    # if the stop field is empy, an error will be thrown, but we'll just put in the temp
+    except :
         return temp_stop_price
-    else:
-        return stop_price
 
+        
 # Exit Conditions Evaluation
 def get_exits(current_positions):
     """
@@ -213,17 +219,13 @@ def get_exits(current_positions):
     """
     if current_positions.empty == True:
         return current_positions
-    current_positions["temp_stop_price"] = np.vectorize(get_stop)(current_positions["symbol"],
-                                    date.today(),
-                                    current_positions["optimal_rsi_period"],
-                                    (current_positions["optimal_rsi_period"]*2),
-                                    stop_factor=3)
+    current_positions["temp_stop_price"] = current_positions.apply(lambda x:get_stop(x["symbol"],most_recent_weekday(), x["optimal_rsi_period"], (x["optimal_rsi_period"]*2), stop_factor=3), axis=1)
     # check if stop columns exist:
     if ('stop_price' in current_positions):
         # !!!!!!!!!!!!!check if there is data in columns if they exist
         #only move stop higher
         # make it faster using this:https://stackoverflow.com/questions/27474921/compare-two-columns-using-pandas
-        current_positions['stop_price'] = np.vectorize(exits_helper)(current_positions['stop_price'], current_positions['temp_stop_price'])
+        current_positions['stop_price'] = current_positions.apply(lambda x:exits_helper(x['stop_price'],x['temp_stop_price']), axis = 1)
     else:
         current_positions["stop_price"]=current_positions["temp_stop_price"]
     del current_positions["temp_stop_price"]
@@ -424,13 +426,12 @@ class order():
                 ),
                 stop_loss= dict(
                     stop_price= stop_price,
-                    limit_price= stop_price
+                    limit_price= stop_price*.95
                 )
             )
         except Exception as e:
                 print(f"OCO order failed with exception: {e}")
                 return
-
 
 #%%
 
@@ -445,9 +446,9 @@ def orderer(df, long_market_value, cash):
         # if RSI level is above top limit, sell
         rsi_upper_exceeded = active_positions.loc[active_positions["optimal_rsi_upper"]<=active_positions["RSI_current"]]
         if rsi_upper_exceeded.empty == False:
-            np.vectorize(order.sell)(rsi_upper_exceeded['symbol'], rsi_upper_exceeded['qty'])
+            rsi_upper_exceeded.apply(lambda x:order.sell(x['symbol'], x['qty']), axis=1)
         # update all trailing limit orders with new prices
-        np.vectorize(order.limit_sell)(active_positions["symbol"], active_positions['qty'], active_positions["stop_price"])
+        active_positions.apply(lambda x:order.limit_sell(x["symbol"], x['qty'], x["stop_price"]), axis=1)
 
     # if there is no quantity of a position, open an order to acquire it
     # This is designed so that in the future multiple new positions can be added
@@ -463,12 +464,13 @@ def orderer(df, long_market_value, cash):
         equity = long_market_value+cash
         purchase_cash = (equity*.1)
         # find number of shares which can be purchased with that amount
-        askprice = api.get_last_quote(new_positions['symbol'][0]).askprice
-        shares = purchase_cash//askprice
+        ask_price = api.get_last_quote(new_positions['symbol'][0]).askprice
+        shares = purchase_cash//ask_price
         # Find the correct lower stop price for the oco order:
         get_stop(new_positions["symbol"][0], date.today(), new_positions["optimal_rsi_period"][0], (new_positions["optimal_rsi_period"][0]*2),stop_factor=3)
-        order.buy(new_positions['symbol'][0],shares)
-        
+        # order.buy(new_positions['symbol'][0],shares)
+        limit_price = ask_price+((ask_price - new_positions['stop_price'][0])*2)
+        order.oco(new_positions['symbol'][0],shares, new_positions['stop_price'][0],limit_price)
     return df
 #%%
 def most_recent_weekday(offset=0):
@@ -517,8 +519,8 @@ if __name__ == "__main__":
         #get opportunities:
         # first, check if a backtest for the current day exists:
         try: 
-            backtest = pd.read_pickle(f"app/tmp/2020-11-05")
-            # backtest = cloud_connection.download_from_backtests(recent_weekday)
+            # backtest = pd.read_pickle(f"app/tmp/2020-11-05")
+            backtest = cloud_connection.download_from_backtests(recent_weekday)
         except :
             print(f'backtest fror current day not found, running for {recent_weekday} ')
             backtest = fastquant3.run_strategy_generator(recent_weekday)
@@ -550,7 +552,7 @@ if __name__ == "__main__":
     new_positions = get_exits(new_positions)
     #update RSI
     if new_positions.empty == False:
-        new_positions["RSI"] = np.vectorize(RSI_parser)(new_positions["symbol"],recent_weekday, new_positions["optimal_rsi_period"])
+        new_positions["RSI"] = new_positions.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
    
         # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
@@ -558,6 +560,8 @@ if __name__ == "__main__":
     # save the updated positions to the CLOUD
     cloud_connection.save_to_positions(new_positions, recent_weekday)
     cloud_connection.save_to_backtests(backtest,recent_weekday)
+
+    print('success!')
 #%%
     # add any positions not already in current positions to it
     # current_positions = current_positions.append(positions_df)
@@ -567,6 +571,7 @@ if __name__ == "__main__":
 
     # current_positions = current_positions.append(temp[0])
 #%%
+
 
     # current_positions = requests.get(f"{api_base}/v2/positions", headers=headers).json()
     # current_positions = pd.DataFrame(current_positions)
