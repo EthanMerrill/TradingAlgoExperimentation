@@ -55,9 +55,6 @@ import pandas as pd
 import alpaca_trade_api as tradeapi
 import numpy as np
 import fastquant3
-
-# #start a flask server to appease google cloud run
-# import app
 #google cloud imports
 import io
 from io import BytesIO
@@ -82,7 +79,7 @@ class cloud_object:
     def save_to_backtests(self, df, blob_name):
         pd.to_pickle(df,f"app/tmp/{str(blob_name)}")
         self.blob = self.bucket.blob(f'Positions/{str(blob_name)}')
-        self.blob.upload_from_filename(f"/tmp/{str(blob_name)}")
+        self.blob.upload_from_filename(f"app/tmp/{str(blob_name)}")
         return (str(blob_name))
 
     def save_to_positions(self, df, blob_name):
@@ -93,14 +90,14 @@ class cloud_object:
 
     def download_from_backtests(self, filename):
         self.blob = self.bucket.blob(f'Backtests/{str(filename)}')
-        self.blob.download_to_filename(filename)
-        unpickle = pd.read_pickle(filename)
+        self.blob.download_to_filename(f"app/tmp/{filename}")
+        unpickle = pd.read_pickle(f"app/tmp/{filename}")
         return unpickle
 
     def download_from_positions(self, filename):
         self.blob = self.bucket.blob(f'Positions/{str(filename)}')
-        self.blob.download_to_filename(filename)
-        unpickle = pd.read_pickle(filename)
+        self.blob.download_to_filename(f"app/tmp/{filename}")
+        unpickle = pd.read_pickle(f"app/tmp/{filename}")
         return unpickle
 
 
@@ -511,16 +508,17 @@ if __name__ == "__main__":
     new_positions = get_positions(yesterdays_positions)
     # cancel all existing orders for the Day
     api.cancel_all_orders()
-
+    #then, determine if new acquisitions can occur
     cash = float(api.get_account().cash)
     long_mkt_val = float(api.get_account().long_market_value)
-    #then, determine if new acquisitions can occur
+    
     equity = cash+long_mkt_val
     if cash > (equity*.1):
         #get opportunities:
         # first, check if a backtest for the current day exists:
         try: 
-            backtest = cloud_connection.download_from_backtests(recent_weekday)
+            backtest = pd.read_pickle(f"app/tmp/2020-11-05")
+            # backtest = cloud_connection.download_from_backtests(recent_weekday)
         except :
             print(f'backtest fror current day not found, running for {recent_weekday} ')
             backtest = fastquant3.run_strategy_generator(recent_weekday)
@@ -530,16 +528,21 @@ if __name__ == "__main__":
         cloud_connection.save_to_backtests(backtest,recent_weekday)
         buying_opp = get_entries(backtest)
         # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
-        i = 0
-        while i <= len(buying_opp):
-            if buying_opp["symbol"][i] not in new_positions.symbol.values:
-                purchase = buying_opp.loc[i]
-                break
-            else:
-                i=i+1
-        # Update the final df
-        # purchase.transpose
-        new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
+        purchase = None
+        try:
+            i = 0
+            while i <= len(buying_opp):
+                if buying_opp["symbol"][i] not in new_positions.symbol.values:
+                    purchase = buying_opp.loc[i]
+                    break
+                else:
+                    i=i+1
+            
+            # Update the final df if a new position is added
+            new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
+        except Exception as e:
+            print(f"all entry opportunities already owned, buying opportunities:{buying_opp}  {e}")
+
     # current_positions.set_index('symbol')
     #%%
     
