@@ -5,11 +5,6 @@ import json
 print("top of live_trader")
 # print(f"environ Variables: {os.environ}")
 # GET KEYS BEFORE IMPORTS (some files require env vars to be set before being called)
-try: 
-    import keys
-except Exception as e:
-    print("keys file not found")
-
 try:
     with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
         GACdata = json.load(f)
@@ -506,7 +501,21 @@ if __name__ == "__main__":
     # current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
 
     # # get current positions
-    yesterdays_positions = cloud_connection.download_from_positions(str(recent_weekday-timedelta(1)))
+    # if its monday, get positions from last friday, if that fails, keep going 1 day back till it works. 
+    # if (date.today.weekday() == 0):
+    #     previous_positions_date = recent_weekday-timedelta(2)
+    # else: 
+    #     previous_positions_date = recent_weekday
+    i = -1
+    while i>-10:
+        try:
+            yesterdays_positions = cloud_connection.download_from_positions(str(most_recent_weekday(i)))
+            break
+        except:
+            print(f"positions_for {recent_weekday} not found, going one more day back (most likely due to holiday)")
+            i=i-1
+
+    
     new_positions = get_positions(yesterdays_positions)
     # cancel all existing orders for the Day
     api.cancel_all_orders()

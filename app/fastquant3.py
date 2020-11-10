@@ -8,10 +8,6 @@ from datetime import datetime, timedelta, date
 import numpy as np
 from simple_rsi import callable_rsi_backtest
 import os
-try:
-    import keys
-except Exception as e:
-    print("keys file not found")
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
 ALPACA_KEY = os.environ['alpaca_paper']

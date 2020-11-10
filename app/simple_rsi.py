@@ -5,10 +5,6 @@ import backtrader as bt
 import alpaca_backtrader_api
 import backtrader.analyzers as btanalyzers
 import os
-try:
-    import keys
-except Exception as e:
-    print("keys file not found")
 
 ALPACA_API_KEY = os.environ['alpaca_paper']
 ALPACA_SECRET_KEY = os.environ['alpaca_secret_paper']
