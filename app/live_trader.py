@@ -61,9 +61,13 @@ import math
 # rest methods https://pypi.org/project/alpaca-trade-api/
 api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET-KEY") , base_url=api_base)
 
+# if app/tmp doesn't exist, make it:
+def ensure_dir(file_path):
+    directory = os.path.dirname(file_path)
+    if not os.path.exists(directory):
+        os.makedirs(directory)
 
 # Create a cloud object which can upload to positions or backtests easily
-
 class cloud_object:
     def __init__(self, BUCKET_NAME):
         # Setup Storage client
@@ -73,7 +77,7 @@ class cloud_object:
 
     def save_to_backtests(self, df, blob_name):
         pd.to_pickle(df,f"app/tmp/{str(blob_name)}")
-        self.blob = self.bucket.blob(f'Positions/{str(blob_name)}')
+        self.blob = self.bucket.blob(f'Backtests/{str(blob_name)}')
         self.blob.upload_from_filename(f"app/tmp/{str(blob_name)}")
         return (str(blob_name))
 
@@ -485,7 +489,7 @@ def most_recent_weekday(offset=0):
 
 #%%
 if __name__ == "__main__":
-
+    ensure_dir('app/tmp/')
     # print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
     # print(f"environ Variables: {os.environ}")
     cloud_connection = cloud_object('backtests-and-positions')
