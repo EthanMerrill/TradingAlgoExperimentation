@@ -509,7 +509,7 @@ if __name__ == "__main__":
     i = -1
     while i>-10:
         try:
-            recent_weekday_attempt = (str(most_recent_weekday(offset = i))
+            recent_weekday_attempt = (str(most_recent_weekday(offset = i)))
             yesterdays_positions = cloud_connection.download_from_positions(str(most_recent_weekday(offset = i)))
             break
         except Exception as e:
