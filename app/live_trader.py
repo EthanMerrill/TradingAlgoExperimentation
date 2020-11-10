@@ -509,10 +509,11 @@ if __name__ == "__main__":
     i = -1
     while i>-10:
         try:
-            yesterdays_positions = cloud_connection.download_from_positions(str(most_recent_weekday(i)))
+            recent_weekday_attempt = (str(most_recent_weekday(offset = i))
+            yesterdays_positions = cloud_connection.download_from_positions(str(most_recent_weekday(offset = i)))
             break
-        except:
-            print(f"positions_for {recent_weekday} not found, going one more day back (most likely due to holiday)")
+        except Exception as e:
+            print(f"positions_for {recent_weekday_attempt} not found, going one more day back (most likely due to holiday) {e}")
             i=i-1
 
     
@@ -571,32 +572,8 @@ if __name__ == "__main__":
     cloud_connection.save_to_backtests(backtest,recent_weekday)
 
     print('success!')
-#%%
-    # add any positions not already in current positions to it
-    # current_positions = current_positions.append(positions_df)
-    # dropping ALL duplicte values 
-    # current_positions.drop_duplicates(subset = "symbol", keep = False, inplace = True) 
-
-
-    # current_positions = current_positions.append(temp[0])
-#%%
-
-
-    # current_positions = requests.get(f"{api_base}/v2/positions", headers=headers).json()
-    # current_positions = pd.DataFrame(current_positions)
-    #get backtest data
-    
-    # Backtest = pd.read_pickle(f"Partial_Backtest_Save")
-
-    # get_entries(Backtest)
-
-#%%
-#######
-
-#%%
-"""
-get exits runs every day
-Backtester runs when entries are needed
-Get entries runs when entries are needed
-"""
-# docker build --pull --rm -f "Dockerfile" -t firstziplinealgo:latest "."
+    try:
+        os.system('sudo shutdown -h now')
+    except Exception as e:
+        print(f'shutdown failed: {e}')
+# https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
