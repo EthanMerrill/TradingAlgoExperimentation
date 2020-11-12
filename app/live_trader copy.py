@@ -511,7 +511,8 @@ if __name__ == "__main__":
         recent_weekday = most_recent_weekday(-1)
     # If none of the above are true, it is a weekday after 8, and the simple most recent weekday will work. 
 
-   
+    # # create empty current positions list:
+    # current_positions = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
 
     # # get current positions
     # if its monday, get positions from last friday, if that fails, keep going 1 day back till it works. 
@@ -545,17 +546,17 @@ if __name__ == "__main__":
         # first, check if a backtest for the current day exists:
         try: 
             backtest = pd.read_pickle(f"app/tmp/2020-11-09")
-            # print(f"getting backtest for {recent_weekday}") 
-            # backtest = cloud_connection.download_from_backtests(recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            # print(f"getting backtest for {recent_weekday}")
+            # backtest = cloud_connection.download_from_backtests(recent_weekday)
         except :
-            print(f'backtest for current day not found, running for {recent_weekday} ')
+            print(f'backtest fror current day not found, running for {recent_weekday} ')
             backtest = fastquant3.run_strategy_generator(recent_weekday)
         
+        # backtest = pd.read_pickle(keys.backtests_path /  "2020-11-03")
         backtest.set_index('symbol')
         # cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         buying_opp = get_entries(backtest)
         # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
-#%%
         MAX_NEW_POSITIONS = 5
         num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*.1))
         j = 0 
@@ -563,31 +564,25 @@ if __name__ == "__main__":
             purchase = None
             try:
                 i = 0
-                # Create a new_positions df from the best buying opportunity, if new positions df doesn't exist:
-                if(len(new_positions)==0):
-                     # # create empty current positions list:
-                    current_positions_template = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
-                    purchase = buying_opp.loc[i]
-                    # new_positions = purchase
-                    purchase = purchase.to_frame()
-                    purchase = purchase.transpose()
-                    new_positions = current_positions_template.append(purchase, verify_integrity=True, ignore_index=True)
-                    print(purchase)
-                    j = j+1
-                # Check to see if position already exists, add it if not:
-                while (i <= len(buying_opp)) & (j<num_new_positions):
-                    if (buying_opp["symbol"][i] not in new_positions["symbol"].values) :
+                while i <= len(buying_opp):
+                    print(type(buying_opp), type(new_positions["symbol"].values), str(buying_opp["symbol"][i]), new_positions["symbol"].values)
+                    if (new_positions == []) or (buying_opp["symbol"][i] not in new_positions["symbol"].values):
                         purchase = buying_opp.loc[i]
-                        new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
                         break
-                    i=i+1
-            
+                    else:
+                        i=i+1
+                
+                # Update the final df if a new position is added
+                print(f"Purchase of {purchase}")
+                if new_positions ==[]:
+                    new_positions = purchase
+                else:
+                    new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
             except Exception as e:
-                print(f"all entry opportunities already owned, buying opportunities:  {e}")
+                print(f"all entry opportunities already owned, buying opportunities: {buying_opp}  {e}")
             j = j+1
     # current_positions.set_index('symbol')
-#%%
-
+    #%%
     
     #Update Stops
     new_positions = get_exits(new_positions)
@@ -608,4 +603,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f'shutdown failed: {e}')
 # https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
-# %%
