@@ -544,17 +544,19 @@ if __name__ == "__main__":
         #get opportunities:
         # first, check if a backtest for the current day exists:
         try: 
-            backtest = pd.read_pickle(f"app/tmp/2020-11-09")
+            # backtest = pd.read_pickle(f"app/tmp/2020-11-09")
             # print(f"getting backtest for {recent_weekday}") 
-            # backtest = cloud_connection.download_from_backtests(recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            backtest = cloud_connection.download_from_backtests(recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         except :
             print(f'backtest for current day not found, running for {recent_weekday} ')
             backtest = fastquant3.run_strategy_generator(recent_weekday)
         
         backtest.set_index('symbol')
-        # cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         buying_opp = get_entries(backtest)
-        # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
+
+        # Save and wipe mem ASAP
+        cloud_connection.save_to_backtests(backtest,recent_weekday)
+        backtest = None
 #%%
         MAX_NEW_POSITIONS = 5
         num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*.1))
@@ -576,6 +578,7 @@ if __name__ == "__main__":
                     j = j+1
                 # Check to see if position already exists, add it if not:
                 while (i <= len(buying_opp)) & (j<num_new_positions):
+                # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
                     if (buying_opp["symbol"][i] not in new_positions["symbol"].values) :
                         purchase = buying_opp.loc[i]
                         new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
@@ -588,7 +591,6 @@ if __name__ == "__main__":
     # current_positions.set_index('symbol')
 #%%
 
-    
     #Update Stops
     new_positions = get_exits(new_positions)
     #update RSI
@@ -600,7 +602,7 @@ if __name__ == "__main__":
     new_positions = orderer(new_positions, long_mkt_val, cash)
     # save the updated positions to the CLOUD
     cloud_connection.save_to_positions(new_positions, recent_weekday)
-    cloud_connection.save_to_backtests(backtest,recent_weekday)
+    
 
     print('success!')
     try:

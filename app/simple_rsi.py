@@ -229,7 +229,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     cerebro.addanalyzer(btanalyzers.TimeReturn, timeframe=bt.TimeFrame.NoTimeFrame, data = data0, _name="basereturn")
 
     # cerebro.optstrategy(StFetcher, idx=[0,1])
-    theStrats = cerebro.run(cpu = 4)
+    theStrats = cerebro.run(runonce=False, exactbars=-1)
     
     # cerebro.plot()
     

@@ -140,11 +140,14 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
     # Add empty columns to dataframe
     results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
     # set certain columns to smaller data types
-    results_df.optimal_rsi_period.astype('int16')
-    results_df.optimal_rsi_lower.astype('int16')
-    results_df.optimal_rsi_upper.astype('int16')
-    results_df.roi.astype('float16')
-    
+    results_df.symbol = results_df.symbol.astype('string')
+    results_df.optimal_rsi_period = results_df.optimal_rsi_period.astype('int16')
+    results_df.optimal_rsi_lower = results_df.optimal_rsi_lower.astype('int16')
+    results_df.optimal_rsi_upper = results_df.optimal_rsi_upper.astype('int16')
+    results_df.roi = results_df.roi.astype('float16')
+    results_df.buy_and_hold = results_df.buy_and_hold.astype('float16')
+    results_df.profit = results_df.profit.astype('float32')
+    print(results_df.dtypes)
     symbol_count=0
     for symbol in df_of_stocks:
 
