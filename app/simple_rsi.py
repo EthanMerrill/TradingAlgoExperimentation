@@ -65,7 +65,7 @@ class BasicRSI(bt.Strategy):
         rsi_upper= 1,
         atrperiod=1,  # measure volatility over x days
         emaperiod=10,  # smooth out period for atr volatility
-        stopfactor=4.0,  # actual stop distance for smoothed atr
+        stopfactor=2.5,  # actual stop distance for smoothed atr
     )
 
     # The logging function for this strategy
@@ -229,7 +229,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     cerebro.addanalyzer(btanalyzers.TimeReturn, timeframe=bt.TimeFrame.NoTimeFrame, data = data0, _name="basereturn")
 
     # cerebro.optstrategy(StFetcher, idx=[0,1])
-    theStrats = cerebro.run(runonce=False, exactbars=-1)
+    theStrats = cerebro.run()
     
     # cerebro.plot()
     

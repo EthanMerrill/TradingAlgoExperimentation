@@ -22,7 +22,7 @@ def get_All_Tickers(date = (date.today())):
     #chech to see if a pickled version for requested date exists, if so, just return that:
     try:
         # SAVE THE DF Locally because this operation uses a lot of api pts wherever you do it. 
-        # polygon_tickers_dataframe = pd.read_pickle(f"Stock_universe_{date}")
+        polygon_tickers_dataframe = pd.read_pickle(f"Stock_universe_{date}")
         print("existing Universe for selected date found, loaded cache")
         return polygon_tickers_dataframe
     except:
@@ -136,17 +136,31 @@ def humanize_time(secs):
 
 #%%
 def multi_stock_rsi_optimize(df_of_stocks, end_date):
+    TEMP_SAVE_DIR = f'_backtest'
     start_time = time()
+
+        # set certain columns to smaller data types
+    dtypes_dict = {
+        'symbol':'string',
+        'optimal_rsi_period':'int16',
+        'optimal_rsi_lower':'int16',
+        'optimal_rsi_upper':'int16',
+        'roi':'float16',
+        'buy_and_hold':'float16',
+        'profit':'float32'
+    }
     # Add empty columns to dataframe
     results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
-    # set certain columns to smaller data types
-    results_df.symbol = results_df.symbol.astype('string')
-    results_df.optimal_rsi_period = results_df.optimal_rsi_period.astype('int16')
-    results_df.optimal_rsi_lower = results_df.optimal_rsi_lower.astype('int16')
-    results_df.optimal_rsi_upper = results_df.optimal_rsi_upper.astype('int16')
-    results_df.roi = results_df.roi.astype('float16')
-    results_df.buy_and_hold = results_df.buy_and_hold.astype('float16')
-    results_df.profit = results_df.profit.astype('float32')
+    results_df = results_df.astype(dtypes_dict)
+
+    # results_df.symbol = results_df.symbol.astype('string')
+    # results_df.optimal_rsi_period = results_df.optimal_rsi_period.astype('int16')
+    # results_df.optimal_rsi_lower = results_df.optimal_rsi_lower.astype('int16')
+    # results_df.optimal_rsi_upper = results_df.optimal_rsi_upper.astype('int16')
+    # results_df.roi = results_df.roi.astype('float16')
+    # results_df.buy_and_hold = results_df.buy_and_hold.astype('float16')
+    # results_df.profit = results_df.profit.astype('float32')
+
     print(results_df.dtypes)
     symbol_count=0
     for symbol in df_of_stocks:
@@ -158,12 +172,19 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
         time_left = ((len(df_of_stocks)-(symbol_count+1))*time_one_symbol)
         print(f"projected time left: {humanize_time(time_left)}")
         # Temp save function to salvage some data from a very long test [depreciated]
-        # if (symbol_count % 50 == 0):
-        #     results_df.to_pickle(keys.backtests_path/'Partials'/f"{end_date}_Partial_Backtest_Save")
+        if (symbol_count % 50 == 0 and symbol_count != 0):
+            # if this is not the first cache save, get the previous one, and merge it to the existing one
+            if (symbol_count != 50):
+                results_df = results_df.append(pd.read_pickle(TEMP_SAVE_DIR))
+            # Save the newly merged, larger dataframe locally
+            results_df.to_pickle(TEMP_SAVE_DIR)
+            results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
+            results_df = results_df.astype(dtypes_dict)
+            print('partial save and wipe complete')
         print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
         symbol_count = symbol_count+1
 
-
+    results_df = pd.read_pickle(TEMP_SAVE_DIR)
     end_time = time()
     time_basic = end_time-start_time
 

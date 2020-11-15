@@ -226,7 +226,7 @@ def get_exits(current_positions):
     """
     if current_positions.empty == True:
         return current_positions
-    current_positions["temp_stop_price"] = current_positions.apply(lambda x:get_stop(x["symbol"],most_recent_weekday(), x["optimal_rsi_period"], (x["optimal_rsi_period"]*2), stop_factor=3), axis=1)
+    current_positions["temp_stop_price"] = current_positions.apply(lambda x:get_stop(x["symbol"],most_recent_weekday(), x["optimal_rsi_period"], (x["optimal_rsi_period"]*2), stop_factor=2.5), axis=1)
     # check if stop columns exist:
     if ('stop_price' in current_positions):
         # !!!!!!!!!!!!!check if there is data in columns if they exist
@@ -371,8 +371,8 @@ def get_positions(df = None):
 
     #  if old positions has data, update the new positions and return it. 
     if( old_positions is not None):
-        new_positions = old_positions.update(new_positions)
-    return new_positions
+        old_positions.update(new_positions)
+    return old_positions
 
 #%%
 class order():
@@ -519,12 +519,13 @@ if __name__ == "__main__":
     #     previous_positions_date = recent_weekday-timedelta(2)
     # else: 
     #     previous_positions_date = recent_weekday
-    i = -1
+    i = 0
     while i>-10:
         try:
             recent_weekday_attempt = (str(most_recent_weekday(offset = i)))
-            yesterdays_positions = cloud_connection.download_from_positions(str(most_recent_weekday(offset = i)))
+            yesterdays_positions = cloud_connection.download_from_positions(recent_weekday_attempt)
             print(f'positions found for {recent_weekday_attempt}')
+
             new_positions = get_positions(yesterdays_positions)
             break
         except Exception as e:
@@ -558,7 +559,7 @@ if __name__ == "__main__":
         cloud_connection.save_to_backtests(backtest,recent_weekday)
         backtest = None
 #%%
-        MAX_NEW_POSITIONS = 5
+        MAX_NEW_POSITIONS = 2
         num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*.1))
         j = 0 
         while j<num_new_positions:
