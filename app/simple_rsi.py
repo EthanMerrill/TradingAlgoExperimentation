@@ -5,10 +5,36 @@ import backtrader as bt
 import alpaca_backtrader_api
 import backtrader.analyzers as btanalyzers
 import os
+################################
 
-ALPACA_API_KEY = os.environ['alpaca_paper']
-ALPACA_SECRET_KEY = os.environ['alpaca_secret_paper']
-ALPACA_API_SECRET_KEY = os.environ['alpaca_secret_paper']
+# import json
+# from datetime import date, timedelta
+# import datetime as dt
+
+# try:
+#     with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
+#         GACdata = json.load(f)
+
+#     with open('ALPACA_KEYS.json') as m:
+#         ALPACA_DATA = json.load(m)
+
+#     os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
+#     os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
+#     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
+#     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
+# except Exception as e:
+#     print(f"Error loading keys from google key manager: error {e}")
+
+    
+##################################
+try:
+
+    ALPACA_API_KEY = os.environ['alpaca_paper']
+    ALPACA_SECRET_KEY = os.environ['alpaca_secret_paper']
+    ALPACA_API_SECRET_KEY = os.environ['alpaca_secret_paper']
+except Exception as e:
+    print(f"issue importing alpaca keys{e}")
+
 """
 You have 3 options: 
  - backtest (IS_BACKTEST=True, IS_LIVE=False)
@@ -199,7 +225,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     store = alpaca_backtrader_api.AlpacaStore(
         key_id= os.environ["alpaca_paper"],
         secret_key=os.environ["alpaca_secret_paper"],
-        paper=not False,
+        paper=True,
         usePolygon=True
     )
     DataFactory = store.getdata  # or use alpaca_backtrader_api.AlpacaData
@@ -210,15 +236,15 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
                         todate=end_date,
                         timeframe=bt.TimeFrame.Days)
 
-    # broker = store.getbroker()
-    # cerebro.setbroker(broker)
+    broker = store.getbroker()
+    cerebro.setbroker(broker)
     #DATA
     cerebro.adddata(data0)
     #STRATEGY
     cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = (period*2), emaperiod = period, sizer = bt.sizers.AllInSizer())
     # cerebro.addstrategy(BuyAndHold_1)
     # backtrader broker set initial simulated cash
-    cerebro.broker.setcash(cash)
+    cerebro.broker.get_cash()
 
     # Apply Total, Average, Compound and Annualized Returns calculated using a logarithmic approach
     #ANALYZER
@@ -231,8 +257,8 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     # cerebro.optstrategy(StFetcher, idx=[0,1])
     theStrats = cerebro.run()
     
-    # cerebro.plot()
-    
+    cerebro.plot()
+    print(theStrats[0])
     return theStrats[0]
 # results.analyzers.mysharpe.get_analysis
 
@@ -241,9 +267,18 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
 #%%
    
 # if __name__ == '__main__':
-    # import logging
-    # logging.basicConfig(format='%(asctime)s %(message)s', level=logging.info())
-    # setup params
+
+
+
+#     os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
+#     os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
+#     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
+#     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
+
+#     thing = callable_rsi_backtest('aapl',  dt.datetime(2020, 6, 1), date.today(), 14, 30, 70, 1000)
+#     print(thing)
+
+
 
     # # Create a cerebro entity
     # cerebro = bt.Cerebro()

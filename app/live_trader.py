@@ -180,7 +180,7 @@ def RSI(df, period, base="c"):
 
 # Entry Contiditions Evaluation
 def get_entries(backtest):
-
+    #create the alpha column
     backtest["alpha"] = backtest["roi"]-backtest["buy_and_hold"]
     #  every positive alpha item:
     backtest = backtest.loc[backtest["alpha"]>0]
@@ -371,9 +371,10 @@ def get_positions(df = None):
 
     #  if old positions has data, update the new positions and return it. 
     if( old_positions is not None):
-        old_positions.update(new_positions)
+        old_positions = old_positions.combine_first(new_positions)
+        print(old_positions)
     return old_positions
-
+ 
 #%%
 class order():
 # class keeps all the order types tidy
@@ -386,7 +387,7 @@ class order():
                 side='sell',
                 type='stop',
                 stop_price = price,
-                time_in_force='gtc'
+                time_in_force='day'
             )
         except Exception as e:
                 print(f"Limit Sell Failed with exception: {e}")
@@ -399,7 +400,7 @@ class order():
                 qty=qty,
                 side='sell',
                 type='market',
-                time_in_force='gtc'
+                time_in_force='day'
             )
         except Exception as e:
                 print(f"sell failed with exception: {e}")
@@ -412,7 +413,7 @@ class order():
                 qty=qty,
                 side='buy',
                 type='market',
-                time_in_force='gtc'
+                time_in_force='day'
             )
         except Exception as e:
                 print(f"buy failed with exception: {e}")
@@ -425,7 +426,7 @@ class order():
                 symbol= symbol,
                 type= "market",
                 qty= qty,
-                time_in_force= "gtc",
+                time_in_force= "day",
                 order_class= "bracket",
                 take_profit= dict(
                     limit_price = limit_price
