@@ -236,15 +236,15 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
                         todate=end_date,
                         timeframe=bt.TimeFrame.Days)
 
-    broker = store.getbroker()
-    cerebro.setbroker(broker)
+    # broker = store.getbroker()
+    # cerebro.setbroker(broker) ######FOR some reason setting a broker screws evertything up
     #DATA
     cerebro.adddata(data0)
     #STRATEGY
     cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = (period*2), emaperiod = period, sizer = bt.sizers.AllInSizer())
     # cerebro.addstrategy(BuyAndHold_1)
     # backtrader broker set initial simulated cash
-    cerebro.broker.get_cash()
+    cerebro.broker.setcash(cash)
 
     # Apply Total, Average, Compound and Annualized Returns calculated using a logarithmic approach
     #ANALYZER

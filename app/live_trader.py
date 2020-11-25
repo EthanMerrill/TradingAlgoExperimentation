@@ -512,8 +512,6 @@ if __name__ == "__main__":
         recent_weekday = most_recent_weekday(-1)
     # If none of the above are true, it is a weekday after 8, and the simple most recent weekday will work. 
 
-   
-
     # # get current positions
     # if its monday, get positions from last friday, if that fails, keep going 1 day back till it works. 
     # if (date.today.weekday() == 0):
@@ -594,12 +592,12 @@ if __name__ == "__main__":
 #%%
 
     #Update Stops
+
     new_positions = get_exits(new_positions)
-    #update RSI
-    if new_positions.empty == False:
-        new_positions["RSI"] = new_positions.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
-   
-        # new_positions.loc[len(new_positions)] = purchase
+#update RSI
+    new_positions["RSI"] = new_positions.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
+
+    # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
     new_positions = orderer(new_positions, long_mkt_val, cash)
     # save the updated positions to the CLOUD
