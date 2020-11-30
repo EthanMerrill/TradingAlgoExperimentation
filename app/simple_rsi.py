@@ -1,29 +1,30 @@
 # https://github.com/ChakshuGupta13/technical-indicators-backtesting/blob/master/RSI.py
 #%%
 from datetime import datetime
+from time import time
 import backtrader as bt
 import alpaca_backtrader_api
 import backtrader.analyzers as btanalyzers
 import os
 ################################
 
-# import json
-# from datetime import date, timedelta
-# import datetime as dt
+import json
+from datetime import date, timedelta
+import datetime as dt
 
-# try:
-#     with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
-#         GACdata = json.load(f)
+try:
+    with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
+        GACdata = json.load(f)
 
-#     with open('ALPACA_KEYS.json') as m:
-#         ALPACA_DATA = json.load(m)
+    with open('ALPACA_KEYS.json') as m:
+        ALPACA_DATA = json.load(m)
 
-#     os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
-#     os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
-#     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
-#     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
-# except Exception as e:
-#     print(f"Error loading keys from google key manager: error {e}")
+    os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
+    os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
+    os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
+    os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
+except Exception as e:
+    print(f"Error loading keys from google key manager: error {e}")
 
     
 ##################################
@@ -118,7 +119,7 @@ class BasicRSI(bt.Strategy):
 
     def stop(self):
         self.stop_val = self.broker.get_value()
-        self.pnl_val = self.stop_val - self.start_val
+        self.p.pnl_val = self.stop_val - self.start_val
         if self.p.verbose == True:
             print('==================================================')
             print('Starting Value - %.2f' % self.broker.startingcash)
@@ -218,7 +219,8 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     # import logging
     # logging.basicConfig(format='%(asctime)s %(message)s', level=logging.info())
 # Create a cerebro entity
-
+    # Start the timer!
+    start_time = time()
     
     cerebro = bt.Cerebro()
     
@@ -241,7 +243,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     #DATA
     cerebro.adddata(data0)
     #STRATEGY
-    cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = (period*2), emaperiod = period, sizer = bt.sizers.AllInSizer())
+    cerebro.optstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
     # cerebro.addstrategy(BuyAndHold_1)
     # backtrader broker set initial simulated cash
     cerebro.broker.setcash(cash)
@@ -255,15 +257,33 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     cerebro.addanalyzer(btanalyzers.TimeReturn, timeframe=bt.TimeFrame.NoTimeFrame, data = data0, _name="basereturn")
 
     # cerebro.optstrategy(StFetcher, idx=[0,1])
-    theStrats = cerebro.run()
+    theStrats = cerebro.run(maxcpus=1)
     
-    cerebro.plot()
-    print(theStrats[0])
-    return theStrats[0]
+    # cerebro.plot()
+    # print(theStrats[0])
+
+    
+    # Calculate total time taken by the function
+    end_time = time()
+    time_basic = end_time-start_time
+
+
+    return theStrats, time_basic
 # results.analyzers.mysharpe.get_analysis
 
 
-# returnedStrats = callable_rsi_backtest("AAPL",datetime(2019, 1, 1), datetime(2020, 10, 26),5, 30, 70,10000)
+# returnedStrats, time_elapsed = callable_rsi_backtest("PYPL",datetime(2019, 1, 1), datetime(2019, 12, 31),5, 30, [61,75,74,73,72,71,70,60,50],1000)
+
+# strats = [x[0] for x in returnedStrats]
+# for i, strat in enumerate(strats):
+#     # rets = strat.analyzers.returns.get_analysis()
+#     rets = list(strat.analyzers.returns.get_analysis().items())[0][1]
+#     base_rets = strat.analyzers.basereturn.get_analysis()
+#     base_rets = list(base_rets.items())[0][1]
+#     profit = strat.p.pnl_val
+#     print(i, profit, rets, base_rets)
+
+# print(max(list(strat.analyzers.returns.get_analysis().items())[0][1] for strat in strats))
 #%%
    
 # if __name__ == '__main__':

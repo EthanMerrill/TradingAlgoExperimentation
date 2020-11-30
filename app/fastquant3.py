@@ -68,8 +68,8 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     periods_list = np.arange(periods_list[0],periods_list[1],periods_list[2], dtype=int)
     rsi_lower_list = np.arange(rsi_lower_list[0],rsi_lower_list[1],rsi_lower_list[2], dtype=int)
     rsi_upper_list = np.arange(rsi_upper_list[0],rsi_upper_list[1],rsi_upper_list[2], dtype=int)
-    print(f"total possiblities:{len(periods_list)*len(rsi_lower_list)*len(rsi_upper_list)}")
-    # Make a 3grid of 0 placeholders
+    # print(f"total possiblities:{len(periods_list)*len(rsi_lower_list)*len(rsi_upper_list)}")
+    # Make a 3d grid of 0 placeholders
     period_grid = np.zeros(shape=(len(periods_list),len(rsi_lower_list),len(rsi_upper_list)))
  
     ## RSI Optimization; run the grid search
@@ -153,37 +153,58 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
     results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
     results_df = results_df.astype(dtypes_dict)
 
-    # results_df.symbol = results_df.symbol.astype('string')
-    # results_df.optimal_rsi_period = results_df.optimal_rsi_period.astype('int16')
-    # results_df.optimal_rsi_lower = results_df.optimal_rsi_lower.astype('int16')
-    # results_df.optimal_rsi_upper = results_df.optimal_rsi_upper.astype('int16')
-    # results_df.roi = results_df.roi.astype('float16')
-    # results_df.buy_and_hold = results_df.buy_and_hold.astype('float16')
-    # results_df.profit = results_df.profit.astype('float32')
 
     print(results_df.dtypes)
     symbol_count=0
     for symbol in df_of_stocks:
 
-        symbol_dict, time_one_symbol = rsi_optimizer([3,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date)
-        results_df = results_df.append(symbol_dict, ignore_index=True)
+        # symbol_dict, time_one_symbol = rsi_optimizer([3,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date)
+        try:
+            returnedStrats, time_elapsed = callable_rsi_backtest(symbol, datetime(2020,6,1), end_date, [3,34,10], [30,41,5], [64,75,5], 1000)
+            # extract just the useful parts of the returned strats
+            strats = [x[0] for x in returnedStrats]
+            # for i, strat in enumerate(strats):
+            #     rets = strat.analyzers.returns.get_analysis()
+            #     base_rets = list(strat.analyzers.basereturn.get_analysis().items())[0][1]
 
-        # Time calculation function
-        time_left = ((len(df_of_stocks)-(symbol_count+1))*time_one_symbol)
-        print(f"projected time left: {humanize_time(time_left)}")
-        # Temp save function to salvage some data from a very long test [depreciated]
-        if (symbol_count % 50 == 0 and symbol_count != 0):
-            # if this is not the first cache save, get the previous one, and merge it to the existing one
-            if (symbol_count != 50):
-                results_df = results_df.append(pd.read_pickle(TEMP_SAVE_DIR))
-            # Save the newly merged, larger dataframe locally
-            results_df.to_pickle(TEMP_SAVE_DIR)
-            results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
-            results_df = results_df.astype(dtypes_dict)
-            print('partial save and wipe complete')
-        print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
-        symbol_count = symbol_count+1
+            #     profit = strat.p.pnl_val
+            #     print(profit, rets, base_rets)
 
+
+            # Best Possible Strategy:
+            bestStrat = max(strats, key = lambda item:list(item.analyzers.returns.get_analysis().items())[0][1] )
+            # get params and all other information from the best possible strat and add them to a dict
+            symbol_dict = {
+                "symbol":symbol,
+                "optimal_rsi_period" : bestStrat.p.rsi_period,
+                "optimal_rsi_lower" : bestStrat.p.rsi_lower,
+                "optimal_rsi_upper" : bestStrat.p.rsi_upper,
+                "profit":bestStrat.p.pnl_val,
+                "roi": bestStrat.analyzers.returns.get_analysis(),
+                "buy_and_hold": list(bestStrat.analyzers.basereturn.get_analysis().items())[0][1]
+            }
+
+
+            results_df = results_df.append(symbol_dict, ignore_index=True)
+
+            # Time calculation function
+            time_left = ((len(df_of_stocks)-(symbol_count+1))*time_elapsed)
+            print(f"projected time left: {humanize_time(time_left)}")
+            # Temp save function to salvage some data from a very long test [depreciated]
+            if (symbol_count % 50 == 0 and symbol_count != 0):
+                # if this is not the first cache save, get the previous one, and merge it to the existing one
+                if (symbol_count != 50):
+                    results_df = results_df.append(pd.read_pickle(TEMP_SAVE_DIR))
+                # Save the newly merged, larger dataframe locally
+                results_df.to_pickle(TEMP_SAVE_DIR)
+                results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
+                results_df = results_df.astype(dtypes_dict)
+                print('partial save and wipe complete')
+            print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
+            symbol_count = symbol_count+1
+        except Exception as e:
+            print(f"error occured in rsi_optimizer during symbol: {symbol}: {e}")
+            pass     
     results_df = pd.read_pickle(TEMP_SAVE_DIR)
     end_time = time()
     time_basic = end_time-start_time
