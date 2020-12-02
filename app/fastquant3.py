@@ -32,7 +32,7 @@ def get_All_Tickers(date = (date.today())):
     # function to find & filter all symbols for any date
     # #Get all tickers:
     try:
-        polygonTickersData = requests.get(f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/STOCKS/{str(date)}?unadjusted=false&apiKey={ALPACA_KEY}").json().get("results")
+        polygonTickersData = requests.get(f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/STOCKS/{str(date)}?unadjusted=true&apiKey={ALPACA_KEY}").json().get("results")
 
         polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
         print(polygon_tickers_dataframe.head())
@@ -48,6 +48,9 @@ def get_All_Tickers(date = (date.today())):
     polygon_tickers_dataframe.reset_index(inplace = True)
     # polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
     return polygon_tickers_dataframe
+#%%
+def tickers_filter(tickers_list):
+    requests.get()
 
 # %%
 
