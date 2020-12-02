@@ -214,7 +214,7 @@ class StFetcher(object):
         return obj
 
 #%%
-def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, cash):
+def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, cash, maxcpus = None, plot = False):
 
     # import logging
     # logging.basicConfig(format='%(asctime)s %(message)s', level=logging.info())
@@ -242,9 +242,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     # cerebro.setbroker(broker) ######FOR some reason setting a broker screws evertything up
     #DATA
     cerebro.adddata(data0)
-    #STRATEGY
-    cerebro.optstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
-    # cerebro.addstrategy(BuyAndHold_1)
+    
     # backtrader broker set initial simulated cash
     cerebro.broker.setcash(cash)
 
@@ -256,19 +254,30 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     cerebro.addanalyzer(btanalyzers.TimeDrawDown, _name="timedraw")
     cerebro.addanalyzer(btanalyzers.TimeReturn, timeframe=bt.TimeFrame.NoTimeFrame, data = data0, _name="basereturn")
 
-    # cerebro.optstrategy(StFetcher, idx=[0,1])
-    theStrats = cerebro.run(maxcpus=1)
-    
-    # cerebro.plot()
-    # print(theStrats[0])
+
+    #STRATEGY
+    if maxcpus != 1:
+
+        cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
+    else: 
+
+        cerebro.optstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
+
+    theStrats=cerebro.run(maxcpus=maxcpus)
 
     
+    if plot == True:
+        cerebro.plot()
+
     # Calculate total time taken by the function
     end_time = time()
     time_basic = end_time-start_time
 
-
     return theStrats, time_basic
+
+
+
+    
 # results.analyzers.mysharpe.get_analysis
 
 
