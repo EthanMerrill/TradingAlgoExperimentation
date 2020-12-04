@@ -237,7 +237,7 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
                         fromdate=start_date,
                         todate=end_date,
                         timeframe=bt.TimeFrame.Days)
-
+    
     # broker = store.getbroker()
     # cerebro.setbroker(broker) ######FOR some reason setting a broker screws evertything up
     #DATA

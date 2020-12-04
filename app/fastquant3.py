@@ -114,61 +114,12 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
         "buy_and_hold": list(bestStrat.analyzers.basereturn.get_analysis().items())[0][1]
     }
 
-    # best_params_position = np.unravel_index(period_grid.argmax(), period_grid.shape)
-    # # find position of highest profit
-    # optimal_rsi_period = periods_list[best_params_position[0]]
-    # optimal_rsi_lower = rsi_lower_list[best_params_position[1]]
-    # optimal_rsi_upper = rsi_upper_list[best_params_position[2]]
-    # profit = np.amax(period_grid)
-
-    # #calculate the percent return of the strategy (ROI)
-    # roi = profit/init_cash
-
-    # # calculate change in the equity over the time period 
-    # # buy_and_hold = (stock_data_df["close"].iloc[-1]-stock_data_df["close"].iloc[0])/stock_data_df["close"].iloc[0]
-    # buy_and_hold = results.analyzers.getbyname("basereturn").get_analysis()
-    # #TO get the data out, you have to do this: it basically takes the data out of its ordered list, or collection, then gets it within 2 indexes...
-    # buy_and_hold = list(buy_and_hold.items())[0][1]
-
-    # # make a dict with the values to return
-    # return_dict = {
-    #     "symbol":symbol,
-    #     "optimal_rsi_period" : optimal_rsi_period,
-    #     "optimal_rsi_lower" : optimal_rsi_lower,
-    #     "optimal_rsi_upper" : optimal_rsi_upper,
-    #     "profit":profit,
-    #     "roi": roi,
-    #     "buy_and_hold": buy_and_hold ### !!! TEMP NOT WORKING
-    # }
 
     # Calculate total time taken by the function
     end_time = time()
     time_basic = end_time-start_time
 
     return return_dict, time_basic
-
-# OLD CODE TO USE a Single CPU and multiOptimize in the backtrader, not locally with grid optimization
-# returnedStrats, time_elapsed = callable_rsi_backtest(symbol, datetime(2020,6,1), end_date, [3,34,10], [30,41,5], [64,75,5], 1000, 1, False)
-# # extract just the useful parts of the returned strats
-# strats = [x[0] for x in returnedStrats]
-
-
-# # Best Possible Strategy:
-# bestStrat = max(strats, key = lambda item:list(item.analyzers.returns.get_analysis().items())[0][1] )
-# # get params and all other information from the best possible strat and add them to a dict
-# symbol_dict = {
-#     "symbol":symbol,
-#     "optimal_rsi_period" : bestStrat.p.rsi_period,
-#     "optimal_rsi_lower" : bestStrat.p.rsi_lower,
-#     "optimal_rsi_upper" : bestStrat.p.rsi_upper,
-#     "profit":bestStrat.p.pnl_val,
-#     "roi": bestStrat.analyzers.returns.get_analysis(),
-#     "buy_and_hold": list(bestStrat.analyzers.basereturn.get_analysis().items())[0][1]
-# }
-
-
-# results_df = results_df.append(symbol_dict, ignore_index=True)
-
 
 
 # https://bbs.archlinux.org/viewtopic.php?id=77634
