@@ -1,5 +1,4 @@
-
-
+#%%
 # this file handles all the communications with APIS such as alpaca and google cloud
 # general imports 
 import requests
@@ -99,3 +98,5 @@ class cloud_object:
         self.blob.download_to_filename(f"app/tmp/positions/positions-{filename}")          
         unpickle = pd.read_pickle(f"app/tmp/Positions/positions-{filename}")
         return unpickle
+
+#%%

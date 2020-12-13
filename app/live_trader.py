@@ -166,7 +166,8 @@ def get_stop(symbol, end_date, ema_period, atr_period, stop_factor=3):
     start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
     end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
-    df = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey"+os.environ["alpaca_live"]).json().get("results")
+    polygon_symbol_request =  (f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey="+os.environ["alpaca_live"])
+    df = requests.get(polygon_symbol_request).json().get("results")
 
      #shove it in a dataframe real quick:
     df = pd.DataFrame.from_dict(df)
@@ -501,7 +502,6 @@ if __name__ == "__main__":
             j = j+1
     # current_positions.set_index('symbol')
 #%%
- 
     #Update Stops
 
     updated_portfolio = get_exits(updated_portfolio)
