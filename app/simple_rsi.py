@@ -5,26 +5,28 @@ from time import time
 import backtrader as bt
 import alpaca_backtrader_api
 import backtrader.analyzers as btanalyzers
+import backtrader.filters as btfilters
 import os
+import traceback
 ################################
 
-import json
-from datetime import date, timedelta
-import datetime as dt
+# import json
+# from datetime import date, timedelta
+# import datetime as dt
 
-try:
-    with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
-        GACdata = json.load(f)
+# try:
+#     with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
+#         GACdata = json.load(f)
 
-    with open('ALPACA_KEYS.json') as m:
-        ALPACA_DATA = json.load(m)
+#     with open('ALPACA_KEYS.json') as m:
+#         ALPACA_DATA = json.load(m)
 
-    os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
-    os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
-    os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
-    os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
-except Exception as e:
-    print(f"Error loading keys from google key manager: error {e}")
+#     os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
+#     os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
+#     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
+#     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
+# except Exception as e:
+#     print(f"Error loading keys from google key manager: error {e}")
 
     
 ##################################
@@ -48,20 +50,20 @@ USE_POLYGON = True
 
 
 #########################################
-# Buy and hold strat: https://www.backtrader.com/blog/2019-06-13-buy-and-hold/buy-and-hold/
-class BuyAndHold_1(bt.Strategy):
-    def start(self):
-        self.val_start = self.broker.get_cash()  # keep the starting cash
+# # Buy and hold strat: https://www.backtrader.com/blog/2019-06-13-buy-and-hold/buy-and-hold/
+# class BuyAndHold_1(bt.Strategy):
+#     def start(self):
+#         self.val_start = self.broker.get_cash()  # keep the starting cash
 
-    def nextstart(self):
-        # Buy all the available cash
-        size = int(self.broker.get_cash() / self.data)
-        self.buy(size=size)
+#     def nextstart(self):
+#         # Buy all the available cash
+#         size = int(self.broker.get_cash() / self.data)
+#         self.buy(size=size)
 
-    def stop(self):
-        # calculate the actual returns
-        self.roi = (self.broker.get_value() / self.val_start) - 1.0
-        print('ROI:        {:.2f}%'.format(100.0 * self.roi))
+#     def stop(self):
+#         # calculate the actual returns
+#         self.roi = (self.broker.get_value() / self.val_start) - 1.0
+#         print('ROI:        {:.2f}%'.format(100.0 * self.roi))
 
 
 ##########################################
@@ -78,7 +80,7 @@ class BasicRSI(bt.Strategy):
     def notify_data(self, data, status, *args, **kwargs):
         super().notify_data(data, status, *args, **kwargs)
         if self.p.verbose == True: 
-             print('*' * 5, 'DATA NOTIF:', data._getstatusname(status), *args)
+             print('DATA NOTIF:', data._getstatusname(status), *args)
         if data._getstatusname(status) == "LIVE":
             self.live_bars = True
     # stuff that can be passed to the class: https://www.backtrader.com/docu/concepts/
@@ -134,7 +136,8 @@ class BasicRSI(bt.Strategy):
                 # Trailing Stop Indicator
         self.stoptrailer = st = StopTrailer(atrperiod=self.p.atrperiod,
                                             emaperiod=self.p.emaperiod,
-                                            stopfactor=self.p.stopfactor)
+                                            stopfactor=self.p.stopfactor
+                                            )
         # Exit Criteria (Stop Trail) for long / short positions
         self.exit_long = bt.ind.CrossDown(self.data,
                                           st.stop_long, plotname='Exit Long')
@@ -203,27 +206,8 @@ class StopTrailer(bt.Indicator):
 
 
 ##################
-# used for running multiple distinct classes...https://www.backtrader.com/blog/posts/2016-10-29-strategy-selection/strategy-selection/
-class StFetcher(object):
-    _STRATS = [BasicRSI, BuyAndHold_1]
 
-    def __new__(cls, *args, **kwargs):
-        idx = kwargs.pop('idx')
-
-        obj = cls._STRATS[idx](*args, **kwargs)
-        return obj
-
-#%%
-def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, cash, maxcpus = None, plot = False):
-
-    # import logging
-    # logging.basicConfig(format='%(asctime)s %(message)s', level=logging.info())
-# Create a cerebro entity
-    # Start the timer!
-    start_time = time()
-    
-    cerebro = bt.Cerebro()
-    
+def get_symbol_data(symbol, start_date, end_date):
     store = alpaca_backtrader_api.AlpacaStore(
         key_id= os.environ["alpaca_paper"],
         secret_key=os.environ["alpaca_secret_paper"],
@@ -232,39 +216,54 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
     )
     DataFactory = store.getdata  # or use alpaca_backtrader_api.AlpacaData
 
-    data0 = DataFactory(dataname=symbol1,
+    data0 = DataFactory(dataname=symbol,
                         historical=True,
                         fromdate=start_date,
                         todate=end_date,
                         timeframe=bt.TimeFrame.Days)
+
+    return data0
+#%%
+def callable_rsi_backtest(symbol, data0, period, lower, upper, cash, maxcpus = None, plot = False):
+
+# Create a cerebro entity
+    # Start the timer!
+    start_time = time()
     
+    cerebro = bt.Cerebro()
+        
     # broker = store.getbroker()
     # cerebro.setbroker(broker) ######FOR some reason setting a broker screws evertything up
     #DATA
+    # data0.addfilter(btfilters.SessionFiller)
     cerebro.adddata(data0)
     
     # backtrader broker set initial simulated cash
     cerebro.broker.setcash(cash)
 
     # Apply Total, Average, Compound and Annualized Returns calculated using a logarithmic approach
-    #ANALYZER
+    # #ANALYZER
     cerebro.addanalyzer(btanalyzers.Returns, _name="returns")
     cerebro.addanalyzer(btanalyzers.SharpeRatio, _name="mysharpe")
     cerebro.addanalyzer(btanalyzers.DrawDown, _name="drawdown")
     cerebro.addanalyzer(btanalyzers.TimeDrawDown, _name="timedraw")
     cerebro.addanalyzer(btanalyzers.TimeReturn, timeframe=bt.TimeFrame.NoTimeFrame, data = data0, _name="basereturn")
-
+    
 
     #STRATEGY
     if maxcpus != 1:
 
-        cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
+            cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
+
     else: 
 
-        cerebro.optstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol1, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
-
-    theStrats=cerebro.run(maxcpus=maxcpus)
-
+        cerebro.optstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
+    
+    try:
+        theStrats=cerebro.run(maxcpus=maxcpus)
+    except Exception as e:
+        log_traceback(e)
+        pass
     
     if plot == True:
         cerebro.plot()
@@ -275,8 +274,21 @@ def callable_rsi_backtest(symbol1, start_date, end_date, period, lower, upper, c
 
     return theStrats, time_basic
 
+# A array('d', [89.91, 90.29, 90.49, 91.14]) array('d')
+# AA array('d', [9.49, 9.92, 10.77, 11.64])
+# AAL array('d', [11.11, 11.22, 11.85, 16.72])
+# AAPL array('d', [80.4625, 80.835, 81.28, 80.58, 82.875, 83.365, 85.9975, 88.21, 83.975, 84.7, 85.7475, 88.02, 87.8975, 87.9325, 87.43, 89.7175, 91.6325, 90.015, 91.21, 88.4075, 90.445, 91.2, 91.0275, 91.0275, 93.4625, 93.1725, 95.3425, 95.6825, 95.92, 95.4775, 97.0575, 97.725, 96.5225, 96.3275, 98.3575, 97.0, 97.2725, 92.845, 92.615, 94.81, 93.2525, 95.04, 96.19, 106.26, 108.9375, 109.665, 110.0625, 113.9025, 111.1125, 112.7275, 109.375, 113.01, 115.01, 114.9075, 114.6075, 115.5625, 115.7075, 118.275, 124.37, 125.8575, 124.825, 126.5225, 125.01, 124.8075, 129.04, 134.18, 131.4, 120.88, 120.96, 112.82, 117.32, 113.49, 112.0, 115.355, 115.54, 112.13, 110.34, 106.84, 110.08, 111.81, 107.12, 108.22, 112.28, 114.96, 114.09, 115.81, 116.79, 113.02, 116.5, 113.16, 115.08, 114.97, 116.97, 124.4, 121.1, 121.19, 120.71, 119.02, 115.98, 117.51, 116.87, 115.75, 115.04, 115.05, 116.6, 111.2, 115.32, 108.86, 108.77, 110.44, 114.95, 119.03, 118.69, 116.32, 115.97, 119.49, 119.21, 119.26, 120.3, 119.39, 118.03, 118.64, 117.34, 113.85, 115.17, 116.03, 116.59, 119.05, 122.72, 123.08, 122.94, 122.25, 123.75, 124.38, 121.78, 123.24, 122.41])
 
 
+# Helper function
+# https://realpython.com/the-most-diabolical-python-antipattern/
+def log_traceback(ex):
+    tb_lines = traceback.format_exception(ex.__class__, ex, ex.__traceback__)
+    tb_text = ''.join(tb_lines)
+    # I'll let you implement the ExceptionLogger class,
+    # and the timestamping.
+    #NEED TO MAKE AN EXCEPTION LOGGER OR USE THE LOGGING MODULE
+    print(tb_text)
     
 # results.analyzers.mysharpe.get_analysis
 

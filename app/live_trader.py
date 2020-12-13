@@ -1,113 +1,22 @@
 #%%
-import os
-import json
-
-print("top of live_trader")
-# print(f"environ Variables: {os.environ}")
-# GET KEYS BEFORE IMPORTS (some files require env vars to be set before being called)
-try:
-    with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
-        GACdata = json.load(f)
-
-
-    with open('ALPACA_KEYS.json') as m:
-        ALPACA_DATA = json.load(m)
-
-
-    os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
-    os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
-    os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
-    os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
-
-except Exception as e:
-    print(f"Error loading keys from google key manager: error {e}")
-
-alpaca_secret_paper= os.environ["alpaca_secret_paper"]
-alpaca_secret_live = os.environ["alpaca_secret_live"]
-alpaca_live = os.environ["alpaca_live"]
-alpaca_paper = os.environ["alpaca_paper"]
-# service_account_json = os.environ['GOOGLE_APPLICATION_CREDENTIALS']
-
-  # Set varables depending on paper trading or not
-PAPER_TRADE = True
-
-if PAPER_TRADE==True:
-    api_base = 'https://paper-api.alpaca.markets'
-    headers = {
-    "APCA-API-KEY-ID": alpaca_paper, 
-    "APCA-API-SECRET-KEY": alpaca_secret_paper
-    }
-elif PAPER_TRADE==False:
-    api_base ="https://api.alpaca.markets"
-    headers = {
-    "APCA-API-KEY-ID": alpaca_live,
-    "APCA-API-SECRET-KEY": alpaca_secret_live
-    }
-import requests
+import networking
+from networking import cloud_object, alpaca_api
 from datetime import date, timedelta
 import datetime as dt
 import pandas as pd
-import alpaca_trade_api as tradeapi
 import numpy as np
 import fastquant3
-#google cloud imports
-import io
-from io import BytesIO
-from google.cloud import storage
-import math
-# Set api keys 
+import os
+import requests
+# Create alpaca api Object
 
-# Setuo the API globally 
-# rest methods https://pypi.org/project/alpaca-trade-api/
-api = tradeapi.REST(headers.get("APCA-API-KEY-ID"), headers.get("APCA-API-SECRET-KEY") , base_url=api_base)
+api = alpaca_api.create_api(alpaca_api(PAPER_TRADE=True))
 
 # if app/tmp doesn't exist, make it:
 def ensure_dir(file_path):
     directory = os.path.dirname(file_path)
     if not os.path.exists(directory):
         os.makedirs(directory)
-
-# Create a cloud object which can upload to positions or backtests easily
-class cloud_object:
-    def __init__(self, BUCKET_NAME):
-        # Setup Storage client
-        self.storage_client = storage.Client.from_service_account_json('GOOGLE_APPLICATION_CREDENTIALS.json')
-                # #make bucket object locally:
-        self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
-
-    def save_to_backtests(self, df, blob_name):
-        pd.to_pickle(df,f"app/tmp/{str(blob_name)}")
-        self.blob = self.bucket.blob(f'Backtests/{str(blob_name)}')
-        self.blob.upload_from_filename(f"app/tmp/{str(blob_name)}")
-        return (str(blob_name))
-
-    def save_to_positions(self, df, blob_name):
-        pd.to_pickle(df,f"app/tmp/Positions/positions-{str(blob_name)}")
-        self.blob = self.bucket.blob(f'Positions/positions-{str(blob_name)}')
-        self.blob.upload_from_filename(f"app/tmp/Positions/positions-{str(blob_name)}")
-        return (str(blob_name))
-
-    def download_from_backtests(self, filename):
-        full_file_dir = (f"Backtests/{str(filename)}")
-        # Check to see if the file exists in the cloud:
-        if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file:'Backtests/{str(filename)}'")
-        self.blob = self.bucket.blob(f'Backtests/{str(filename)}')
-        self.blob.download_to_filename(f"app/tmp/{filename}")
-        unpickle = pd.read_pickle(f"app/tmp/{filename}")
-        return unpickle
-
-    def download_from_positions(self, filename):
-        full_file_dir = (f"Positions/positions-{str(filename)}")
-        # Check to see if the file exists in the cloud:
-        if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file:'Positions/positions-{str(filename)}'")
-        self.blob = self.bucket.blob(full_file_dir)
-        self.blob.download_to_filename(f"app/tmp/positions/positions-{filename}")          
-        unpickle = pd.read_pickle(f"app/tmp/Positions/positions-{filename}")
-        return unpickle
-
-
 
 #################################################
 
@@ -131,7 +40,7 @@ def RSI_parser(symbol, end_date, period):
     start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
     end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
-    historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
+    historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey="+os.environ["alpaca_live"]).json().get("results")
     #shove it in a dataframe real quick:
     historic_symbol_data = pd.DataFrame.from_dict(historic_symbol_data)
     #fix dates 
@@ -257,7 +166,7 @@ def get_stop(symbol, end_date, ema_period, atr_period, stop_factor=3):
     start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
     end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
-    df = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={alpaca_live}").json().get("results")
+    df = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey"+os.environ["alpaca_live"]).json().get("results")
 
      #shove it in a dataframe real quick:
     df = pd.DataFrame.from_dict(df)
@@ -333,7 +242,7 @@ def ATR(df, period, ohlc=['Open', 'High', 'Low', 'Close']):
     return df
 
 
-
+#%%
 ##################################
 def get_positions(df = None):
     print('getting positions')
@@ -344,7 +253,9 @@ def get_positions(df = None):
         old_positions = df
     else:
         try:
-            old_positions = pd.read_pickle(keys.positions_path / 'old_positions')
+            old_pos_path = keys.positions_path / 'old_positions'
+            print(f"looking for local pickled old positions table here:{old_pos_path}")
+            old_positions = pd.read_pickle(old_pos_path)
         except:
             print("old_positions pickled table not found")
             old_positions = None
@@ -368,11 +279,11 @@ def get_positions(df = None):
     'unrealized_pl': [x.unrealized_pl for x in positions],
     })
     new_positions.set_index('symbol')
-
+    print("NEW POSITIONS DF \n", new_positions, "\n OLD POSITIONS DF \n", old_positions)
     #  if old positions has data, update the new positions and return it. 
     if( old_positions is not None):
         old_positions = old_positions.combine_first(new_positions)
-        print(old_positions)
+        print("\nUPDATED POSITIONS\n",old_positions)
     return old_positions
  
 #%%
@@ -522,10 +433,10 @@ if __name__ == "__main__":
     while i>-10:
         try:
             recent_weekday_attempt = (str(most_recent_weekday(offset = i)))
-            yesterdays_positions = cloud_connection.download_from_positions(recent_weekday_attempt)
+            yesterdays_portfolio = cloud_connection.download_from_positions(recent_weekday_attempt)
             print(f'positions found for {recent_weekday_attempt}')
 
-            new_positions = get_positions(yesterdays_positions)
+            updated_portfolio = get_positions(yesterdays_portfolio)
             break
         except Exception as e:
             print(f"positions_for {recent_weekday_attempt} not found, going one more day back (most likely due to holiday) {e}")
@@ -534,7 +445,7 @@ if __name__ == "__main__":
             print('Current positions not found, create new file')
             break
     # cancel all existing orders for the Day
-    api.cancel_all_orders()
+    api.cancel_all_orders() #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     #then, determine if new acquisitions can occur
     cash = float(api.get_account().cash)
     long_mkt_val = float(api.get_account().long_market_value)
@@ -555,7 +466,7 @@ if __name__ == "__main__":
         buying_opp = get_entries(backtest)
 
         # Save and wipe mem ASAP
-        cloud_connection.save_to_backtests(backtest,recent_weekday)
+        # cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         backtest = None
 #%%
         MAX_NEW_POSITIONS = 2
@@ -565,23 +476,23 @@ if __name__ == "__main__":
             purchase = None
             try:
                 i = 0
-                # Create a new_positions df from the best buying opportunity, if new positions df doesn't exist:
-                if(len(new_positions)==0):
+                # Create a new_positions df from the best buying opportunity, if new portfolio df doesn't exist:
+                if(len(updated_portfolio)==0):
                      # # create empty current positions list:
                     current_positions_template = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
                     purchase = buying_opp.loc[i]
                     # new_positions = purchase
                     purchase = purchase.to_frame()
                     purchase = purchase.transpose()
-                    new_positions = current_positions_template.append(purchase, verify_integrity=True, ignore_index=True)
+                    updated_portfolio = current_positions_template.append(purchase, verify_integrity=True, ignore_index=True)
                     print(purchase)
                     j = j+1
                 # Check to see if position already exists, add it if not:
                 while (i <= len(buying_opp)) & (j<num_new_positions):
                 # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
-                    if (buying_opp["symbol"][i] not in new_positions["symbol"].values) :
+                    if (buying_opp["symbol"][i] not in updated_portfolio["symbol"].values) :
                         purchase = buying_opp.loc[i]
-                        new_positions = new_positions.append(purchase, verify_integrity=True, ignore_index=True)
+                        updated_portfolio = updated_portfolio.append(purchase, verify_integrity=True, ignore_index=True)
                         break
                     i=i+1
             
@@ -590,18 +501,18 @@ if __name__ == "__main__":
             j = j+1
     # current_positions.set_index('symbol')
 #%%
-
+ 
     #Update Stops
 
-    new_positions = get_exits(new_positions)
+    updated_portfolio = get_exits(updated_portfolio)
 #update RSI
-    new_positions["RSI"] = new_positions.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
+    updated_portfolio["RSI"] = updated_portfolio.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
 
     # new_positions.loc[len(new_positions)] = purchase
     # then update stops and rsi, and place any necessary puchase orders:
-    new_positions = orderer(new_positions, long_mkt_val, cash)
+    updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
     # save the updated positions to the CLOUD
-    cloud_connection.save_to_positions(new_positions, recent_weekday)
+    cloud_connection.save_to_positions(updated_portfolio, recent_weekday)
     
 
     print('success!')

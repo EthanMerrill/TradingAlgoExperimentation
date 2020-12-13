@@ -6,7 +6,7 @@ from time import time
 import time as tm
 from datetime import datetime, timedelta, date
 import numpy as np
-from simple_rsi import callable_rsi_backtest
+from simple_rsi import callable_rsi_backtest, get_symbol_data
 import os
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
@@ -32,7 +32,8 @@ def get_All_Tickers(date = (date.today())):
     # function to find & filter all symbols for any date
     # #Get all tickers:
     try:
-        polygonTickersData = requests.get(f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/STOCKS/{str(date)}?unadjusted=true&apiKey={ALPACA_KEY}").json().get("results")
+        queryurl = (f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/stocks/{str(date)}?unadjusted=false&apiKey={ALPACA_KEY}")
+        polygonTickersData = requests.get(queryurl).json().get("results")
 
         polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
         print(polygon_tickers_dataframe.head())
@@ -49,10 +50,6 @@ def get_All_Tickers(date = (date.today())):
     # polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
     return polygon_tickers_dataframe
 #%%
-def tickers_filter(tickers_list):
-    requests.get()
-
-# %%
 
 def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_date, end_date=date.today(), init_cash=1000):
     # Start the timer!
@@ -72,9 +69,9 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     rsi_lower_list = np.arange(rsi_lower_list[0],rsi_lower_list[1],rsi_lower_list[2], dtype=int)
     rsi_upper_list = np.arange(rsi_upper_list[0],rsi_upper_list[1],rsi_upper_list[2], dtype=int)
     # print(f"total possiblities:{len(periods_list)*len(rsi_lower_list)*len(rsi_upper_list)}")
-    # Make a 3d grid of 0 placeholders
-    period_grid = np.zeros(shape=(len(periods_list),len(rsi_lower_list),len(rsi_upper_list)))
- 
+    
+    data = get_symbol_data(symbol, start_date, end_date)
+
     # make an empty list to push strats to
     stratsList = []
     ## RSI Optimization; run the grid search
@@ -82,9 +79,8 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
         for i, rsi_period in enumerate(periods_list):
             for j, rsi_lower in enumerate(rsi_lower_list):
                 for k, rsi_upper in enumerate(rsi_upper_list):
-                    results = callable_rsi_backtest(symbol1 = symbol, 
-                                                    start_date = start_date, 
-                                                    end_date =  end_date, 
+                    results = callable_rsi_backtest(symbol = symbol, 
+                                                    data0 = data,
                                                     period = rsi_period, 
                                                     lower = rsi_lower, 
                                                     upper = rsi_upper, 
