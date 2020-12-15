@@ -67,7 +67,7 @@ todo:
 
 - [x] GCP Cloud bucket!
 - [ ] add a max time period for trades: https://community.backtrader.com/topic/2150/sell-a-position-after-2-days
-
+- [ ] add correlation checking for new positions
 
 - ## Long term Features:
 - [ ] Use a format better than pickle for long term storage

@@ -95,6 +95,7 @@ class BasicRSI(bt.Strategy):
         atrperiod=1,  # measure volatility over x days
         emaperiod=10,  # smooth out period for atr volatility
         stopfactor=2.5,  # actual stop distance for smoothed atr
+        trade_time_limit = 30
     )
 
     # The logging function for this strategy
@@ -115,6 +116,8 @@ class BasicRSI(bt.Strategy):
                 trade.size))
 
     def notify_order(self, order):
+        # for max order duration : get the order execution bar
+        self.bar_executed = len(self)
         if self.p.verbose == True:
             print(f"Order notification. status{order.getstatusname()}.")
             print(f"Order info. status{order.info}.")
@@ -152,13 +155,18 @@ class BasicRSI(bt.Strategy):
             # only run code if we have live bars (today's bars).
             # ignore if we are backtesting
             return
-
-                # logic
+        # logic
         closing = None
         if self.position.size > 0:  # In the market - Long
             # self.log('Long Stop Price: {:.2f}', self.stoptrailer.stop_long[0])
             if self.exit_long:
                 closing = self.close()
+                    # for max position duration: calculate position duration based on current strategy length:
+            self.duration = len(self) - self.bar_executed + 1
+            print(self.duration, len(self), self.bar_executed)
+                    # for max positions duration: if order is open longer than x days, close position:
+            if self.duration == self.p.trade_time_limit:
+                self.close()
         # If crosses RSI_UPPER, Sell
         if self.positionsbyname[self.p.symbol].size and self.RSI > self.p.rsi_upper:
             self.close(data=self.p.data0)  # close long position
@@ -224,8 +232,7 @@ def get_symbol_data(symbol, start_date, end_date):
 
     return data0
 #%%
-def callable_rsi_backtest(symbol, data0, period, lower, upper, cash, maxcpus = None, plot = False):
-
+def callable_rsi_backtest(symbol, data0, period, lower, upper,cash, trade_time_limit = 30, maxcpus = None, plot = False, verbose=False):
 # Create a cerebro entity
     # Start the timer!
     start_time = time()
@@ -252,17 +259,33 @@ def callable_rsi_backtest(symbol, data0, period, lower, upper, cash, maxcpus = N
 
     #STRATEGY
     if maxcpus != 1:
-
-            cerebro.addstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
-
+        cerebro.addstrategy(BasicRSI,verbose=verbose, 
+                                    data0 = data0, 
+                                    symbol=symbol, 
+                                    rsi_period = period,    
+                                    rsi_lower = lower, 
+                                    rsi_upper = upper, 
+                                    atrperiod = period, 
+                                    emaperiod = period, 
+                                    trade_time_limit = trade_time_limit,
+                                    sizer = bt.sizers.AllInSizer())
     else: 
-
-        cerebro.optstrategy(BasicRSI,verbose=False, data0 = data0, symbol=symbol, rsi_period = period, rsi_lower = lower, rsi_upper = upper, atrperiod = period, emaperiod = period, sizer = bt.sizers.AllInSizer())
+        cerebro.optstrategy(BasicRSI,verbose=verbose, 
+                                    data0 = data0, 
+                                    symbol=symbol,
+                                    rsi_period = period, 
+                                    rsi_lower = lower, 
+                                    rsi_upper = upper, 
+                                    atrperiod = period, 
+                                    emaperiod = period, 
+                                    trade_time_limit = trade_time_limit, 
+                                    sizer = bt.sizers.AllInSizer())
     
     try:
         theStrats=cerebro.run(maxcpus=maxcpus)
     except Exception as e:
-        log_traceback(e)
+        if verbose ==True:
+            log_traceback(e)
         pass
     
     if plot == True:
