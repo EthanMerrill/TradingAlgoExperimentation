@@ -66,7 +66,9 @@ todo:
 - [ ] Pass 10% of equity to backtester for a more accurate test
 
 - [x] GCP Cloud bucket!
-- [x] add a max time period for trades: https://community.backtrader.com/topic/2150/sell-a-position-after-2-days
+- [ ] add a max time period for trades: https://community.backtrader.com/topic/2150/sell-a-position-after-2-days
+    - [x] add to backtests
+    - [ ] add to live_trader
 - [ ] add correlation checking for new positions https://machinelearningmastery.com/gentle-introduction-autocorrelation-partial-autocorrelation/
 
 - ## Long term Features:

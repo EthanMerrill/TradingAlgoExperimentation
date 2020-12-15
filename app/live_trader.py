@@ -467,16 +467,19 @@ if __name__ == "__main__":
         buying_opp = get_entries(backtest)
 
         # Save and wipe mem ASAP
-        # cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         backtest = None
 #%%
+        existing_portfolio_corr = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].toList(), dt.datetime(2020,1,1),recent_weekday )
+
+
         MAX_NEW_POSITIONS = 2
         num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*.1))
-        j = 0 
+        j = 0 #stocks purchased iterator
         while j<num_new_positions:
             purchase = None
             try:
-                i = 0
+                i = 0 #row in purchase options DF iterator
                 # Create a new_positions df from the best buying opportunity, if new portfolio df doesn't exist:
                 if(len(updated_portfolio)==0):
                      # # create empty current positions list:
@@ -490,8 +493,13 @@ if __name__ == "__main__":
                     j = j+1
                 # Check to see if position already exists, add it if not:
                 while (i <= len(buying_opp)) & (j<num_new_positions):
-                # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
-                    if (buying_opp["symbol"][i] not in updated_portfolio["symbol"].values) :
+                    # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
+                    is_not_owned = buying_opp["symbol"][i] not in updated_portfolio["symbol"].values
+                    #check the correlation of the purchase with the rest of the portfolio. 
+                    new_portfolio_corr = fastquant3.portfolio_correlation_test((updated_portfolio["symbol"].toList()),append(buying_opp["symbol"][i]), dt.datetime(2020,1,1),recent_weekday)
+
+                #if not owned and makes portfolio more diverse, add the stock to the portfolio
+                    if (is_not_owned and (new_portfolio_corr<existing_portfolio_corr)):
                         purchase = buying_opp.loc[i]
                         updated_portfolio = updated_portfolio.append(purchase, verify_integrity=True, ignore_index=True)
                         break
