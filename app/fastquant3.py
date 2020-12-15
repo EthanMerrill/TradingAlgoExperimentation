@@ -166,7 +166,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
                 results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
                 results_df = results_df.astype(dtypes_dict)
                 print('partial save and wipe complete')
-            print(f"finished symbol: {symbol}. {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
+            print(f"finished symbol: {symbol}.STATS: {results_df.loc[symbol_count]} {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
             symbol_count = symbol_count+1
         except Exception as e:
             print(f"error occured in rsi_optimizer during symbol: {symbol}: {e}")

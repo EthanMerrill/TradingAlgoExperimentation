@@ -62,15 +62,16 @@ todo:
 - [x] handle the situation when 10% of portfolio isn't enough to purchase even one share.
 
 - [ ] Check the RMA EMA functions, something is a little off there. 
-- [ ] use numpy.where instead of vectorize where possible
 
 - [ ] Pass 10% of equity to backtester for a more accurate test
 
 - [x] GCP Cloud bucket!
+- [ ] add a max time period for trades: https://community.backtrader.com/topic/2150/sell-a-position-after-2-days
+
 
 - ## Long term Features:
 - [ ] Use a format better than pickle for long term storage
-- [ ] CI/CD!! :o https://cloud.google.com/run/docs/continuous-deployment-with-cloud-build
+- [x] CI/CD!! :o https://cloud.google.com/run/docs/continuous-deployment-with-cloud-build
 - [ ] improve optimization strategies
 
 
