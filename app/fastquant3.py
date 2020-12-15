@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, date
 import numpy as np
 from simple_rsi import callable_rsi_backtest, get_symbol_data
 import os
+import networking
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
 ALPACA_KEY = os.environ['alpaca_paper']
@@ -211,3 +212,31 @@ def run_strategy_generator(date):
     # pct_positive_alpha = positive_alpha/total_results
 
     return backtest
+
+
+
+
+###################
+# portfolio correlation tester: 
+def portfolio_correlation_test(portfolio_symbols, start_date, end_date):
+    '''determines the level of correlation between the prospective purchase and the rest of the portfolio'''
+    portfolio_history = pd.DataFrame()
+    # for each symbol, get the historical tick data from polygon API arrange the data in a array of series'
+    i=0
+    while(i<len(portfolio_symbols)):
+        closing_vals = pd.DataFrame(networking.polgon_data().get_single_stock_daily_bars(portfolio_symbols[i],start_date,end_date))["c"]
+        closing_vals = closing_vals.rename(portfolio_symbols[i])
+        portfolio_history = pd.concat([portfolio_history, closing_vals], axis=1)
+        i=i+1
+    # corr = portfolio_history.corr()
+    # print(pd.np.triu(corr.values))
+
+    portfolio_correlation_lst = portfolio_history.corr().unstack().sort_values(kind="quicksort")
+    # remove all 1s from the flattened correlation list, they mess with the average.
+    portfolio_correlation_lst = portfolio_correlation_lst[portfolio_correlation_lst!=1]
+    # drop duplicates because there are two of every value from the corr operation
+
+    #get the average correlation of all stocks in portfolio
+    mean_portfolio_corr = portfolio_correlation_lst.mean()
+
+    return mean_portfolio_corr, portfolio_correlation_lst

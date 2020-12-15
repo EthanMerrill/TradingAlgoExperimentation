@@ -3,6 +3,7 @@
 # general imports 
 import requests
 import pandas as pd
+import datetime as dt
 #google cloud imports
 import io
 from io import BytesIO
@@ -56,6 +57,9 @@ class polgon_data:
     def __init__(self):
         self.alpaca_live = os.environ["alpaca_live"]
     def get_single_stock_daily_bars(self, symbol, start_date, end_date):
+        #takes date times in dt fromat, then converts to strings which are inserted in the api request
+        start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
+        end_date = dt.datetime.strftime(end_date.today(), "%Y-%m-%d")
         return requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={self.alpaca_live}").json().get("results")
 
 

@@ -163,7 +163,6 @@ class BasicRSI(bt.Strategy):
                 closing = self.close()
                     # for max position duration: calculate position duration based on current strategy length:
             self.duration = len(self) - self.bar_executed + 1
-            print(self.duration, len(self), self.bar_executed)
                     # for max positions duration: if order is open longer than x days, close position:
             if self.duration == self.p.trade_time_limit:
                 self.close()
