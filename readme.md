@@ -69,7 +69,7 @@ todo:
 - [ ] add a max time period for trades: https://community.backtrader.com/topic/2150/sell-a-position-after-2-days
     - [x] add to backtests
     - [ ] add to live_trader
-- [ ] add correlation checking for new positions https://machinelearningmastery.com/gentle-introduction-autocorrelation-partial-autocorrelation/
+- [x] add correlation checking for new positions https://machinelearningmastery.com/gentle-introduction-autocorrelation-partial-autocorrelation/
 
 - ## Long term Features:
 - [ ] Use a format better than pickle for long term storage

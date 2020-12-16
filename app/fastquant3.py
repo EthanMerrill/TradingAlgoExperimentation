@@ -147,6 +147,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
 
     print(results_df.dtypes)
     symbol_count=0
+    error_count=0
     for symbol in df_of_stocks:
         try:
             symbol_dict, time_elapsed = rsi_optimizer([3,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date, init_cash =1000)
@@ -170,7 +171,9 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
             print(f"finished symbol: {symbol}.STATS: {results_df.loc[symbol_count]} {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
             symbol_count = symbol_count+1
         except Exception as e:
-            print(f"error occured in rsi_optimizer during symbol: {symbol}: {e}")
+            symbol_count = symbol_count+1
+            error_count = error_count+1
+            print(f"error occured in rsi_optimizer during symbol: {symbol}: {e} \n so far {error_count} errors have occured in {symbol_count} symbols analyzed total.")
             pass     
     results_df = pd.read_pickle(TEMP_SAVE_DIR)
     end_time = time()
