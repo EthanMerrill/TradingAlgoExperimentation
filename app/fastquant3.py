@@ -128,8 +128,8 @@ def humanize_time(secs):
 
 #%%
 def multi_stock_rsi_optimize(df_of_stocks, end_date):
-    ensure_dir("_backtest")
-    TEMP_SAVE_DIR = "_backtest"
+    ensure_dir("/_backtest")
+    TEMP_SAVE_DIR = "/_backtest"
     start_time = time()
 
         # set certain columns to smaller data types

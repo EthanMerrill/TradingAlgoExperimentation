@@ -410,8 +410,8 @@ def most_recent_weekday(offset=0):
 
 #%%
 if __name__ == "__main__":
-    ensure_dir('app/tmp/')
-    ensure_dir('app/tmp/Positions/')
+    ensure_dir('/tmp/')
+    ensure_dir('/tmp/Positions/')
     new_positions = []
     # print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
     # print(f"environ Variables: {os.environ}")

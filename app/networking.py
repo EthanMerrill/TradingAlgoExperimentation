@@ -72,15 +72,15 @@ class cloud_object:
         self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
 
     def save_to_backtests(self, df, blob_name):
-        pd.to_pickle(df,f"app/tmp/{str(blob_name)}")
+        pd.to_pickle(df,f"/tmp/{str(blob_name)}")
         self.blob = self.bucket.blob(f'Backtests/{str(blob_name)}')
-        self.blob.upload_from_filename(f"app/tmp/{str(blob_name)}")
+        self.blob.upload_from_filename(f"/tmp/{str(blob_name)}")
         return (str(blob_name))
 
     def save_to_positions(self, df, blob_name):
-        pd.to_pickle(df,f"app/tmp/Positions/positions-{str(blob_name)}")
+        pd.to_pickle(df,f"/tmp/Positions/positions-{str(blob_name)}")
         self.blob = self.bucket.blob(f'Positions/positions-{str(blob_name)}')
-        self.blob.upload_from_filename(f"app/tmp/Positions/positions-{str(blob_name)}")
+        self.blob.upload_from_filename(f"/tmp/Positions/positions-{str(blob_name)}")
         return (str(blob_name))
 
     def download_from_backtests(self, filename):
@@ -89,8 +89,8 @@ class cloud_object:
         if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
             raise Exception(f"could not get file:'{full_file_dir}'")
         self.blob = self.bucket.blob(f'Backtests/{str(filename)}')
-        self.blob.download_to_filename(f"app/tmp/{filename}")
-        unpickle = pd.read_pickle(f"app/tmp/{filename}")
+        self.blob.download_to_filename(f"/tmp/{filename}")
+        unpickle = pd.read_pickle(f"/tmp/{filename}")
         return unpickle
 
     def download_from_positions(self, filename):
@@ -99,8 +99,8 @@ class cloud_object:
         if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
             raise Exception(f"could not get file:'{full_file_dir}'")
         self.blob = self.bucket.blob(full_file_dir)
-        self.blob.download_to_filename(f"app/tmp/positions/positions-{filename}")          
-        unpickle = pd.read_pickle(f"app/tmp/Positions/positions-{filename}")
+        self.blob.download_to_filename(f"/tmp/positions/positions-{filename}")          
+        unpickle = pd.read_pickle(f"/tmp/Positions/positions-{filename}")
         return unpickle
 
 #%%
