@@ -8,7 +8,10 @@ import numpy as np
 import fastquant3
 import os
 import requests
-from helper_functions import ensure_dir
+from helper_functions import ensure_dir,list_files
+
+list_files("app/tmp")
+list_files("/tmp")
 # Create alpaca api Object
 
 api = alpaca_api.create_api(alpaca_api(PAPER_TRADE=True))
