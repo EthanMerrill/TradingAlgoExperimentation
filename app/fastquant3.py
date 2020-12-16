@@ -9,12 +9,11 @@ import numpy as np
 from simple_rsi import callable_rsi_backtest, get_symbol_data
 import os
 import networking
-from live_trader import ensure_dir
+from helper_functions import ensure_dir
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
 ALPACA_KEY = os.environ['alpaca_paper']
 # IEXKey = keys.keys.get("iex")
-
 # MIsc global options
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
@@ -38,7 +37,7 @@ def get_All_Tickers(date = (date.today())):
         polygonTickersData = requests.get(queryurl).json().get("results")
 
         polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
-        print(polygon_tickers_dataframe.head())
+        # print(polygon_tickers_dataframe.head())
         if not polygonTickersData:
             Print("ERROR No Polygon tickers data found")
             raise Exception ("empty Polygon Tickers data, check Polygon api status")

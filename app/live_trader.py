@@ -8,15 +8,10 @@ import numpy as np
 import fastquant3
 import os
 import requests
+from helper_functions import ensure_dir
 # Create alpaca api Object
 
 api = alpaca_api.create_api(alpaca_api(PAPER_TRADE=True))
-
-# if app/tmp doesn't exist, make it:
-def ensure_dir(file_path):
-    directory = os.path.dirname(file_path)
-    if not os.path.exists(directory):
-        os.makedirs(directory)
 
 #################################################
 

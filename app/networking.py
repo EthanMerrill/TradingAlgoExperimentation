@@ -4,6 +4,7 @@
 import requests
 import pandas as pd
 import datetime as dt
+from helper_functions import ensure_dir
 #google cloud imports
 import io
 from io import BytesIO
@@ -70,11 +71,12 @@ class cloud_object:
         self.storage_client = storage.Client.from_service_account_json('GOOGLE_APPLICATION_CREDENTIALS.json')
                 # #make bucket object locally:
         self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
-
+        ensure_dir("/tmp/Positions")
+        ensure_dir("/tmp/Backtests")
     def save_to_backtests(self, df, blob_name):
-        pd.to_pickle(df,f"/tmp/{str(blob_name)}")
+        pd.to_pickle(df,f"/tmp/Backtests/{str(blob_name)}")
         self.blob = self.bucket.blob(f'Backtests/{str(blob_name)}')
-        self.blob.upload_from_filename(f"/tmp/{str(blob_name)}")
+        self.blob.upload_from_filename(f"/tmp/Backtests/{str(blob_name)}")
         return (str(blob_name))
 
     def save_to_positions(self, df, blob_name):
@@ -89,8 +91,8 @@ class cloud_object:
         if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
             raise Exception(f"could not get file:'{full_file_dir}'")
         self.blob = self.bucket.blob(f'Backtests/{str(filename)}')
-        self.blob.download_to_filename(f"/tmp/{filename}")
-        unpickle = pd.read_pickle(f"/tmp/{filename}")
+        self.blob.download_to_filename(f"/tmp/Backtests/{filename}")
+        unpickle = pd.read_pickle(f"/tmp/Backtests/{filename}")
         return unpickle
 
     def download_from_positions(self, filename):
