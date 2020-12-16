@@ -101,7 +101,7 @@ class cloud_object:
         if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
             raise Exception(f"could not get file:'{full_file_dir}'")
         self.blob = self.bucket.blob(full_file_dir)
-        self.blob.download_to_filename(f"/tmp/positions/positions-{filename}")          
+        self.blob.download_to_filename(f"/tmp/Positions/positions-{filename}")          
         unpickle = pd.read_pickle(f"/tmp/Positions/positions-{filename}")
         return unpickle
 
