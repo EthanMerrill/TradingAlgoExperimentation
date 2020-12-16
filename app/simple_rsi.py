@@ -285,6 +285,7 @@ def callable_rsi_backtest(symbol, data0, period, lower, upper,cash, trade_time_l
     except Exception as e:
         if verbose ==True:
             log_traceback(e)
+        return
         pass
     
     if plot == True:

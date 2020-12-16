@@ -90,9 +90,9 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
                     stratsList.append(results[0][0])
 
     except Exception as e:
-        print(f"error occured in rsi_optimizer: {e}")     
-
-        return null_return_dict, 0
+        print(f"error occured in rsi_optimizer: {e}") 
+        raise     
+        # return null_return_dict, 0
   
     # Find highest profit
     # strats = [x[0] for x in stratsList]
@@ -127,8 +127,8 @@ def humanize_time(secs):
 
 #%%
 def multi_stock_rsi_optimize(df_of_stocks, end_date):
-    ensure_dir("/_backtest")
-    TEMP_SAVE_DIR = "/_backtest"
+    ensure_dir("app/_backtest")
+    TEMP_SAVE_DIR = "app/_backtest"
     start_time = time()
 
         # set certain columns to smaller data types
@@ -150,33 +150,43 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
     symbol_count=0
     error_count=0
     for symbol in df_of_stocks:
+
+
         try:
             symbol_dict, time_elapsed = rsi_optimizer([3,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date, init_cash =1000)
-
-           
             results_df = results_df.append(symbol_dict, ignore_index=True)
+            symbol_count = symbol_count+1
+        except Exception as e:
+            error_count = error_count+1
+            time_elapsed = 0
+            print(f"error occured in rsi_optimizer during symbol: {symbol}: {e} so far {error_count} errors have occured. Successes: {symbol_count} .")
 
+        
             # Time calculation function
-            time_left = ((len(df_of_stocks)-(symbol_count+1))*time_elapsed)
-            print(f"projected time left: {humanize_time(time_left)}")
+        time_left = ((len(df_of_stocks)-(symbol_count+1))*time_elapsed)
+        print(f"projected time left: {humanize_time(time_left)}")
+
+        try:
             # Temp save function to salvage some data from a very long test [depreciated]
-            if (symbol_count % 50 == 0 and symbol_count != 0):
+            if (symbol_count % 5 == 0 and symbol_count != 0):
                 # if this is not the first cache save, get the previous one, and merge it to the existing one
-                if (symbol_count != 50):
+                if (symbol_count != 5):
                     results_df = results_df.append(pd.read_pickle(TEMP_SAVE_DIR))
                 # Save the newly merged, larger dataframe locally
                 results_df.to_pickle(TEMP_SAVE_DIR)
                 results_df = pd.DataFrame(columns = ["symbol", "optimal_rsi_period","optimal_rsi_lower","optimal_rsi_upper","profit", "roi", "buy_and_hold"])
                 results_df = results_df.astype(dtypes_dict)
                 print('partial save and wipe complete')
-            print(f"finished symbol: {symbol}.STATS: {results_df.loc[symbol_count]} {symbol_count+1} analyized so far out of {len(df_of_stocks)}.")
-            symbol_count = symbol_count+1
         except Exception as e:
-            symbol_count = symbol_count+1
-            error_count = error_count+1
-            print(f"error occured in rsi_optimizer during symbol: {symbol}: {e} \n so far {error_count} errors have occured in {symbol_count} symbols analyzed total.")
-            pass     
-    results_df = pd.read_pickle(TEMP_SAVE_DIR)
+            print("failed to do a temp save of Data ")    
+
+        if (len(results_df)>0):
+            print(f"finished symbol: {symbol}.STATS: {results_df.loc[symbol_count-1]} {symbol_count+error_count} analyized so far out of {len(df_of_stocks)} (Successes: {symbol_count}).")
+        
+    try:
+        results_df = pd.read_pickle(TEMP_SAVE_DIR)
+    except Exception as e:
+        print(e)
     end_time = time()
     time_basic = end_time-start_time
 
