@@ -1,4 +1,5 @@
 import os
+import traceback
 
 # if app/tmp doesn't exist, make it:
 def ensure_dir(file_path):
@@ -17,3 +18,11 @@ def ensure_dir(file_path):
         return
     except Exception as e:
         print(f"second method of creating directory failed: {e}")
+
+def log_traceback(ex):
+    tb_lines = traceback.format_exception(ex.__class__, ex, ex.__traceback__)
+    tb_text = ''.join(tb_lines)
+    # I'll let you implement the ExceptionLogger class,
+    # and the timestamping.
+    #NEED TO MAKE AN EXCEPTION LOGGER OR USE THE LOGGING MODULE
+    print(tb_text)

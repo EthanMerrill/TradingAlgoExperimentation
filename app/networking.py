@@ -4,7 +4,7 @@
 import requests
 import pandas as pd
 import datetime as dt
-from helper_functions import ensure_dir
+from helper_functions import ensure_dir, log_traceback
 #google cloud imports
 import io
 from io import BytesIO
@@ -89,7 +89,7 @@ class cloud_object:
         full_file_dir = (f"Backtests/{str(filename)}")
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file:'{full_file_dir}'")
+            raise Exception(f"could not get file from gcloud:'{full_file_dir}'")
         self.blob = self.bucket.blob(f'Backtests/{str(filename)}')
         self.blob.download_to_filename(f"/tmp/Backtests/{filename}")
         unpickle = pd.read_pickle(f"/tmp/Backtests/{filename}")
@@ -97,12 +97,15 @@ class cloud_object:
 
     def download_from_positions(self, filename):
         full_file_dir = (f"Positions/positions-{str(filename)}")
-        print(f"creating DIRECTORY: {full_file_dir}") #### DEBUGGIN
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file:'{full_file_dir}'")
-        self.blob = self.bucket.blob(full_file_dir)
-        self.blob.download_to_filename(f"/tmp/Positions/positions-{filename}")          
+            raise Exception(f"could not get file from gcloud:'{full_file_dir}'")
+        try:
+            self.blob = self.bucket.blob(full_file_dir)
+            self.blob.download_to_filename(f"/tmp/Positions/positions-{filename}")   
+        except Exception as e:
+            print(f"ERROR file found in gcloud, but could not be downloaded to /tmp/Positions/positions-{filename} locally, {e}")       
+            log_traceback(e)
         unpickle = pd.read_pickle(f"/tmp/Positions/positions-{filename}")
         return unpickle
 
