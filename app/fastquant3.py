@@ -127,8 +127,8 @@ def humanize_time(secs):
 
 #%%
 def multi_stock_rsi_optimize(df_of_stocks, end_date):
-    ensure_dir("app/_backtest")
-    TEMP_SAVE_DIR = "app/_backtest"
+    ensure_dir("/tmp/Backtests")
+    TEMP_SAVE_DIR = "/tmp/Backtests"
     start_time = time()
 
         # set certain columns to smaller data types
@@ -168,9 +168,9 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
 
         try:
             # Temp save function to salvage some data from a very long test [depreciated]
-            if (symbol_count % 5 == 0 and symbol_count != 0):
+            if (symbol_count % 50 == 0 and symbol_count != 0):
                 # if this is not the first cache save, get the previous one, and merge it to the existing one
-                if (symbol_count != 5):
+                if (symbol_count != 50):
                     results_df = results_df.append(pd.read_pickle(TEMP_SAVE_DIR))
                 # Save the newly merged, larger dataframe locally
                 results_df.to_pickle(TEMP_SAVE_DIR)
@@ -181,7 +181,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
             print("failed to do a temp save of Data ")    
 
         if (len(results_df)>0):
-            print(f"finished symbol: {symbol}.STATS: {results_df.loc[symbol_count-1]} {symbol_count+error_count} analyized so far out of {len(df_of_stocks)} (Successes: {symbol_count}).")
+            print(f"finished symbol: {symbol}.STATS: {results_df.loc[len(results_df)-1]} {symbol_count+error_count} analyized so far out of {len(df_of_stocks)} (Successes: {symbol_count}).")
         
     try:
         results_df = pd.read_pickle(TEMP_SAVE_DIR)

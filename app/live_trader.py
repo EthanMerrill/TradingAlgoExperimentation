@@ -247,15 +247,7 @@ def get_positions(df = None):
     '''
     if df is not None:
         old_positions = df
-    else:
-        try:
-            old_pos_path = keys.positions_path / 'old_positions'
-            print(f"looking for local pickled old positions table here:{old_pos_path}")
-            old_positions = pd.read_pickle(old_pos_path)
-        except:
-            print("old_positions pickled table not found")
-            old_positions = None
-            pass
+    
     positions = (api.list_positions())
     new_positions = pd.DataFrame({
     # 'asset_class': [x.asset_class for x in positions],

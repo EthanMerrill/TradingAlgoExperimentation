@@ -97,6 +97,7 @@ class cloud_object:
 
     def download_from_positions(self, filename):
         full_file_dir = (f"Positions/positions-{str(filename)}")
+        print(f"creating DIRECTORY: {full_file_dir}") #### DEBUGGIN
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
             raise Exception(f"could not get file:'{full_file_dir}'")

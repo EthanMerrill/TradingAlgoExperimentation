@@ -4,7 +4,8 @@ venv
 __pycache__
 .pyc
 launch.json
-positions
+app/tmp/Positions/*
+app/tmp/Backtests/*
 backtesting
 settings.json
 .vscode/settings.json
@@ -12,3 +13,15 @@ settings.json
 alpaca_keys.json
 GOOGLE_APPLICATION_CREDENTIALS.json
 tests.py
+app/app/tmp/positions/positions-2020-12-04
+app/app/tmp/positions/positions-2020-12-11
+app/tmp/positions/positions-2020-11-06
+app/tmp/positions/positions-2020-11-10
+app/tmp/positions/positions-2020-11-11
+app/tmp/positions/positions-2020-11-13
+app/tmp/positions/positions-2020-11-16
+app/tmp/positions/positions-2020-11-17
+app/tmp/positions/positions-2020-11-30
+app/tmp/positions/positions-2020-12-03
+app/tmp/positions/positions-2020-12-04
+app/tmp/positions/positions-2020-12-11
