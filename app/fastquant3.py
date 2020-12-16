@@ -9,6 +9,7 @@ import numpy as np
 from simple_rsi import callable_rsi_backtest, get_symbol_data
 import os
 import networking
+from live_trader import ensure_dir
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
 ALPACA_KEY = os.environ['alpaca_paper']
@@ -127,7 +128,8 @@ def humanize_time(secs):
 
 #%%
 def multi_stock_rsi_optimize(df_of_stocks, end_date):
-    TEMP_SAVE_DIR = f'_backtest'
+    ensure_dir("_backtest")
+    TEMP_SAVE_DIR = "_backtest"
     start_time = time()
 
         # set certain columns to smaller data types
