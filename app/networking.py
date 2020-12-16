@@ -74,38 +74,42 @@ class cloud_object:
         ensure_dir("/tmp/Positions")
         ensure_dir("/tmp/Backtests")
     def save_to_backtests(self, df, blob_name):
-        pd.to_pickle(df,f"/tmp/Backtests/{str(blob_name)}")
+        save_dir = f"/tmp/Backtests/{str(blob_name)}"
+        ensure_dir(save_dir)
+        pd.to_pickle(df,save_dir)
         self.blob = self.bucket.blob(f'Backtests/{str(blob_name)}')
-        self.blob.upload_from_filename(f"/tmp/Backtests/{str(blob_name)}")
+        self.blob.upload_from_filename(save_dir)
         return (str(blob_name))
 
     def save_to_positions(self, df, blob_name):
-        pd.to_pickle(df,f"/tmp/Positions/positions-{str(blob_name)}")
+        save_dir = f"/tmp/Positions/positions-{str(blob_name)}"
+        ensure_dir(save_dir)
+        pd.to_pickle(df,save_dir)
         self.blob = self.bucket.blob(f'Positions/positions-{str(blob_name)}')
-        self.blob.upload_from_filename(f"/tmp/Positions/positions-{str(blob_name)}")
+        self.blob.upload_from_filename(save_dir)
         return (str(blob_name))
 
     def download_from_backtests(self, filename):
-        full_file_dir = (f"Backtests/{str(filename)}")
+        cloud_dir = (f"Backtests/{str(filename)}")
+        local_dir = (f"/tmp/Backtests/{str(filename)}")
         # Check to see if the file exists in the cloud:
-        if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file from gcloud:'{full_file_dir}'")
-        self.blob = self.bucket.blob(f'Backtests/{str(filename)}')
-        self.blob.download_to_filename(f"/tmp/Backtests/{filename}")
-        unpickle = pd.read_pickle(f"/tmp/Backtests/{filename}")
+        if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
+            raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
+        ensure_dir(local_dir)
+        self.blob = self.bucket.blob(cloud_dir)
+        self.blob.download_to_filename(local_dir)
+        unpickle = pd.read_pickle(local_dir)
         return unpickle
 
     def download_from_positions(self, filename):
-        full_file_dir = (f"Positions/positions-{str(filename)}")
+        cloud_dir = (f"Positions/positions-{str(filename)}")
+        local_dir = (f"/tmp/Positions/positions-{str(filename)}")
         # Check to see if the file exists in the cloud:
-        if self.bucket.blob(full_file_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file from gcloud:'{full_file_dir}'")
-        try:
-            self.blob = self.bucket.blob(full_file_dir)
-            self.blob.download_to_filename(f"/tmp/Positions/positions-{filename}")   
-        except Exception as e:
-            print(f"ERROR file found in gcloud, but could not be downloaded to /tmp/Positions/positions-{filename} locally, {e}")       
-            log_traceback(e)
+        if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
+            raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
+        ensure_dir(local_dir)
+        self.blob = self.bucket.blob(cloud_dir)
+        self.blob.download_to_filename(f"/tmp/Positions/positions-{filename}")   
         unpickle = pd.read_pickle(f"/tmp/Positions/positions-{filename}")
         return unpickle
 

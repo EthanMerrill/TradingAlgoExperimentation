@@ -10,8 +10,6 @@ import os
 import requests
 from helper_functions import ensure_dir,list_files
 
-list_files("app/tmp")
-list_files("/tmp")
 # Create alpaca api Object
 
 api = alpaca_api.create_api(alpaca_api(PAPER_TRADE=True))
@@ -33,6 +31,7 @@ def RSI_parser(symbol, end_date, period):
     # day to account for weekends *** BUT NOT HOLIDAYS, hence roughly XX% day Buffer ** also will not work properly when run on weekends (buffer covers for this flaw also)
     # *2 because there needs to be additional data beyond the lookback period as rsi is recursive
     offset_days = -(period+((period//7)*2)+(period%7)+2)*2
+    offset_days = int(offset_days)
     start_date = end_date + (timedelta(days = offset_days))
     # Unneccessary formatting
     start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
@@ -458,7 +457,7 @@ if __name__ == "__main__":
         cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         backtest = None
 #%%
-        existing_portfolio_corr = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].toList(), dt.datetime(2020,1,1),recent_weekday )
+        existing_portfolio_corr_mean, existing_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].tolist(), dt.datetime(2020,1,1),recent_weekday )
 
 
         MAX_NEW_POSITIONS = 2
@@ -484,10 +483,13 @@ if __name__ == "__main__":
                     # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
                     is_not_owned = buying_opp["symbol"][i] not in updated_portfolio["symbol"].values
                     #check the correlation of the purchase with the rest of the portfolio. 
-                    new_portfolio_corr = fastquant3.portfolio_correlation_test((updated_portfolio["symbol"].toList()),append(buying_opp["symbol"][i]), dt.datetime(2020,1,1),recent_weekday)
+                    new_portfolio_list = (updated_portfolio["symbol"].tolist())
+                    new_portfolio_list.append(buying_opp["symbol"][i])
+                    print(new_portfolio_list)
+                    new_portfolio_corr_mean, new_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(new_portfolio_list, dt.datetime(2020,1,1),recent_weekday)
 
                 #if not owned and makes portfolio more diverse, add the stock to the portfolio
-                    if (is_not_owned and (new_portfolio_corr<existing_portfolio_corr)):
+                    if (is_not_owned and (new_portfolio_corr_mean<existing_portfolio_corr_mean)):
                         purchase = buying_opp.loc[i]
                         updated_portfolio = updated_portfolio.append(purchase, verify_integrity=True, ignore_index=True)
                         break
