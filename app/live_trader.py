@@ -247,34 +247,56 @@ def get_positions(df = None):
     '''
     This function updates the positions Dataframe, the old positions dataframe can be passed as an argument or it will be searched for using the REST API
     '''
+
     if df is not None:
         old_positions = df
-    
+    else:
+        old_positions=None    
     positions = (api.list_positions())
     new_positions = pd.DataFrame({
-    # 'asset_class': [x.asset_class for x in positions],
-    # 'assset_id': [x.assset_id for x in positions],
-    'symbol': [x.symbol for x in positions],
-    'qty': [x.qty for x in positions],
-    'avg_entry_price': [x.avg_entry_price for x in positions],
-    'change_today': [x.change_today for x in positions],
-    'cost_basis': [x.cost_basis for x in positions],
-    'current_price': [x.current_price for x in positions],
-    'exchange': [x.exchange for x in positions],
-    'lastday_price': [x.lastday_price for x in positions],
-    'market_value': [x.market_value for x in positions],
-    'side': [x.side for x in positions],
-    'unrealized_intraday_pl': [x.unrealized_intraday_pl for x in positions],
-    'unrealized_intraday_plpc': [x.unrealized_intraday_plpc for x in positions],
-    'unrealized_pl': [x.unrealized_pl for x in positions],
-    })
+                                # 'asset_class': [x.asset_class for x in positions],
+                                # 'assset_id': [x.assset_id for x in positions],
+                                'symbol': [x.symbol for x in positions],
+                                'qty': [x.qty for x in positions],
+                                'avg_entry_price': [x.avg_entry_price for x in positions],
+                                'change_today': [x.change_today for x in positions],
+                                'cost_basis': [x.cost_basis for x in positions],
+                                'current_price': [x.current_price for x in positions],
+                                'exchange': [x.exchange for x in positions],
+                                'lastday_price': [x.lastday_price for x in positions],
+                                'market_value': [x.market_value for x in positions],
+                                'side': [x.side for x in positions],
+                                'unrealized_intraday_pl': [x.unrealized_intraday_pl for x in positions],
+                                'unrealized_intraday_plpc': [x.unrealized_intraday_plpc for x in positions],
+                                'unrealized_pl': [x.unrealized_pl for x in positions],
+                                })
     new_positions.set_index('symbol')
-    print("NEW POSITIONS DF \n", new_positions, "\n OLD POSITIONS DF \n", old_positions)
+    # print("NEW POSITIONS DF \n", new_positions, "\n OLD POSITIONS DF \n", old_positions)
     #  if old positions has data, update the new positions and return it. 
-    if( old_positions is not None):
+    if(old_positions is not None):
         old_positions = old_positions.combine_first(new_positions)
         print("\nUPDATED POSITIONS\n",old_positions)
-    return old_positions
+        return old_positions
+    else:
+        empty_portfolio = pd.DataFrame(columns = {
+                                                'symbol',
+                                                'qty',
+                                                'avg_entry_price',
+                                                'change_today',
+                                                'cost_basis',
+                                                'current_price',
+                                                'exchange',
+                                                'lastday_price',
+                                                'market_value',
+                                                'side',
+                                                'unrealized_intraday_pl',
+                                                'unrealized_intraday_plpc',
+                                                'unrealized_pl',
+                                                })
+        return empty_portfolio
+    # empty_portfolio = empty_portfolio.transpose()
+    
+    
  
 #%%
 class order():
