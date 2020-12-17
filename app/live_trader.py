@@ -448,12 +448,15 @@ if __name__ == "__main__":
             print(f'positions found for {recent_weekday_attempt}')
 
             updated_portfolio = get_positions(yesterdays_portfolio)
+            existing_portfolio_corr_mean, existing_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].tolist(), dt.datetime(2020,1,1),recent_weekday )
             break
         except Exception as e:
             print(f"positions_for {recent_weekday_attempt} not found, going one more day back (most likely due to holiday) {e}")
             i=i-1 
         if i == -10:
-            print('Current positions not found, create new file')
+            print('Current positions not found, creating new file')
+            updated_portfolio = get_positions()
+            existing_portfolio_corr_mean = 1
             break
     # cancel all existing orders for the Day
     api.cancel_all_orders() #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -480,9 +483,7 @@ if __name__ == "__main__":
         cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         backtest = None
 #%%
-        existing_portfolio_corr_mean, existing_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].tolist(), dt.datetime(2020,1,1),recent_weekday )
-
-
+        
         MAX_NEW_POSITIONS = 2
         num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*.1))
         j = 0 #stocks purchased iterator
@@ -519,22 +520,25 @@ if __name__ == "__main__":
                     i=i+1
             
             except Exception as e:
-                print(f"all entry opportunities already owned, buying opportunities:  {e}")
+                if (e == KeyError(0)):
+                    print(f"no buing opportunities found: {buying_opp.head()}")
+                print(f"all entry opportunities already owned, buying opportunities:{e}")
             j = j+1
     # current_positions.set_index('symbol')
 #%%
-    #Update Stops
 
-    updated_portfolio = get_exits(updated_portfolio)
-#update RSI
-    updated_portfolio["RSI"] = updated_portfolio.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
+    if (len(updated_portfolio)>0):
+        #Update Stops
+        updated_portfolio = get_exits(updated_portfolio)
+        #update RSI
+        updated_portfolio["RSI"] = updated_portfolio.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
 
-    # new_positions.loc[len(new_positions)] = purchase
-    # then update stops and rsi, and place any necessary puchase orders:
-    updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
-    # save the updated positions to the CLOUD
-    cloud_connection.save_to_positions(updated_portfolio, recent_weekday)
-    
+        # new_positions.loc[len(new_positions)] = purchase
+        # then update stops and rsi, and place any necessary puchase orders:
+        updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
+        # save the updated positions to the CLOUD
+        cloud_connection.save_to_positions(updated_portfolio, recent_weekday)
+        
 
     print('success!')
     # try:

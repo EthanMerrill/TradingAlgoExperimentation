@@ -187,6 +187,8 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
         results_df = pd.read_pickle(TEMP_SAVE_DIR)
     except Exception as e:
         print(e)
+        print(f"returning the dataframe of length {len(results_df)}")
+        return results_df
     end_time = time()
     time_basic = end_time-start_time
 
