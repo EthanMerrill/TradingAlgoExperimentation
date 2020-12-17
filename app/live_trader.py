@@ -439,6 +439,7 @@ if __name__ == "__main__":
     #     previous_positions_date = recent_weekday-timedelta(2)
     # else: 
     #     previous_positions_date = recent_weekday
+    # count back 10 days and check for portfolio records on each day. THis is why the iterator goes negative in a weird way
     i = 0
     while i>-10:
         try:
