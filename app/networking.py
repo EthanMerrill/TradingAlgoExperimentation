@@ -74,19 +74,21 @@ class cloud_object:
         ensure_dir("/tmp/Positions")
         ensure_dir("/tmp/Backtests")
     def save_to_backtests(self, df, blob_name):
-        save_dir = f"/tmp/Backtests/{str(blob_name)}"
-        ensure_dir(save_dir)
-        pd.to_pickle(df,save_dir)
-        self.blob = self.bucket.blob(f'Backtests/{str(blob_name)}')
-        self.blob.upload_from_filename(save_dir)
+        local_dir = (f"/tmp/Backtests/{str(blob_name)}")
+        cloud_dir =(f"Backtests/{str(blob_name)}")
+        ensure_dir(local_dir)
+        pd.to_pickle(df,local_dir)
+        self.blob = self.bucket.blob(cloud_dir)
+        self.blob.upload_from_filename(local_dir)
         return (str(blob_name))
 
     def save_to_positions(self, df, blob_name):
-        save_dir = f"/tmp/Positions/positions-{str(blob_name)}"
-        ensure_dir(save_dir)
-        pd.to_pickle(df,save_dir)
-        self.blob = self.bucket.blob(f'Positions/positions-{str(blob_name)}')
-        self.blob.upload_from_filename(save_dir)
+        local_dir = (f"/tmp/Positions/positions-{str(blob_name)}")
+        cloud_dir = (f"Positions/positions-{str(blob_name)}")
+        ensure_dir(local_dir)
+        pd.to_pickle(df,local_dir)
+        self.blob = self.bucket.blob(cloud_dir)
+        self.blob.upload_from_filename(local_dir)
         return (str(blob_name))
 
     def download_from_backtests(self, filename):
