@@ -49,7 +49,7 @@ def get_All_Tickers(date = (date.today())):
     polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=["T"])
     polygon_tickers_dataframe.reset_index(inplace = True)
     # polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
-    return polygon_tickers_dataframe.loc[0:20]
+    return polygon_tickers_dataframe
 #%%
 
 def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_date, end_date=date.today(), init_cash=1000):
