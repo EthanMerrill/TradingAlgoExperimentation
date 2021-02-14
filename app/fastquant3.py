@@ -185,7 +185,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
         
     try:
         results_df = pd.read_pickle(TEMP_SAVE_DIR)
-        
+
     except Exception as e:
         print(e)
         print(f"returning the dataframe of length {len(results_df)}")
@@ -203,7 +203,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
 def run_strategy_generator(date):
     # convert the passed date to string:
     date_str=datetime.strftime(date, "%Y-%m-%d")
-    all_ticks = get_All_Tickers(date_str).loc[0:15]
+    all_ticks = get_All_Tickers(date_str)#.loc[0:15]
     # just get what you need from all ticks-- the ticks! Should save some ram
     all_ticks = all_ticks['T']
     if all_ticks.empty==True :
