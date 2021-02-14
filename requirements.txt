@@ -68,7 +68,7 @@ lxml==4.4.2
 MarkupSafe==1.1.1
 matplotlib==3.1.2
 mistune==0.8.4
-multidict==5.0.0
+multidict==4.7.6
 multitasking==0.0.9
 nbclient==0.5.1
 nbconvert==6.0.7
