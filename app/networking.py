@@ -71,8 +71,10 @@ class cloud_object:
         self.storage_client = storage.Client.from_service_account_json('GOOGLE_APPLICATION_CREDENTIALS.json')
                 # #make bucket object locally:
         self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
+    
+    
     def save_to_backtests(self, df, blob_name):
-        cloud_dir =(f"Backtests/{str(blob_name)}")
+        cloud_dir =(f"Backtests/{str(blob_name)}.csv")
         # pd.to_pickle(df,stream)
         self.blob = self.bucket.blob(cloud_dir)
         stream = io.StringIO()
@@ -83,7 +85,7 @@ class cloud_object:
         return (str(blob_name))
 
     def save_to_positions(self, df, blob_name):
-        cloud_dir = (f"Positions/positions-{str(blob_name)}")
+        cloud_dir = (f"Positions/positions-{str(blob_name)}.csv")
         self.blob = self.bucket.blob(cloud_dir)
         stream = io.StringIO()
         df.to_csv(stream)
@@ -92,10 +94,10 @@ class cloud_object:
         return (str(blob_name))
 
     def download_from_backtests(self, filename):
-        cloud_dir = (f"Backtests/{str(filename)}")
+        cloud_dir = (f"Backtests/{str(filename)}.csv")
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
+            raise Exception(f"could not get file from gcloud:'{cloud_dir}.csv'")
         self.blob = self.bucket.blob(cloud_dir)
 
         raw_bytes = self.blob.download_as_string()
@@ -105,10 +107,10 @@ class cloud_object:
         return df
 
     def download_from_positions(self, filename):
-        cloud_dir = (f"Positions/positions-{str(filename)}")
+        cloud_dir = (f"Positions/positions-{str(filename)}.csv")
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
+            raise Exception(f"could not get file from gcloud:'{cloud_dir}.csv'")
         self.blob = self.bucket.blob(cloud_dir)
         raw_bytes = self.blob.download_as_string()
         raw_csv = raw_bytes.decode("utf-8")
