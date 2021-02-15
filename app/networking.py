@@ -71,48 +71,49 @@ class cloud_object:
         self.storage_client = storage.Client.from_service_account_json('GOOGLE_APPLICATION_CREDENTIALS.json')
                 # #make bucket object locally:
         self.bucket = self.storage_client.get_bucket(BUCKET_NAME)
-        ensure_dir("/tmp/Positions")
-        ensure_dir("/tmp/Backtests")
     def save_to_backtests(self, df, blob_name):
-        local_dir = (f"/tmp/Backtests/{str(blob_name)}")
         cloud_dir =(f"Backtests/{str(blob_name)}")
-        ensure_dir(local_dir)
-        pd.to_pickle(df,local_dir)
+        # pd.to_pickle(df,stream)
         self.blob = self.bucket.blob(cloud_dir)
-        self.blob.upload_from_filename(local_dir)
+        stream = io.StringIO()
+        # df.to_csv(stream, sep=",")
+        df.to_csv(stream)
+        self.blob.upload_from_string(stream.getvalue(),content_type="application/octet-stream")
+   
         return (str(blob_name))
 
     def save_to_positions(self, df, blob_name):
-        local_dir = (f"/tmp/Positions/positions-{str(blob_name)}")
         cloud_dir = (f"Positions/positions-{str(blob_name)}")
-        ensure_dir(local_dir)
-        pd.to_pickle(df,local_dir)
         self.blob = self.bucket.blob(cloud_dir)
-        self.blob.upload_from_filename(local_dir)
+        stream = io.StringIO()
+        df.to_csv(stream)
+        self.blob.upload_from_string(stream.getvalue(),content_type="application/octet-stream")
+        
         return (str(blob_name))
 
     def download_from_backtests(self, filename):
         cloud_dir = (f"Backtests/{str(filename)}")
-        local_dir = (f"/tmp/Backtests/{str(filename)}")
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
             raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
-        ensure_dir(local_dir)
         self.blob = self.bucket.blob(cloud_dir)
-        self.blob.download_to_filename(local_dir)
-        unpickle = pd.read_pickle(local_dir)
-        return unpickle
+
+        raw_bytes = self.blob.download_as_string()
+        raw_csv = raw_bytes.decode("utf-8")
+        df = pd.read_csv(io.StringIO(raw_csv))
+        
+        return df
 
     def download_from_positions(self, filename):
         cloud_dir = (f"Positions/positions-{str(filename)}")
-        local_dir = (f"/tmp/Positions/positions-{str(filename)}")
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
             raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
-        ensure_dir(local_dir)
         self.blob = self.bucket.blob(cloud_dir)
-        self.blob.download_to_filename(f"/tmp/Positions/positions-{filename}")   
-        unpickle = pd.read_pickle(f"/tmp/Positions/positions-{filename}")
-        return unpickle
+        raw_bytes = self.blob.download_as_string()
+        raw_csv = raw_bytes.decode("utf-8")
+        df = pd.read_csv(io.StringIO(raw_csv))
+        
+        return df
 
 #%%
