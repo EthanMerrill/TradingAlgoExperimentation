@@ -39,7 +39,7 @@ def get_All_Tickers(date = (date.today())):
         polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
         # print(polygon_tickers_dataframe.head())
         if not polygonTickersData:
-            Print("ERROR No Polygon tickers data found")
+            print("ERROR No Polygon tickers data found")
             raise Exception ("empty Polygon Tickers data, check Polygon api status")
     except Exception as e:
         print(f"failed to query polygon api {e}")

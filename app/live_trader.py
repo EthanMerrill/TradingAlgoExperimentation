@@ -161,7 +161,8 @@ def get_stop(symbol, end_date, ema_period, atr_period, stop_factor=3):
     period = max(ema_period, atr_period)*2
     offset_days = -(period+((period//7)*2)+(period%7)+2)*2
     # #Convert numpy float to normal days
-    # offset_days = offset_days.item()
+    if isinstance(offset_days, np.int64):
+        offset_days = offset_days.item()
     start_date = end_date + timedelta(days = offset_days)
     # Unneccessary formatting
     start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
