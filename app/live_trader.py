@@ -462,7 +462,7 @@ if __name__ == "__main__":
     i = 0
     while i>-10:
         try:
-            recent_weekday_attempt = (str(most_recent_trade(recent_weekday = most_recent_trade_day(offset = i))))
+            recent_weekday_attempt = str(most_recent_trade_day(offset = i))
             yesterdays_portfolio = cloud_connection.download_from_positions(recent_weekday_attempt)
             print(f'positions found for {recent_weekday_attempt}')
 
