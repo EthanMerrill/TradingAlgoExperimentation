@@ -9,6 +9,7 @@ import fastquant3
 import os
 import requests
 from helper_functions import ensure_dir,list_files
+import trading_calendars as tc
 
 # Create alpaca api Object
 
@@ -424,18 +425,31 @@ def most_recent_weekday(offset=0):
   
     return most_recent
 
+def most_recent_trade_day(offset=0, today = date.today()):
+    xnys = tc.get_calendar("XNYS")
+
+    i = offset
+    while i>(offset-10):
+        today = date.today()+timedelta(i)
+        if (xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))) == True):
+            return today
+        else:
+            i=i-1
+
+
+
 #%%
 if __name__ == "__main__":
     new_positions = []
     # print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
     # print(f"environ Variables: {os.environ}")
     cloud_connection = cloud_object('backtests-and-positions')
-    recent_weekday = most_recent_weekday()
+    recent_weekday = most_recent_trade_day()
     # May want to put the logic below into the most recent weekday function with the use of a time_cutoff argument:
     today8pm = dt.datetime.now().replace(hour=20, minute=0, second=0, microsecond=0)
     # if today is a weekday and before 8, run with previous current day:
     if (date.today() == recent_weekday)  & (dt.datetime.now()<=today8pm):
-        recent_weekday = most_recent_weekday(-1)
+        recent_weekday = most_recent_trade_day(offset=-1)
     # If none of the above are true, it is a weekday after 8, and the simple most recent weekday will work. 
 
     # # get current positions
@@ -448,7 +462,7 @@ if __name__ == "__main__":
     i = 0
     while i>-10:
         try:
-            recent_weekday_attempt = (str(most_recent_weekday(offset = i)))
+            recent_weekday_attempt = (str(most_recent_traderecent_weekday = most_recent_trade_day(offset = i)))
             yesterdays_portfolio = cloud_connection.download_from_positions(recent_weekday_attempt)
             print(f'positions found for {recent_weekday_attempt}')
 
