@@ -71,11 +71,15 @@ todo:
     - [ ] add to live_trader
 - [x] add correlation checking for new positions https://machinelearningmastery.com/gentle-introduction-autocorrelation-partial-autocorrelation/
 
+- [ ] fix to make backtester less error prone (problem is in the buy and hold analyzer I think)
+- [ ] have the script turn off the system when done.
+- [ ] place oco order types at day start
+
 - ## Long term Features:
-- [ ] Use a format better than pickle for long term storage
+- [x] Use a format better than pickle for long term storage
 - [x] CI/CD!! :o https://cloud.google.com/run/docs/continuous-deployment-with-cloud-build
 - [ ] improve optimization strategies
-
+- [ ] integrate facebook prophet
 
 pip freeze > requirements.txt
 pip install -r requirements.txt
