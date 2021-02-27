@@ -560,9 +560,9 @@ if __name__ == "__main__":
         
 
     print('success!')
-    # try:
-    #     os.system('sudo shutdown -h now')
-    # except Exception as e:
-    #     print(f'shutdown failed: {e}')
+    try:
+        requests.get('https://northamerica-northeast1-backtestalgov1.cloudfunctions.net/VM-Shutdown-HTTP-Trig')
+    except Exception as e:
+        print(f'shutdown failed: {e}')
 # https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
 # %%

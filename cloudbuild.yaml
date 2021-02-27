@@ -10,6 +10,6 @@ steps:
   args: [ '-c', "gcloud secrets versions access latest --secret=ALPACA_API --format='get(payload.data)' | tr '_-' '/+' | base64 -d > POLYGON_API.json" ]
 - name: 'gcr.io/cloud-builders/docker'
   entrypoint: 'bash'
-  args: ['-c', 'docker build -t gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation . --build-arg  GOOGLE_APPLICATION_CREDENTIALS="$(GOOGLE_APPLICATION_CREDENTIALS.json)" --build-arg ALPACA_KEYS="$(ALPACA_KEYS.json)"']
+  args: ['-c', 'docker build -t gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation . --build-arg  GOOGLE_APPLICATION_CREDENTIALS="$(GOOGLE_APPLICATION_CREDENTIALS.json)" --build-arg ALPACA_KEYS="$(ALPACA_KEYS.json)" --build-arg POLYGON_API=$(POLYGON_API.json)']
 images: 
   - 'gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation'
