@@ -13,6 +13,7 @@ from helper_functions import ensure_dir
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
 ALPACA_KEY = os.environ['alpaca_paper']
+polygon_KEY = os.environ['polygon']
 # IEXKey = keys.keys.get("iex")
 # MIsc global options
 pd.set_option('display.max_rows', None)
@@ -33,7 +34,7 @@ def get_All_Tickers(date = (date.today())):
     # function to find & filter all symbols for any date
     # #Get all tickers:
     try:
-        queryurl = (f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/stocks/{str(date)}?unadjusted=false&apiKey={ALPACA_KEY}")
+        queryurl = (f"https://api.polygon.io/v2/aggs/grouped/locale/US/market/stocks/{str(date)}?unadjusted=false&apiKey={polygon_KEY}")
         polygonTickersData = requests.get(queryurl).json().get("results")
 
         polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)

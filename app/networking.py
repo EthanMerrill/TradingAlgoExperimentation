@@ -19,9 +19,11 @@ try:
     with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
         GACdata = json.load(f)
 
-
     with open('ALPACA_KEYS.json') as m:
         ALPACA_DATA = json.load(m)
+
+    with open('POLYGON_API.json') as o:
+        POLYGON_API = json.load(o)
 
     #these keys must be set before calling fastquant3 file
     os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
@@ -29,6 +31,9 @@ try:
     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
 
+    os.environ['polygon'] = POLYGON_API['api_key']
+
+    
 except Exception as e:
     print(f"Error loading keys from google key manager: error {e}")
 
