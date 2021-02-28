@@ -10,6 +10,8 @@ import os
 import requests
 from helper_functions import ensure_dir,list_files
 import trading_calendars as tc
+from pytz import timezone
+import math
 
 # Create alpaca api Object
 
@@ -34,11 +36,9 @@ def RSI_parser(symbol, end_date, period):
     offset_days = -(period+((period//7)*2)+(period%7)+2)*2
     offset_days = int(offset_days)
     start_date = end_date + (timedelta(days = offset_days))
-    # Unneccessary formatting
-    start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
-    end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
     # Get Symbol Data
-    historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey="+os.environ["alpaca_live"]).json().get("results")
+    historic_symbol_data = networking.polygon_data().get_single_stock_daily_bars(symbol, start_date, end_date)
+    # DEPRECIATED historic_symbol_data = requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey="+os.environ["polygon"]).json().get("results")
     #shove it in a dataframe real quick:
     historic_symbol_data = pd.DataFrame.from_dict(historic_symbol_data)
     #fix dates 
@@ -76,11 +76,12 @@ def RSI(df, period, base="c"):
     
     rUp = up.ewm(com=period - 1,  adjust=False).mean()
     rDown = down.ewm(com=period - 1, adjust=False).mean().abs()
-    # Nice way to add the period to the column, we don't need that 
-    # df['RSI_' + str(period)] = 100 - 100 / (1 + rUp / rDown)
-    # df['RSI_' + str(period)].fillna(0, inplace=True)
+
     df['RSI_current'] = 100 - 100 / (1 + rUp / rDown)
     df['RSI_current'].fillna(0, inplace=True)
+
+
+    df['Price_at_RSI_target'] = 1
 
     return df
 
@@ -133,7 +134,7 @@ def get_exits(current_positions):
     """
     if current_positions.empty == True:
         return current_positions
-    current_positions["temp_stop_price"] = current_positions.apply(lambda x:get_stop(x["symbol"],most_recent_weekday(), x["optimal_rsi_period"], (x["optimal_rsi_period"]*2), stop_factor=2.5), axis=1)
+    current_positions["temp_stop_price"] = current_positions.apply(lambda x:get_stop(x["symbol"],most_recent_trade_day(), x["optimal_rsi_period"], (x["optimal_rsi_period"]*2), stop_factor=2.5), axis=1)
     # check if stop columns exist:
     if ('stop_price' in current_positions):
         # !!!!!!!!!!!!!check if there is data in columns if they exist
@@ -165,12 +166,11 @@ def get_stop(symbol, end_date, ema_period, atr_period, stop_factor=3):
     if isinstance(offset_days, np.int64):
         offset_days = offset_days.item()
     start_date = end_date + timedelta(days = offset_days)
-    # Unneccessary formatting
-    start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
-    end_date = dt.datetime.strftime(date.today(), "%Y-%m-%d")
+
     # Get Symbol Data
-    polygon_symbol_request =  (f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey="+os.environ["alpaca_live"])
-    df = requests.get(polygon_symbol_request).json().get("results")
+    # polygon_symbol_request = networking.polygon_data.get_single_stock_daily_bars(symbol, start_date, end_date)
+    # DEPRECIATED polygon_symbol_request =  (f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey="+os.environ["alpaca_live"])
+    df = networking.polygon_data().get_single_stock_daily_bars(symbol, start_date, end_date)
 
      #shove it in a dataframe real quick:
     df = pd.DataFrame.from_dict(df)
@@ -319,7 +319,7 @@ class order():
                 time_in_force='day'
             )
         except Exception as e:
-                print(f"Limit Sell Failed with exception: {e}")
+                print(f"Limit Sell failed with exception: {e}")
                 return
 
     def sell(symbol, qty):
@@ -375,6 +375,7 @@ def orderer(df, long_market_value, cash):
     '''
     scans the positions df and places orders to fill in the gaps.
     '''
+    print(df)
     #first, see if there are any positions:
     if (df['qty'].notnull().values.any()==True):
         # if there are positions, make a seperate df with only positions:
@@ -410,36 +411,50 @@ def orderer(df, long_market_value, cash):
     return df
 #%%
 
-def most_recent_weekday(offset=0):
-    '''
-    does what it says on th tin
-    '''
+# DEPRECIATED
+# def most_recent_weekday(offset=0):
+#     '''
+#     does what it says on th tin
+#     '''
 
-    today = date.today()+timedelta(offset)
-    day_of_week = today.weekday()
-    if day_of_week <5:
-        return today
-    else:
-        time_delta = timedelta(day_of_week-4)
-        most_recent = today - time_delta
+#     today = date.today()+timedelta(offset)
+#     t = datetime.time(14,00)
+#     today = datetime.datetime.combine(today, t)
+#     day_of_week = today.weekday()
+#     if day_of_week <5:
+#         return today
+#     else:
+#         time_delta = timedelta(day_of_week-4)
+#         most_recent = today - time_delta
   
-    return most_recent
+#     return most_recent
 
 def most_recent_trade_day(offset=0, today = date.today()):
+
+    today_base = today+timedelta(offset)
+    # t = dt.time(10,00)
+    # today_base = dt.datetime.combine(today, t)
+    
+    # get trading calendar
     xnys = tc.get_calendar("XNYS")
-
-    i = offset
-    while i>(offset-10):
-        today = date.today()+timedelta(i)
-        if (xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))) == True):
-            return today
-        else:
-            i=i-1
-
-
+    try:
+        i = offset
+        while i>(offset-10):
+            today = today_base+timedelta(i)
+            print(xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))))
+            if (xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))) == True):
+                return today
+            else:
+                i=i-1
+    # a kludgey way to keep that future warning about non-timezone aware vs timezone aware functions from throwing an error
+    except Exception as e:
+        print(e)
+        pass
+        return today
 
 #%%
 if __name__ == "__main__":
+    #create empty new positions list
     new_positions = []
     # print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")
     # print(f"environ Variables: {os.environ}")

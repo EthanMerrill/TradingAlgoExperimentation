@@ -243,7 +243,8 @@ def portfolio_correlation_test(portfolio_symbols, start_date, end_date):
     # for each symbol, get the historical tick data from polygon API arrange the data in a array of series'
     i=0
     while(i<len(portfolio_symbols)):
-        closing_vals = pd.DataFrame(networking.polgon_data().get_single_stock_daily_bars(portfolio_symbols[i],start_date,end_date))["c"]
+        print(f'Creating historical price array for portfolio is the portfolio_correlation_test module. Symbol {i} of {len(portfolio_symbols)}')
+        closing_vals = pd.DataFrame(networking.polygon_data().get_single_stock_daily_bars(portfolio_symbols[i],start_date,end_date))["c"]
         closing_vals = closing_vals.rename(portfolio_symbols[i])
         portfolio_history = pd.concat([portfolio_history, closing_vals], axis=1)
         i=i+1

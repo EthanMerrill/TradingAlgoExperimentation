@@ -5,6 +5,7 @@ import requests
 import pandas as pd
 import datetime as dt
 from helper_functions import ensure_dir, log_traceback
+import time
 #google cloud imports
 import io
 from io import BytesIO
@@ -59,14 +60,19 @@ class alpaca_api:
         return api
 #%%
 ## Create a object to handle polygon data requests
-class polgon_data:
+class polygon_data:
     def __init__(self):
-        self.alpaca_live = os.environ["alpaca_live"]
+        self.POLYGON_API = os.environ["polygon"]
     def get_single_stock_daily_bars(self, symbol, start_date, end_date):
+        # sleep for 15s to ensure the api isn't called more than 5 times per minute (API Rate limit)
+        print("12.5s wait for polygon api rate limit")
+        time.sleep(12.5)
         #takes date times in dt fromat, then converts to strings which are inserted in the api request
         start_date = dt.datetime.strftime(start_date, "%Y-%m-%d")
         end_date = dt.datetime.strftime(end_date.today(), "%Y-%m-%d")
-        return requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={self.alpaca_live}").json().get("results")
+        # print(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={self.POLYGON_API}")
+        # print(requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={self.POLYGON_API}").json().get("results"))
+        return requests.get(f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{start_date}/{end_date}?unadjusted=false&sort=asc&apiKey={self.POLYGON_API}").json().get("results")
 
 
 # Create a cloud object which can upload to positions or backtests easily
@@ -102,7 +108,7 @@ class cloud_object:
         cloud_dir = (f"Backtests/{str(filename)}.csv")
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file from gcloud:'{cloud_dir}.csv'")
+            raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
         self.blob = self.bucket.blob(cloud_dir)
 
         raw_bytes = self.blob.download_as_string()
@@ -115,7 +121,7 @@ class cloud_object:
         cloud_dir = (f"Positions/positions-{str(filename)}.csv")
         # Check to see if the file exists in the cloud:
         if self.bucket.blob(cloud_dir).exists(self.storage_client) == False:
-            raise Exception(f"could not get file from gcloud:'{cloud_dir}.csv'")
+            raise Exception(f"could not get file from gcloud:'{cloud_dir}'")
         self.blob = self.bucket.blob(cloud_dir)
         raw_bytes = self.blob.download_as_string()
         raw_csv = raw_bytes.decode("utf-8")

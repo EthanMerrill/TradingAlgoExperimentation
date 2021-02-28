@@ -15,3 +15,24 @@ cloud_connection = cloud_object('backtests-and-positions')
 # print(cloud_connection.download_from_backtests("2021-02-12"))
 
 print(most_recent_trade_day(offset=-1))
+
+#%%
+from pytz import timezone
+import time
+import datetime as dt
+from datetime import timedelta
+import pandas as pd
+import exchange_calendars as tc
+# get trading calendar
+xnys = tc.get_calendar("XNYS")
+today = dt.datetime.today()+timedelta(-2)
+t = dt.time(10,00)
+today_base = dt.datetime.combine(today, t)
+
+today = today_base
+print(today.strftime('%Y-%m-%d-T%H'))
+print(pd.Timestamp(today.strftime('%Y-%m-%d-T%H'), tz = 'US/Eastern'))
+print(xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))))
+# %%
+
+# %%
