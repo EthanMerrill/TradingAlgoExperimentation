@@ -12,7 +12,6 @@ import networking
 from helper_functions import ensure_dir
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
-ALPACA_KEY = os.environ['alpaca_paper']
 polygon_KEY = os.environ['polygon']
 # IEXKey = keys.keys.get("iex")
 # MIsc global options

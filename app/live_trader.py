@@ -375,11 +375,12 @@ def orderer(df, long_market_value, cash):
     '''
     scans the positions df and places orders to fill in the gaps.
     '''
-    print(df)
+    print(f'dataframe pased to orderer:{df}')
     #first, see if there are any positions:
     if (df['qty'].notnull().values.any()==True):
         # if there are positions, make a seperate df with only positions:
         active_positions = df[df['qty'].notnull()]
+        print(f"active positions: {active_positions}")
         # if RSI level is above top limit, sell
         rsi_upper_exceeded = active_positions.loc[active_positions["optimal_rsi_upper"]<=active_positions["RSI_current"]]
         if rsi_upper_exceeded.empty == False:
