@@ -511,9 +511,9 @@ if __name__ == "__main__":
         cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         backtest = None
 #%%
-        
+        MAX_NUMBER_OF_POSITIONS = 20
         MAX_NEW_POSITIONS = 2
-        num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*.1))
+        num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*(1/MAX_NUMBER_OF_POSITIONS)))
         j = 0 #stocks purchased iterator
         while j<num_new_positions:
             purchase = None
