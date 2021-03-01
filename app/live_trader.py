@@ -281,6 +281,8 @@ def get_positions(df = None):
     #  if old positions has data, update the new positions and return it. 
     if(old_positions is not None):
         old_positions = old_positions.combine_first(new_positions)
+        # kludgey way to remove unnamed columns
+        old_positions = old_positions.loc[:, ~old_positions.columns.str.contains('Unnamed')]
         print("\nUPDATED POSITIONS\n",old_positions)
         return old_positions
     else:
@@ -299,6 +301,7 @@ def get_positions(df = None):
                                                 'unrealized_intraday_plpc',
                                                 'unrealized_pl',
                                                 })
+
         return empty_portfolio
     # empty_portfolio = empty_portfolio.transpose()
     
@@ -375,12 +378,12 @@ def orderer(df, long_market_value, cash):
     '''
     scans the positions df and places orders to fill in the gaps.
     '''
-    print(f'dataframe pased to orderer:{df}')
+    print(f'dataframe passed to orderer: \n {df}')
     #first, see if there are any positions:
     if (df['qty'].notnull().values.any()==True):
         # if there are positions, make a seperate df with only positions:
         active_positions = df[df['qty'].notnull()]
-        print(f"active positions: {active_positions}")
+        print(f"active positions: \n{active_positions}")
         # if RSI level is above top limit, sell
         rsi_upper_exceeded = active_positions.loc[active_positions["optimal_rsi_upper"]<=active_positions["RSI_current"]]
         if rsi_upper_exceeded.empty == False:
@@ -411,23 +414,6 @@ def orderer(df, long_market_value, cash):
         i = i+1
     return df
 #%%
-
-# DEPRECIATED
-# def most_recent_weekday(offset=0):
-#     '''
-#     does what it says on th tin
-#     '''
-
-#     today = date.today()+timedelta(offset)
-#     t = datetime.time(14,00)
-#     today = datetime.datetime.combine(today, t)
-#     day_of_week = today.weekday()
-#     if day_of_week <5:
-#         return today
-#     else:
-#         time_delta = timedelta(day_of_week-4)
-#         most_recent = today - time_delta
-  
 #     return most_recent
 
 def most_recent_trade_day(offset=0, today = date.today()):
@@ -439,10 +425,10 @@ def most_recent_trade_day(offset=0, today = date.today()):
     # get trading calendar
     xnys = tc.get_calendar("XNYS")
     try:
-        i = offset
+        i = 0
         while i>(offset-10):
             today = today_base+timedelta(i)
-            print(xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))))
+            # print(xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))))
             if (xnys.is_session(pd.Timestamp(today.strftime('%Y-%m-%d'))) == True):
                 return today
             else:
@@ -455,6 +441,13 @@ def most_recent_trade_day(offset=0, today = date.today()):
 
 #%%
 if __name__ == "__main__":
+    # Adjust pandas print settings to print whole df at once
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', 1000)
+    pd.set_option('display.max_colwidth', -1)
+
+
     #create empty new positions list
     new_positions = []
     # print(f"started live trader working directory:{os.getcwd()} /n MachineTime:{dt.datetime.now()}")

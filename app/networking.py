@@ -90,7 +90,7 @@ class cloud_object:
         self.blob = self.bucket.blob(cloud_dir)
         stream = io.StringIO()
         # df.to_csv(stream, sep=",")
-        df.to_csv(stream, header=True, index=True)
+        df.to_csv(stream, header=True, index=False)
         self.blob.upload_from_string(stream.getvalue(),content_type="application/octet-stream")
    
         return (str(blob_name))
@@ -99,7 +99,7 @@ class cloud_object:
         cloud_dir = (f"Positions/positions-{str(blob_name)}.csv")
         self.blob = self.bucket.blob(cloud_dir)
         stream = io.StringIO()
-        df.to_csv(stream, header=True, index=True)
+        df.to_csv(stream, header=True, index=False)
         self.blob.upload_from_string(stream.getvalue(),content_type="application/octet-stream")
         
         return (str(blob_name))
