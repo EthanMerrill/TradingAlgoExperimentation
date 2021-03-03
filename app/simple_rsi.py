@@ -219,7 +219,7 @@ def get_symbol_data(symbol, start_date, end_date):
         key_id= os.environ["alpaca_paper"],
         secret_key=os.environ["alpaca_secret_paper"],
         paper=True,
-        usePolygon=True
+        usePolygon=False
     )
     DataFactory = store.getdata  # or use alpaca_backtrader_api.AlpacaData
 

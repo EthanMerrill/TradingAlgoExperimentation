@@ -570,10 +570,42 @@ if __name__ == "__main__":
 
     print('success!')
     try:
+        
         print('trying the shutdown function call')
-        print(requests.get('https://northamerica-northeast1-backtestalgov1.cloudfunctions.net/VM-Shutdown-HTTP-Trig'))
-        print((requests.get('https://northamerica-northeast1-backtestalgov1.cloudfunctions.net/VM-Shutdown-HTTP-Trig').json())
+
+        REGION = 'northamerica-northeast1-a'
+        PROJECT_ID = 'backtestalgov1'
+        RECEIVING_FUNCTION = 'VM-Shutdown-HTTP-Trig'
+
+        # Constants for setting up metadata server request
+        # See https://cloud.google.com/compute/docs/instances/verifying-instance-identity#request_signature
+        function_url = f'https://{REGION}-{PROJECT_ID}.cloudfunctions.net/{RECEIVING_FUNCTION}'
+        metadata_server_url = \
+            'http://metadata/computeMetadata/v1/instance/service-accounts/default/identity?audience='
+        token_full_url = metadata_server_url + function_url
+        token_headers = {'Metadata-Flavor': 'Google'}
+
+            # Fetch the token
+        token_response = requests.get(token_full_url, headers=token_headers)
+        jwt = token_response.text
+
+
+        # Provide the token in the request to the receiving function
+        function_headers = {'Authorization': f'bearer {jwt}'}
+        function_response = requests.get(function_url, headers=function_headers)
+        print( function_response.text)
+  
     except Exception as e:
         print(f'shutdown failed: {e}')
 # https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
 # %%
+
+
+# TODO<developer>: set these values
+
+
+
+def calling_function(request):
+
+
+    return function_response.text
