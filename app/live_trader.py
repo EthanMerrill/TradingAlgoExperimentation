@@ -573,9 +573,9 @@ if __name__ == "__main__":
         
         print('trying the shutdown function call')
 
-        REGION = 'us-central1'
+        REGION = 'northamerica-northeast1'
         PROJECT_ID = 'backtestalgov1'
-        RECEIVING_FUNCTION = 'function-1'
+        RECEIVING_FUNCTION = 'VM-Shutdown-HTTP-Trig'
 
         # Constants for setting up metadata server request
         # See https://cloud.google.com/compute/docs/instances/verifying-instance-identity#request_signature

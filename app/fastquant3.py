@@ -10,6 +10,7 @@ from simple_rsi import callable_rsi_backtest, get_symbol_data
 import os
 import networking
 from helper_functions import ensure_dir
+import params
 # Set Finnhub api keys
 # finnhubKey = keys.keys.get("finnhub")
 polygon_KEY = os.environ['polygon']
@@ -152,7 +153,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
 
 
         try:
-            symbol_dict, time_elapsed = rsi_optimizer([3,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date, init_cash =1000)
+            symbol_dict, time_elapsed = rsi_optimizer([params.backtest_period_start,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date, init_cash =1000)
             results_df = results_df.append(symbol_dict, ignore_index=True)
             symbol_count = symbol_count+1
         except Exception as e:
