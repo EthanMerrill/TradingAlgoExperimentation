@@ -37,7 +37,7 @@ def get_All_Tickers(date = (date.today())):
         polygonTickersData = requests.get(queryurl).json().get("results")
 
         polygon_tickers_dataframe = pd.DataFrame(polygonTickersData)
-        # print(polygon_tickers_dataframe.head())
+        print(polygon_tickers_dataframe.head())
         if not polygonTickersData:
             print("ERROR No Polygon tickers data found")
             raise Exception ("empty Polygon Tickers data, check Polygon api status")
@@ -69,7 +69,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     periods_list = np.arange(periods_list[0],periods_list[1],periods_list[2], dtype=int)
     rsi_lower_list = np.arange(rsi_lower_list[0],rsi_lower_list[1],rsi_lower_list[2], dtype=int)
     rsi_upper_list = np.arange(rsi_upper_list[0],rsi_upper_list[1],rsi_upper_list[2], dtype=int)
-    # print(f"total possiblities:{len(periods_list)*len(rsi_lower_list)*len(rsi_upper_list)}")
+    print(f"total possiblities:{len(periods_list)*len(rsi_lower_list)*len(rsi_upper_list)}")
     
     data = get_symbol_data(symbol, start_date, end_date)
 

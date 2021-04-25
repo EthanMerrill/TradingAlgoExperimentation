@@ -575,7 +575,7 @@ if __name__ == "__main__":
 
         REGION = 'northamerica-northeast1-a'
         PROJECT_ID = 'backtestalgov1'
-        RECEIVING_FUNCTION = 'VM-Shutdown-HTTP-Trig'
+        RECEIVING_FUNCTION = 'function-1'
 
         # Constants for setting up metadata server request
         # See https://cloud.google.com/compute/docs/instances/verifying-instance-identity#request_signature

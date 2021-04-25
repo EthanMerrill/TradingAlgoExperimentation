@@ -10,26 +10,6 @@ import os
 import traceback
 ################################
 
-# import json
-# from datetime import date, timedelta
-# import datetime as dt
-
-# try:
-#     with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
-#         GACdata = json.load(f)
-
-#     with open('ALPACA_KEYS.json') as m:
-#         ALPACA_DATA = json.load(m)
-
-#     os.environ["alpaca_secret_paper"] = ALPACA_DATA["alpaca_secret_paper"]
-#     os.environ["alpaca_secret_live"] = ALPACA_DATA["alpaca_secret_live"]
-#     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
-#     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
-# except Exception as e:
-#     print(f"Error loading keys from google key manager: error {e}")
-
-    
-##################################
 try:
 
     ALPACA_API_KEY = os.environ['alpaca_paper']
@@ -134,7 +114,7 @@ class BasicRSI(bt.Strategy):
     # Below is where all the decisions happen 
     def __init__(self):
         self.live_bars = False
-        self.RSI = bt.ind.RelativeStrengthIndex(self.data0, period=self.p.rsi_period)
+        self.RSI = bt.ind.RSI_Safe(self.data0, period=self.p.rsi_period)
 
                 # Trailing Stop Indicator
         self.stoptrailer = st = StopTrailer(atrperiod=self.p.atrperiod,
