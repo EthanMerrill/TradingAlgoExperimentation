@@ -71,7 +71,8 @@ todo:
     - [ ] add to live_trader
 - [x] add correlation checking for new positions https://machinelearningmastery.com/gentle-introduction-autocorrelation-partial-autocorrelation/
 
-- [ ] fix to make backtester less error prone (problem is in the buy and hold analyzer I think)
+- [x] fix to make backtester less error prone (problem is in the buy and hold analyzer I think)
+    - it was the RSI strategy. safediv was off by default. Replaced with RSI_safe strategy
 - [ ] have the script turn off the system when done.
 - [ ] place oco order types at day start
 
@@ -79,6 +80,7 @@ todo:
 - [x] Use a format better than pickle for long term storage
 - [x] CI/CD!! :o https://cloud.google.com/run/docs/continuous-deployment-with-cloud-build
 - [ ] improve optimization strategies
+    - look at win rate, not just roi: https://backtest-rookies.com/2017/06/11/using-analyzers-backtrader/
 - [ ] integrate facebook prophet
 
 pip freeze > requirements.txt

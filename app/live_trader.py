@@ -573,7 +573,7 @@ if __name__ == "__main__":
         
         print('trying the shutdown function call')
 
-        REGION = 'northamerica-northeast1-a'
+        REGION = 'us-central1'
         PROJECT_ID = 'backtestalgov1'
         RECEIVING_FUNCTION = 'function-1'
 

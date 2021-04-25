@@ -46,7 +46,7 @@ def get_All_Tickers(date = (date.today())):
     # Filter 
     # Volume over 1mil, close price over 15&under 200
     polygon_tickers_dataframe = polygon_tickers_dataframe.loc[(polygon_tickers_dataframe["v"]>=1000000 ) & (polygon_tickers_dataframe["c"]>=15 ) & (polygon_tickers_dataframe["c"]<=200)]
-    polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=["T"])
+    polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=["T"])[:10]# !!!!!!!!!!!!!!UNCOMMENT THIS FOR PRODUCTION
     polygon_tickers_dataframe.reset_index(inplace = True)
     # polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
     return polygon_tickers_dataframe
@@ -146,7 +146,6 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
     results_df = results_df.astype(dtypes_dict)
 
 
-    print(results_df.dtypes)
     symbol_count=0
     error_count=0
     for symbol in df_of_stocks:
