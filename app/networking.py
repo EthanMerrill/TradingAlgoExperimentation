@@ -32,6 +32,7 @@ try:
     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
 
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GACdata
     os.environ['polygon'] = POLYGON_API['api_key']
 
     

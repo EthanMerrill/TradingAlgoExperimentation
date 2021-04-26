@@ -441,21 +441,23 @@ def most_recent_trade_day(offset=0, today = date.today()):
         pass
         return today
 
-def shutdownFunction():
-            
-        try:
-    PROJECT_ID = 'backtestalgov1'
-    ZONE = 'northamerica-northeast1-a'
-    VM_NAME = 'jeromepowell-larger-boot'
+def shutdownFunction():       
+    try:
+        credentials = GoogleCredentials.get_application_default()
+        service = discovery.build('compute', 'v1', credentials=credentials)
 
-    # url = f'https://compute.googleapis.com/compute/v1/projects/{PROJECT_ID}/zones/{ZONE}/instances/{VM_NAME}/start'
-    # print(url)
-    request  = service.instances().stop(project=PROJECT_ID, zone=ZONE, instance=VM_NAME)
-    response = request.execute()
-    print(f'response: {pprint(response)}')
-    
-        except Exception as e:
-            print(f'shutdown failed: {e}')
+        PROJECT_ID = 'backtestalgov1'
+        ZONE = 'northamerica-northeast1-a'
+        VM_NAME = 'jeromepowell-larger-boot'
+
+        # url = f'https://compute.googleapis.com/compute/v1/projects/{PROJECT_ID}/zones/{ZONE}/instances/{VM_NAME}/start'
+        # print(url)
+        request  = service.instances().stop(project=PROJECT_ID, zone=ZONE, instance=VM_NAME)
+        response = request.execute()
+        print(f'response: {pprint(response)}')
+
+    except Exception as e:
+        print(f'shutdown failed: {e}')
     # https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
 
 #%%
