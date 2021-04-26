@@ -441,7 +441,7 @@ def most_recent_trade_day(offset=0, today = date.today()):
         pass
         return today
 
- def shutdownFunction():
+def shutdownFunction():
             
         try:
     PROJECT_ID = 'backtestalgov1'
@@ -585,8 +585,7 @@ if __name__ == "__main__":
         updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
         # save the updated positions to the CLOUD
         cloud_connection.save_to_positions(updated_portfolio, recent_weekday)
-        
-    shutdownFunction()
+shutdownFunction()
 
 
        # %%
