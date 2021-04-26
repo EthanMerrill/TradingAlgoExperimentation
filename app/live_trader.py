@@ -12,6 +12,8 @@ from helper_functions import ensure_dir,list_files
 import trading_calendars as tc
 from pytz import timezone
 import math
+from googleapiclient import discovery
+from oauth2client.client import GoogleCredentials
 
 # Create alpaca api Object
 
@@ -439,6 +441,23 @@ def most_recent_trade_day(offset=0, today = date.today()):
         pass
         return today
 
+ def shutdownFunction():
+            
+        try:
+    PROJECT_ID = 'backtestalgov1'
+    ZONE = 'northamerica-northeast1-a'
+    VM_NAME = 'jeromepowell-larger-boot'
+
+    # url = f'https://compute.googleapis.com/compute/v1/projects/{PROJECT_ID}/zones/{ZONE}/instances/{VM_NAME}/start'
+    # print(url)
+    request  = service.instances().stop(project=PROJECT_ID, zone=ZONE, instance=VM_NAME)
+    response = request.execute()
+    print(f'response: {pprint(response)}')
+    
+        except Exception as e:
+            print(f'shutdown failed: {e}')
+    # https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
+
 #%%
 if __name__ == "__main__":
     # Adjust pandas print settings to print whole df at once
@@ -567,45 +586,7 @@ if __name__ == "__main__":
         # save the updated positions to the CLOUD
         cloud_connection.save_to_positions(updated_portfolio, recent_weekday)
         
-
-    print('success!')
-    try:
-        
-        print('trying the shutdown function call')
-
-        REGION = 'northamerica-northeast1'
-        PROJECT_ID = 'backtestalgov1'
-        RECEIVING_FUNCTION = 'VM-Shutdown-HTTP-Trig'
-
-        # Constants for setting up metadata server request
-        # See https://cloud.google.com/compute/docs/instances/verifying-instance-identity#request_signature
-        function_url = f'https://{REGION}-{PROJECT_ID}.cloudfunctions.net/{RECEIVING_FUNCTION}'
-        metadata_server_url = \
-            'http://metadata/computeMetadata/v1/instance/service-accounts/default/identity?audience='
-        token_full_url = metadata_server_url + function_url
-        token_headers = {'Metadata-Flavor': 'Google'}
-
-            # Fetch the token
-        token_response = requests.get(token_full_url, headers=token_headers)
-        jwt = token_response.text
+    shutdownFunction()
 
 
-        # Provide the token in the request to the receiving function
-        function_headers = {'Authorization': f'bearer {jwt}'}
-        function_response = requests.get(function_url, headers=function_headers)
-        print( function_response.text)
-  
-    except Exception as e:
-        print(f'shutdown failed: {e}')
-# https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
-# %%
-
-
-# TODO<developer>: set these values
-
-
-
-def calling_function(request):
-
-
-    return function_response.text
+       # %%
