@@ -26,3 +26,8 @@ backtest_rsi_lower_step = 5
 backtest_rsi_upper_start = 64
 backtest_rsi_upper_stop = 75
 backtest_rsi_upper_step = 5
+
+
+# Asset Acquisition rules
+#the percent of the total portfolio each new security will represent
+aa_pct_portfolio = .1

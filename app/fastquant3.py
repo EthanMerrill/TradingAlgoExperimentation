@@ -47,7 +47,7 @@ def get_All_Tickers(date = (date.today())):
     # Filter 
     # Volume over 1mil, close price over 15&under 200
     polygon_tickers_dataframe = polygon_tickers_dataframe.loc[(polygon_tickers_dataframe["v"]>=1000000 ) & (polygon_tickers_dataframe["c"]>=15 ) & (polygon_tickers_dataframe["c"]<=200)]
-    polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=["T"])[:10]# !!!!!!!!!!!!!!UNCOMMENT THIS FOR PRODUCTION
+    polygon_tickers_dataframe = polygon_tickers_dataframe.sort_values(by=["T"])#[:50]# !!!!!!!!!!!!!!UNCOMMENT THIS FOR PRODUCTION
     polygon_tickers_dataframe.reset_index(inplace = True)
     # polygon_tickers_dataframe.to_pickle(f"Stock_universe_{date}")
     return polygon_tickers_dataframe

@@ -390,6 +390,12 @@ def orderer(df, long_market_value, cash):
         rsi_upper_exceeded = active_positions.loc[active_positions["optimal_rsi_upper"]<=active_positions["RSI_current"]]
         if rsi_upper_exceeded.empty == False:
             rsi_upper_exceeded.apply(lambda x:order.sell(x['symbol'], x['qty']), axis=1)
+            # remove the item from the positions list, so it is not repurchased tomorrow:
+            print(f'removing sold positions: {rsi_upper_exceeded} from positions list')
+            active_positions = pd.merge(active_positions, rsi_upper_exceeded, indicator=True, how='outer'
+                .query('_merge=="left_only')
+                .drop('_merge', axis=1))
+            print(f'updated active_positions(after removal): {active_positions}')
         # update all trailing limit orders with new prices
         active_positions.apply(lambda x:order.limit_sell(x["symbol"], x['qty'], x["stop_price"]), axis=1)
 
@@ -404,7 +410,7 @@ def orderer(df, long_market_value, cash):
         # each asset aims to be approx 10% of portfolio at purchase. 
         # get appropriate purchase value:
         equity = long_market_value+cash
-        purchase_cash = (equity*.1)
+        purchase_cash = (equity*params.aa_pct_portfolio)
         # find number of shares which can be purchased with that amount
         ask_price = api.get_last_quote(new_positions['symbol'][i]).askprice
         shares = purchase_cash//ask_price
