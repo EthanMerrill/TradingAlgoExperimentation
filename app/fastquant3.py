@@ -181,7 +181,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
             print("failed to do a temp save of Data ")    
 
         if (len(results_df)>0):
-            print(f"finished symbol: {symbol}.STATS: {results_df.loc[len(results_df)-1]} {symbol_count+error_count} analyized so far out of {len(df_of_stocks)} (Successes: {symbol_count}).")
+            print(f"finished symbol: {symbol}.STATS: {results_df.loc[len(results_df)-1]} {symbol_count+error_count} analyzed so far out of {len(df_of_stocks)} (Successes: {symbol_count}).")
         
     try:
         results_df = pd.read_pickle(TEMP_SAVE_DIR)

@@ -14,6 +14,7 @@ from pytz import timezone
 import math
 from googleapiclient import discovery
 from oauth2client.client import GoogleCredentials
+import params
 
 # Create alpaca api Object
 
