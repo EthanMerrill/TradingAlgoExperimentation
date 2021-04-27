@@ -591,6 +591,8 @@ if __name__ == "__main__":
 
         # new_positions.loc[len(new_positions)] = purchase
         # then update stops and rsi, and place any necessary puchase orders:
+        # first replace the Nans with zeros
+        updated_portfolio['qty'] = df['qty'].fillna(0)
         updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
         # save the updated positions to the CLOUD
         cloud_connection.save_to_positions(updated_portfolio, recent_weekday)
