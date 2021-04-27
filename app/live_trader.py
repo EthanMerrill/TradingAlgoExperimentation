@@ -594,7 +594,7 @@ if __name__ == "__main__":
         # new_positions.loc[len(new_positions)] = purchase
 
         # first replace the Nans with zeros
-        updated_portfolio['qty'] = df['qty'].fillna(0)
+        updated_portfolio['qty'] = updated_portfolio['qty'].fillna(0)
         #  place any necessary puchase orders:
         updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
         # save the updated positions to the CLOUD
