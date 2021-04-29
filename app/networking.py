@@ -15,7 +15,7 @@ import math
 import os
 import json
 import alpaca_trade_api as tradeapi
-
+#%%
 try:
     with open('GOOGLE_APPLICATION_CREDENTIALS.json') as f:
         GACdata = json.load(f)
@@ -32,7 +32,7 @@ try:
     os.environ["alpaca_live"] = ALPACA_DATA["alpaca_live"]
     os.environ["alpaca_paper"] = ALPACA_DATA["alpaca_paper"]
 
-    # os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GACdata
+    os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = GACdata['private_key']
     os.environ['polygon'] = POLYGON_API['api_key']
 
     
@@ -41,7 +41,7 @@ except Exception as e:
 
   # Set varables depending on paper trading or not
 PAPER_TRADE = True
-
+#%%
 class alpaca_api:
     def __init__(self, PAPER_TRADE):
         if PAPER_TRADE==True:

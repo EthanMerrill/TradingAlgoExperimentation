@@ -14,3 +14,4 @@ alpaca_keys.json
 GOOGLE_APPLICATION_CREDENTIALS.json
 POLYGON_API.json
 tests.py
+app/tempCodeRunnerFile.py

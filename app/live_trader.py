@@ -98,9 +98,9 @@ def get_entries(backtest):
     # include only profitable strategies:
     backtest = backtest.loc[backtest["profit"]>0]
     # Get the Current RSI for each symbol given the RSI period. 
-    # backtest["RSI_current"] = np.vectorize(RSI_parser)(backtest['symbol'],date.today(),backtest["optimal_rsi_period"])
+    backtest["RSI_current"] = np.vectorize(RSI_parser)(backtest['symbol'],date.today(),backtest["optimal_rsi_period"])
     # can replace this vectorize with the pandas lambda apply because I think it's more performant?
-    backtest["RSI_current"] = backtest.apply(lambda x:RSI_parser(x['symbol'],date.today(), x['optimal_rsi_period']))
+    # backtest["RSI_current"] = backtest.apply(lambda x:RSI_parser(x["symbol"],date.today(), x['optimal_rsi_period'])) ## THROWS error!
     # Of all items tested, get only those where the Current RSI is lower than the Optimal low RSI entry pt
     buying_opp = backtest.loc[backtest["optimal_rsi_lower"]>backtest["RSI_current"]]
 
@@ -592,9 +592,6 @@ if __name__ == "__main__":
         updated_portfolio["RSI"] = updated_portfolio.apply(lambda x:RSI_parser(x["symbol"],recent_weekday, x["optimal_rsi_period"]),axis=1)
 
         # new_positions.loc[len(new_positions)] = purchase
-
-        # first replace the Nans with zeros
-        updated_portfolio['qty'] = updated_portfolio['qty'].fillna(0)
         #  place any necessary puchase orders:
         updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
         # save the updated positions to the CLOUD

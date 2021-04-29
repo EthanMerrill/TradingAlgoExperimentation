@@ -1,5 +1,5 @@
-alpaca-backtrader-api==0.13.1
-alpaca-trade-api==0.52.0
+alpaca-backtrader-api>=0.13.1
+alpaca-trade-api>=0.52.0
 backtrader==1.9.76.123
 beautifulsoup4==4.9.3
 cachetools==4.2.1
