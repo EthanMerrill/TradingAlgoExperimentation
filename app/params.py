@@ -31,3 +31,7 @@ backtest_rsi_upper_step = 5
 # Asset Acquisition rules
 #the percent of the total portfolio each new security will represent
 aa_pct_portfolio = .1
+# the maximum number of positions allowed in the portfolio at any given time
+aa_max_number_of_positions = 20
+# The Max number of new positions that can be acquired on any given day. Set to zero to prevent backtesting
+aa_max_new_positions = 2

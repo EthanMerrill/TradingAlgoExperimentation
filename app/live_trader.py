@@ -261,6 +261,7 @@ def get_positions(df = None):
 
     if df is not None:
         old_positions = df
+        old_positions = old_positions.set_index('symbol')
     else:
         old_positions=None    
     positions = (api.list_positions())
@@ -281,13 +282,34 @@ def get_positions(df = None):
                                 'unrealized_intraday_plpc': [x.unrealized_intraday_plpc for x in positions],
                                 'unrealized_pl': [x.unrealized_pl for x in positions],
                                 })
-    new_positions.set_index('symbol')
-    # print("NEW POSITIONS DF \n", new_positions, "\n OLD POSITIONS DF \n", old_positions)
+    new_positions = new_positions.set_index('symbol')
+    
+    print("NEW POSITIONS DF \n", new_positions, "\n OLD POSITIONS DF (updated) \n", old_positions)
+
+
+
     #  if old positions has data, update the new positions and return it. 
     if(old_positions is not None):
-        old_positions = old_positions.combine_first(new_positions)
+            # match just on symbol. isolate just one row of old positions and new positions for the matching symbol:
+        # i = 0
+        # while i < len(new_positions):
+        #     new_pos_row = new_positions.loc[new_positions['symbol'] == new_positions.loc[i]['symbol']]
+        #     print('newPos \n', new_pos_row)
+        #     old_pos_row = old_positions.loc[old_positions['symbol']==new_positions.loc[i]['symbol']]
+        #     print('oldPos \n', old_pos_row)
+
+        #     new_pos_row = new_pos_row.set_index('symbol')
+        #     old_pos_row = old_pos_row.set_index('symbol')
+
+        #     old_pos_row.update(new_pos_row, overwrite=True, errors='raise')
+        #     print('updated \n', old_pos_row)
+        #     i=i+1
+    
+        old_positions.update(new_positions)
+        # old_positions = old_positions.combine_first(new_positions)
         # kludgey way to remove unnamed columns
         old_positions = old_positions.loc[:, ~old_positions.columns.str.contains('Unnamed')]
+        old_positions = old_positions.reset_index()
         print("\nUPDATED POSITIONS\n",old_positions)
         return old_positions
     else:
@@ -385,9 +407,9 @@ def orderer(df, long_market_value, cash):
     '''
     print(f'dataframe passed to orderer: \n {df}')
     #first, see if there are any positions:
-    if (df['qty'].notnull().values.any()==True):
+    if (df['avg_entry_price'].notnull().values.any()==True):
         # if there are positions, make a seperate df with only positions:
-        active_positions = df[df['qty'].notnull()]
+        active_positions = df[df['avg_entry_price'].notnull()]
         print(f"active positions: \n{active_positions}")
         # if RSI level is above top limit, sell
         rsi_upper_exceeded = active_positions.loc[active_positions["optimal_rsi_upper"]<=active_positions["RSI_current"]]
@@ -404,7 +426,7 @@ def orderer(df, long_market_value, cash):
 
     # if there is no quantity of a position, open an order to acquire it
     # This is designed so that in the future multiple new positions can be added
-    new_positions = df[df['qty'].isnull()]
+    new_positions = df[df['avg_entry_price'].isnull()]
     # reset index so it can be iterated
     new_positions.reset_index(inplace=True)
     i= 0 
@@ -470,6 +492,9 @@ def shutdownFunction():
     # https://www.googleapis.com/compute/v1/projects/myproject/zones/us-central1-f/instances/example-instance/start
 
 #%%
+
+
+
 if __name__ == "__main__":
     # Adjust pandas print settings to print whole df at once
     pd.set_option('display.max_rows', None)
@@ -504,9 +529,8 @@ if __name__ == "__main__":
             recent_weekday_attempt = str(most_recent_trade_day(offset = i))
             yesterdays_portfolio = cloud_connection.download_from_positions(recent_weekday_attempt)
             print(f'positions found for {recent_weekday_attempt}')
-
+            print("yesterday's portfolio \n", yesterdays_portfolio)
             updated_portfolio = get_positions(yesterdays_portfolio)
-            existing_portfolio_corr_mean, existing_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].tolist(), dt.datetime(2020,1,1),recent_weekday )
             break
         except Exception as e:
             print(f"positions_for {recent_weekday_attempt} not found, going one more day back (most likely due to holiday) {e}")
@@ -523,12 +547,15 @@ if __name__ == "__main__":
     long_mkt_val = float(api.get_account().long_market_value)
     
     equity = cash+long_mkt_val
-    if cash > (equity*.1):
+    print('cash', cash, 'long_mkt_val', long_mkt_val)
+    num_new_positions = min(params.aa_max_new_positions, cash//(equity*(1/params.aa_max_number_of_positions)))
+    # if there is enough cash to acquire new positions in the required percent allocation AND if the Number of new positions is greater than 0, run the backtest, make purchases.
+    if(cash > (equity*params.aa_pct_portfolio)) and (num_new_positions>0):
         #get opportunities:
         # first, check if a backtest for the current day exists:
         try: 
             # backtest = pd.read_pickle(f"app/tmp/2020-11-09")
-            # print(f"getting backtest for {recent_weekday}") 
+            print(f"getting backtest for {recent_weekday}") 
             backtest = cloud_connection.download_from_backtests(recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         except :
             print(f'backtest for current day not found, running for {recent_weekday} ')
@@ -541,47 +568,48 @@ if __name__ == "__main__":
         cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         backtest = None
 #%%
-        MAX_NUMBER_OF_POSITIONS = 20
-        MAX_NEW_POSITIONS = 2
-        num_new_positions = min(MAX_NEW_POSITIONS, cash//(equity*(1/MAX_NUMBER_OF_POSITIONS)))
-        j = 0 #stocks purchased iterator
-        while j<num_new_positions:
-            purchase = None
-            try:
-                i = 0 #row in purchase options DF iterator
-                # Create a new_positions df from the best buying opportunity, if new portfolio df doesn't exist:
-                if(len(updated_portfolio)==0):
-                     # # create empty current positions list:
-                    current_positions_template = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
-                    purchase = buying_opp.loc[i]
-                    # new_positions = purchase
-                    purchase = purchase.to_frame()
-                    purchase = purchase.transpose()
-                    updated_portfolio = current_positions_template.append(purchase, verify_integrity=True, ignore_index=True)
-                    print(purchase)
-                    j = j+1
-                # Check to see if position already exists, add it if not:
-                while (i <= len(buying_opp)) & (j<num_new_positions):
-                    # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
-                    is_not_owned = buying_opp["symbol"][i] not in updated_portfolio["symbol"].values
-                    #check the correlation of the purchase with the rest of the portfolio. 
-                    new_portfolio_list = (updated_portfolio["symbol"].tolist())
-                    new_portfolio_list.append(buying_opp["symbol"][i])
-                    print(new_portfolio_list)
-                    new_portfolio_corr_mean, new_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(new_portfolio_list, dt.datetime(2020,1,1),recent_weekday)
+    j = 0 #stocks purchased iterator
+    # Determine existing portfolio correlation before iterating through purchases and comparing. 
+    existing_portfolio_corr_mean, existing_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].tolist(), dt.datetime(2020,1,1),recent_weekday )
+    # while j<num_new_positions:
+    while j<1: #TESTING!!!!!
 
-                #if not owned and makes portfolio more diverse, add the stock to the portfolio
-                    if (is_not_owned and (new_portfolio_corr_mean<existing_portfolio_corr_mean)):
-                        purchase = buying_opp.loc[i]
-                        updated_portfolio = updated_portfolio.append(purchase, verify_integrity=True, ignore_index=True)
-                        break
-                    i=i+1
-            
-            except Exception as e:
-                if (e == KeyError(0)):
-                    print(f"no buing opportunities found: {buying_opp.head()}")
-                print(f"all entry opportunities already owned, buying opportunities:{e}")
-            j = j+1
+        purchase = None
+        try:
+            i = 0 #row in purchase opportunities DF iterator
+            # Create a new_positions df from the best buying opportunity, if new portfolio df doesn't exist:
+            if(len(updated_portfolio)==0):
+                    # # create empty current positions list:
+                current_positions_template = pd.DataFrame(columns=['symbol','qty','avg_entry_price','change_today','cost_basis','current_price','exchange','lastday_price','market_value','side','unrealized_intraday_pl','unrealized_intraday_plpc','unrealized_pl'])
+                purchase = buying_opp.loc[i]
+                # new_positions = purchase
+                purchase = purchase.to_frame()
+                purchase = purchase.transpose()
+                updated_portfolio = current_positions_template.append(purchase, verify_integrity=True, ignore_index=True)
+                print(purchase)
+                j = j+1
+            # Check to see if position already exists, add it if not:
+            while (i <= len(buying_opp)):
+                # make sure that the asset isn't already owned, then move the the second or third best option if it is, to encourage diversity
+                is_not_owned = buying_opp["symbol"][i] not in updated_portfolio["symbol"].values
+                #check the correlation of the purchase with the rest of the portfolio. 
+                new_portfolio_list = (updated_portfolio["symbol"].tolist())
+                new_portfolio_list.append(buying_opp["symbol"][i])
+                print(new_portfolio_list)
+                new_portfolio_corr_mean, new_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(new_portfolio_list, dt.datetime(2020,1,1),recent_weekday)
+
+            #if not owned and makes portfolio more diverse, add the stock to the portfolio
+                if (is_not_owned and (new_portfolio_corr_mean<existing_portfolio_corr_mean)):
+                    purchase = buying_opp.loc[i]
+                    updated_portfolio = updated_portfolio.append(purchase, verify_integrity=True, ignore_index=True)
+                    break
+                i=i+1
+        
+        except Exception as e:
+            if (e == KeyError(0)):
+                print(f"no buying opportunities found: {buying_opp.head()}")
+            print(f"all entry opportunities already owned, buying opportunities:{e}")
+        j = j+1
     # current_positions.set_index('symbol')
 #%%
 
