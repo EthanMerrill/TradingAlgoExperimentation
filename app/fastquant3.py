@@ -11,10 +11,8 @@ import os
 import networking
 from helper_functions import ensure_dir
 import params
-# Set Finnhub api keys
-# finnhubKey = keys.keys.get("finnhub")
+
 polygon_KEY = os.environ['polygon']
-# IEXKey = keys.keys.get("iex")
 # MIsc global options
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)

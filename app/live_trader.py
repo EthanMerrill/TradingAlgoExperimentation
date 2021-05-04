@@ -103,14 +103,12 @@ def get_entries(backtest):
     # backtest["RSI_current"] = backtest.apply(lambda x:RSI_parser(x["symbol"],date.today(), x['optimal_rsi_period'])) ## THROWS error!
     # Of all items tested, get only those where the Current RSI is lower than the Optimal low RSI entry pt
     buying_opp = backtest.loc[backtest["optimal_rsi_lower"]>backtest["RSI_current"]]
-
     #sort and re-index the new dataframe before returning
     
     buying_opp = buying_opp.sort_values(by=['alpha'], ascending=False)
     buying_opp.reset_index(inplace=True)
     buying_opp.set_index('symbol')
-
-    return buying_opp
+    return buying_opp, backtest
 
 #%%
 
@@ -437,7 +435,17 @@ def orderer(df, long_market_value, cash):
         equity = long_market_value+cash
         purchase_cash = (equity*params.aa_pct_portfolio)
         # find number of shares which can be purchased with that amount
-        ask_price = api.get_last_quote(new_positions['symbol'][i]).askprice
+        try: 
+            ask_price = api.get_last_quote(new_positions['symbol'][i]).askprice
+            shares = purchase_cash//ask_price
+        except Exception as e:
+            print(e, ask_price, 'original ask price failed, tryinging a different way')
+            account = api.get_barset(ticker,limit=1,timeframe='minute')
+            bid_price = account[ticker][0].h
+            print('revised price (bid): ', bid_price)
+            shares = purchase_cash//bid_price
+
+        print(f"equity {equity} purchase cash {purchase_cash} ask_price {ask_price} symbol {new_positions['symbol'][i]}")
         shares = purchase_cash//ask_price
         # Find the correct lower stop price for the oco order:
         get_stop(new_positions["symbol"][i], date.today(), new_positions["optimal_rsi_period"][i], (new_positions["optimal_rsi_period"][i]*2),stop_factor=3)
@@ -561,12 +569,12 @@ if __name__ == "__main__":
             print(f'backtest for current day not found, running for {recent_weekday} ')
             backtest = fastquant3.run_strategy_generator(recent_weekday)
         
-        backtest.set_index('symbol')
-        buying_opp = get_entries(backtest)
+            backtest.set_index('symbol')
+            buying_opp, backtest = get_entries(backtest)
 
         # Save and wipe mem ASAP
-        cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        backtest = None
+            cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+            backtest = None
 #%%
     j = 0 #stocks purchased iterator
     # Determine existing portfolio correlation before iterating through purchases and comparing. 
