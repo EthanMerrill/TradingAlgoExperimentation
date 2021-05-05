@@ -68,6 +68,9 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
     periods_list = np.arange(periods_list[0],periods_list[1],periods_list[2], dtype=int)
     rsi_lower_list = np.arange(rsi_lower_list[0],rsi_lower_list[1],rsi_lower_list[2], dtype=int)
     rsi_upper_list = np.arange(rsi_upper_list[0],rsi_upper_list[1],rsi_upper_list[2], dtype=int)
+
+    print(periods_list)
+
     print(f"total possiblities:{len(periods_list)*len(rsi_lower_list)*len(rsi_upper_list)}")
     
     data = get_symbol_data(symbol, start_date, end_date)
@@ -87,7 +90,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
                                                     cash = init_cash
                                                     )
                     stratsList.append(results[0][0])
-
+                    # print(results[0][0].RSI.array[-1])
     except Exception as e:
         print(f"error occured in rsi_optimizer: {e}") 
         raise     
@@ -95,7 +98,7 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
   
     # Find highest profit
     # strats = [x[0] for x in stratsList]
-
+    
 
     # Best Possible Strategy:
     bestStrat = max(stratsList, key = lambda item:list(item.analyzers.returns.get_analysis().items())[0][1] )
@@ -107,7 +110,8 @@ def rsi_optimizer(periods_list, rsi_lower_list, rsi_upper_list, symbol, start_da
         "optimal_rsi_upper" : bestStrat.p.rsi_upper,
         "profit":bestStrat.p.pnl_val,
         "roi": list(bestStrat.analyzers.returns.get_analysis().items())[0][1],
-        "buy_and_hold": list(bestStrat.analyzers.basereturn.get_analysis().items())[0][1]
+        "buy_and_hold": list(bestStrat.analyzers.basereturn.get_analysis().items())[0][1],
+        "RSI_current": bestStrat.RSI.array[-1]
     }
 
 
@@ -124,8 +128,7 @@ def humanize_time(secs):
     hours, mins = divmod(mins, 60)
     return '%02d:%02d:%02d' % (hours, mins, secs)
 
-#%%
-def multi_stock_rsi_optimize(df_of_stocks, end_date):
+def multi_stock_rsi_optimize(df_of_stocks, end_date=date.today()):
     ensure_dir("/tmp/Backtests")
     TEMP_SAVE_DIR = "/tmp/Backtests"
     start_time = time()
@@ -148,10 +151,17 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
     symbol_count=0
     error_count=0
     for symbol in df_of_stocks:
-
-
+        print(df_of_stocks)
         try:
-            symbol_dict, time_elapsed = rsi_optimizer([params.backtest_period_start,34,10],[30,41,5],[64,75,5], symbol, datetime(2020, 6, 1), end_date=end_date, init_cash =1000)
+            symbol_dict, time_elapsed = rsi_optimizer(
+                [params.backtest_period_start,params.backtest_period_stop,params.backtest_period_step],
+                [params.backtest_rsi_lower_start,params.backtest_rsi_lower_stop,params.backtest_rsi_lower_step],
+                [params.backtest_rsi_upper_start,params.backtest_rsi_upper_stop,params.backtest_rsi_upper_step], 
+                'AAPL', 
+                datetime(2020, 6, 1), 
+                end_date=end_date, 
+                init_cash =1000
+            )
             results_df = results_df.append(symbol_dict, ignore_index=True)
             symbol_count = symbol_count+1
         except Exception as e:
@@ -195,6 +205,8 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date):
 
 
     return results_df, time_basic
+
+multi_stock_rsi_optimize(pd.DataFrame({'symbol':['AAPL']}))
 
 
 # %%

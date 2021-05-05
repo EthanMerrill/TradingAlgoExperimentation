@@ -8,6 +8,8 @@ import backtrader.analyzers as btanalyzers
 import backtrader.filters as btfilters
 import os
 import traceback
+
+import params
 ################################
 
 try:

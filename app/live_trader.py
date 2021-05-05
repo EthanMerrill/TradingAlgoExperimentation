@@ -97,18 +97,14 @@ def get_entries(backtest):
     backtest = backtest.loc[backtest["alpha"]>0]
     # include only profitable strategies:
     backtest = backtest.loc[backtest["profit"]>0]
-    # Get the Current RSI for each symbol given the RSI period. 
-    backtest["RSI_current"] = np.vectorize(RSI_parser)(backtest['symbol'],date.today(),backtest["optimal_rsi_period"])
-    # can replace this vectorize with the pandas lambda apply because I think it's more performant?
-    # backtest["RSI_current"] = backtest.apply(lambda x:RSI_parser(x["symbol"],date.today(), x['optimal_rsi_period'])) ## THROWS error!
     # Of all items tested, get only those where the Current RSI is lower than the Optimal low RSI entry pt
     buying_opp = backtest.loc[backtest["optimal_rsi_lower"]>backtest["RSI_current"]]
     #sort and re-index the new dataframe before returning
-    
     buying_opp = buying_opp.sort_values(by=['alpha'], ascending=False)
     buying_opp.reset_index(inplace=True)
     buying_opp.set_index('symbol')
-    return buying_opp, backtest
+    return buying_opp
+
 
 #%%
 
@@ -525,11 +521,6 @@ if __name__ == "__main__":
     # If none of the above are true, it is a weekday after 8, and the simple most recent weekday will work. 
 
     # # get current positions
-    # if its monday, get positions from last friday, if that fails, keep going 1 day back till it works. 
-    # if (date.today.weekday() == 0):
-    #     previous_positions_date = recent_weekday-timedelta(2)
-    # else: 
-    #     previous_positions_date = recent_weekday
     # count back 10 days and check for portfolio records on each day. THis is why the iterator goes negative in a weird way
     i = 0
     while i>-10:
@@ -568,19 +559,19 @@ if __name__ == "__main__":
         except :
             print(f'backtest for current day not found, running for {recent_weekday} ')
             backtest = fastquant3.run_strategy_generator(recent_weekday)
-        
-            backtest.set_index('symbol')
-            buying_opp, backtest = get_entries(backtest)
-
-        # Save and wipe mem ASAP
+            backtest.set_index('symbol') 
+            #save newly generated backtest to cloud
             cloud_connection.save_to_backtests(backtest,recent_weekday) #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            backtest = None
+        # extract buying ops and wipe mem ASAP
+        buying_opp = get_entries(backtest)        
+        backtest = None
 #%%
-    j = 0 #stocks purchased iterator
+
     # Determine existing portfolio correlation before iterating through purchases and comparing. 
     existing_portfolio_corr_mean, existing_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(updated_portfolio["symbol"].tolist(), dt.datetime(2020,1,1),recent_weekday )
     # while j<num_new_positions:
-    while j<1: #TESTING!!!!!
+    j = 0 #stocks purchased iterator
+    while j<num_new_positions: #TESTING!!!!!
 
         purchase = None
         try:
@@ -607,7 +598,9 @@ if __name__ == "__main__":
                 new_portfolio_corr_mean, new_portfolio_corr_all_vals = fastquant3.portfolio_correlation_test(new_portfolio_list, dt.datetime(2020,1,1),recent_weekday)
 
             #if not owned and makes portfolio more diverse, add the stock to the portfolio
+                print(f"adding {buying_opp.loc[i]} to the portfolio results in a portfolio correlation of: {new_portfolio_corr_mean}, the existing portfolio correlation is: {existing_portfolio_corr_mean}")
                 if (is_not_owned and (new_portfolio_corr_mean<existing_portfolio_corr_mean)):
+                    print('this makes the portfolio more diverse, so it will be added to the portfolio')
                     purchase = buying_opp.loc[i]
                     updated_portfolio = updated_portfolio.append(purchase, verify_integrity=True, ignore_index=True)
                     break
@@ -632,7 +625,7 @@ if __name__ == "__main__":
         updated_portfolio = orderer(updated_portfolio, long_mkt_val, cash)
         # save the updated positions to the CLOUD
         cloud_connection.save_to_positions(updated_portfolio, recent_weekday)
-shutdownFunction()
+    shutdownFunction()
 
 
        # %%
