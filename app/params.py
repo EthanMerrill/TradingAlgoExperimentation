@@ -15,6 +15,7 @@ max_uni_price =200
 
 backtest_init_cash = 1000
 backtest_start_date = datetime(2020,6,1)
+# backtest_end_date = datetime.datetime.today()
 backtest_period_start = 3
 backtest_period_stop = 34
 backtest_period_step = 10

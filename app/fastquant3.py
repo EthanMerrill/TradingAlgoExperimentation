@@ -157,7 +157,7 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date=date.today()):
                 [params.backtest_period_start,params.backtest_period_stop,params.backtest_period_step],
                 [params.backtest_rsi_lower_start,params.backtest_rsi_lower_stop,params.backtest_rsi_lower_step],
                 [params.backtest_rsi_upper_start,params.backtest_rsi_upper_stop,params.backtest_rsi_upper_step], 
-                'AAPL', 
+                symbol, 
                 datetime(2020, 6, 1), 
                 end_date=end_date, 
                 init_cash =1000
@@ -205,8 +205,6 @@ def multi_stock_rsi_optimize(df_of_stocks, end_date=date.today()):
 
 
     return results_df, time_basic
-
-multi_stock_rsi_optimize(pd.DataFrame({'symbol':['AAPL']}))
 
 
 # %%

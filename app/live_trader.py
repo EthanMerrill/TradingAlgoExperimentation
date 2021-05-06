@@ -604,6 +604,7 @@ if __name__ == "__main__":
                     purchase = buying_opp.loc[i]
                     updated_portfolio = updated_portfolio.append(purchase, verify_integrity=True, ignore_index=True)
                     break
+                
                 i=i+1
         
         except Exception as e:
