@@ -1,5 +1,5 @@
-# Simple, reliable TA-Lib installation using Ubuntu base
-FROM ubuntu:22.04
+# Use a pre-built image that already has TA-Lib available
+FROM continuumio/miniconda3:latest
 
 # Set working directory
 WORKDIR /app
@@ -8,37 +8,30 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV TZ=America/New_York
-ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python and TA-Lib from Ubuntu repositories
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-dev \
-    libta-lib0-dev \
-    build-essential \
-    curl \
-    ca-certificates \
-    tzdata \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create python symlink
-RUN ln -s /usr/bin/python3 /usr/bin/python
+# Install TA-Lib using conda (most reliable method)
+RUN conda install -c conda-forge ta-lib -y && \
+    conda clean -afy
 
 # Set timezone to New York (same as US markets)
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# Copy requirements and install Python dependencies
+# Copy requirements and modify to exclude TA-Lib (already installed via conda)
 COPY requirements.txt .
+RUN sed '/TA-Lib/d' requirements.txt > requirements_no_talib.txt
 
-# Upgrade pip and install dependencies
-RUN python -m pip install --upgrade pip && \
-    python -m pip install --no-cache-dir TA-Lib>=0.4.25 && \
-    python -m pip install --no-cache-dir -r requirements.txt
+# Install other Python dependencies using pip
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements_no_talib.txt
 
 # Copy application code
 COPY app/ ./app/
 COPY config/ ./config/
+
+# Copy credential files if they exist
+COPY ALPACA_KEYS.json* ./
+COPY POLYGON_API.json* ./
+COPY GOOGLE_APPLICATION_CREDENTIALS.json* ./
 
 # Create logs directory
 RUN mkdir -p logs

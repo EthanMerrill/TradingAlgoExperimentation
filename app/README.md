@@ -58,29 +58,7 @@ The application is organized into several modular components:
    pip install -r requirements.txt
    ```
 
-2. **Set Up API Keys**
-   Create JSON files with your API credentials:
-
-   `ALPACA_KEYS.json`:
-
-   ```json
-   {
-     "alpaca_paper": "your_paper_api_key",
-     "alpaca_secret_paper": "your_paper_secret_key",
-     "alpaca_live": "your_live_api_key",
-     "alpaca_secret_live": "your_live_secret_key"
-   }
-   ```
-
-   `GOOGLE_APPLICATION_CREDENTIALS.json`:
-
-   ```json
-   {
-     "private_key": "path_to_your_service_account_key.json"
-   }
-   ```
-
-3. **Environment Variables** (Optional)
+2. **Environment Variables** (Optional)
    You can also set these environment variables:
    ```bash
    export PAPER_TRADE=True
