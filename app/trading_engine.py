@@ -383,7 +383,7 @@ class TradingEngine:
     def _get_current_rsi(self, symbol: str, period: int) -> Optional[float]:
         """Get current RSI value for a symbol."""
         try:
-            end_date = datetime.now()
+            end_date = datetime.now() - timedelta(minutes=20)
             start_date = end_date - timedelta(days=period * 3)  # Buffer for weekends/holidays
             
             data = data_provider.get_single_stock_bars(symbol, start_date, end_date)
@@ -401,7 +401,7 @@ class TradingEngine:
     def _get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol."""
         try:
-            end_date = datetime.now()
+            end_date = datetime.now() - timedelta(minutes=20)
             start_date = end_date - timedelta(days=2)
             
             data = data_provider.get_single_stock_bars(symbol, start_date, end_date)

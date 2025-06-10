@@ -150,7 +150,7 @@ class TradingAlgorithm:
         logger.info(f"📋 Stock universe loaded: {len(symbols)} symbols")
         
         # Step 2: Set backtest date range
-        end_date = datetime.now()
+        end_date = datetime.now() - timedelta(minutes=20)
         start_date = config.BACKTEST_START_DATE
         
         logger.info(f"📊 Starting comprehensive backtest analysis...")
