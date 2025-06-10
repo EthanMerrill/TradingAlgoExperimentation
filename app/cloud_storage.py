@@ -65,11 +65,11 @@ class CloudStorage:
             
             df = pd.DataFrame(results_data)
             
-            # Generate filename
+            # Generate filename with environment-specific path
             if timestamp is None:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
-            filename = f"Backtests/backtest_results_{timestamp}.csv"
+            filename = f"{config.get_environment_path('Backtests')}/backtest_results_{timestamp}.csv"
             
             # Upload to cloud storage
             blob = self.bucket.blob(filename)
@@ -99,7 +99,7 @@ class CloudStorage:
             return []
         
         try:
-            blob = self.bucket.blob(f"Backtests/{filename}")
+            blob = self.bucket.blob(f"{config.get_environment_path('Backtests')}/{filename}")
             
             if not blob.exists():
                 logger.error(f"File {filename} not found in cloud storage")
@@ -151,11 +151,11 @@ class CloudStorage:
             return False
         
         try:
-            # Generate filename
+            # Generate filename with environment-specific path
             if timestamp is None:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
-            filename = f"Positions/positions_{timestamp}.csv"
+            filename = f"{config.get_environment_path('Positions')}/positions_{timestamp}.csv"
             
             # Upload to cloud storage
             blob = self.bucket.blob(filename)
@@ -185,7 +185,7 @@ class CloudStorage:
             return pd.DataFrame()
         
         try:
-            blob = self.bucket.blob(f"Positions/{filename}")
+            blob = self.bucket.blob(f"{config.get_environment_path('Positions')}/{filename}")
             
             if not blob.exists():
                 logger.error(f"File {filename} not found in cloud storage")
@@ -217,11 +217,11 @@ class CloudStorage:
             return False
         
         try:
-            # Generate filename
+            # Generate filename with environment-specific path
             if timestamp is None:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
-            filename = f"Metadata/metadata_{timestamp}.json"
+            filename = f"{config.get_environment_path('Metadata')}/metadata_{timestamp}.json"
             
             # Upload to cloud storage
             blob = self.bucket.blob(filename)
@@ -324,11 +324,11 @@ class CloudStorage:
             return False
         
         try:
-            # Generate filename
+            # Generate filename with environment-specific path
             if timestamp is None:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             
-            filename = f"trades/consolidated_trades_{timestamp}.csv"
+            filename = f"{config.get_environment_path('trades')}/consolidated_trades_{timestamp}.csv"
             
             # Convert DataFrame to CSV string
             csv_buffer = io.StringIO()

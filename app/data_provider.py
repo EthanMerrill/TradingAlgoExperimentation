@@ -269,7 +269,7 @@ class DataProvider:
             # - Price range
             
             universe_data = []
-            for asset in tradable_stocks[:10]:  # Limit for testing
+            for asset in tradable_stocks[:100]:  # Limit for testing
                 universe_data.append({
                     'symbol': asset.symbol,
                     'name': asset.name,

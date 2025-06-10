@@ -29,6 +29,13 @@ class Config:
         # - ALPACA_LIVE_KEY: Your live trading API key (optional)
         # - ALPACA_LIVE_SECRET: Your live trading secret key (optional)
         # - GOOGLE_APPLICATION_CREDENTIALS: Path to GCS service account JSON (optional)
+        # - ENVIRONMENT: Environment setting (dev, qa, prod) - defaults to 'dev'
+        
+        # Environment setting (dev, qa, prod)
+        self.ENVIRONMENT = os.getenv('ENVIRONMENT', 'dev').lower()
+        if self.ENVIRONMENT not in ['dev', 'qa', 'prod']:
+            print(f"Warning: Invalid ENVIRONMENT value '{self.ENVIRONMENT}'. Must be 'dev', 'qa', or 'prod'. Defaulting to 'dev'.")
+            self.ENVIRONMENT = 'dev'
         
         required_vars = ['ALPACA_PAPER_KEY', 'ALPACA_PAPER_SECRET']
         missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -42,6 +49,8 @@ class Config:
         for var in optional_vars:
             if not os.getenv(var):
                 print(f"Info: Optional environment variable {var} not set.")
+        
+        print(f"Info: Running in '{self.ENVIRONMENT}' environment")
     
     def setup_trading_parameters(self):
         """Set up trading-related parameters."""
@@ -128,6 +137,18 @@ class Config:
             'min_price': self.MIN_PRICE,
             'max_price': self.MAX_PRICE
         }
+    
+    def get_environment_path(self, base_path: str) -> str:
+        """
+        Get environment-specific path for cloud storage.
+        
+        Args:
+            base_path: Base path (e.g., 'Backtests', 'Positions', 'trades')
+            
+        Returns:
+            Environment-specific path (e.g., 'dev/Backtests', 'qa/Positions', 'prod/trades')
+        """
+        return f"{self.ENVIRONMENT}/{base_path}"
 
 
 # Global configuration instance
