@@ -1,10 +1,7 @@
 steps:
   - name: "gcr.io/cloud-builders/docker"
-    entrypoint: "bash"
-    args:
-      - "-c"
-      - |
-        TAG=${_ENVIRONMENT:-latest}
-        docker build -t gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation:$TAG .
-        docker push gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation:$TAG
+    args: ["build", "-t", "gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation:${_ENVIRONMENT}", "."]
     timeout: "1800s" # 30 minutes for TA-Lib compilation
+
+images:
+  - "gcr.io/backtestalgov1/github.com/ethanmerrill/tradingalgoexperimentation:${_ENVIRONMENT}"
