@@ -1,0 +1,42 @@
+{
+  "trading": {
+    "paper_trade": true,
+    "max_positions": 10,
+    "max_new_positions": 2,
+    "position_size_pct": 0.1,
+    "min_cash_pct": 0.1,
+    "stop_loss_pct": 0.05,
+    "take_profit_pct": 0.15,
+    "max_hold_days": 30
+  },
+  "backtesting": {
+    "init_cash": 10000,
+    "months": 6
+  },
+  "rsi_optimization": {
+    "period_range": {
+      "start": 3,
+      "stop": 34,
+      "step": 10
+    },
+    "lower_range": {
+      "start": 20,
+      "stop": 41,
+      "step": 5
+    },
+    "upper_range": {
+      "start": 60,
+      "stop": 85,
+      "step": 5
+    }
+  },
+  "data_filtering": {
+    "min_volume": 200000,
+    "min_price": 15.0,
+    "max_price": 350.0,
+    "min_market_cap": 1000000000
+  },
+  "api": {
+    "rate_limit_delay": 0.1
+  }
+}

@@ -1,0 +1,101 @@
+2025-06-09 22:48:46,926 - __main__ - INFO - ==================================================
+2025-06-09 22:48:46,926 - __main__ - INFO - Trading Algorithm Starting
+2025-06-09 22:48:46,926 - __main__ - INFO - Paper Trading: True
+2025-06-09 22:48:46,926 - __main__ - INFO - Dry Run: False
+2025-06-09 22:48:46,926 - __main__ - INFO - ==================================================
+2025-06-09 22:48:46,941 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-09 22:48:46,941 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-09 22:48:46,942 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-09 22:48:46,942 - __main__ - INFO - 📅 Session Date: 2025-06-09 22:48:46
+2025-06-09 22:48:46,942 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-09 22:48:46,942 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-09 22:48:46,942 - __main__ - INFO - ============================================================
+2025-06-09 22:48:46,999 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-09 22:48:47,189 - __main__ - INFO - 💰 Account Summary:
+2025-06-09 22:48:47,189 - __main__ - INFO -    • Equity: $10,000.00
+2025-06-09 22:48:47,189 - __main__ - INFO -    • Cash Available: $10,000.00
+2025-06-09 22:48:47,189 - __main__ - INFO -    • Current Positions: 0
+2025-06-09 22:48:47,189 - __main__ - INFO - ────────────────────────────────────────
+2025-06-09 22:48:47,189 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-09 22:48:47,647 - __main__ - INFO - ❌ No recent cached results found
+2025-06-09 22:48:47,647 - __main__ - INFO - Running new backtests...
+2025-06-09 22:48:48,285 - data_provider - INFO - Found 11032 tradable stocks before price filtering
+2025-06-09 22:48:48,503 - data_provider - WARNING - Error processing batch 1: 'dict' object has no attribute 'data'
+2025-06-09 22:48:48,666 - data_provider - WARNING - Error processing batch 2: 'dict' object has no attribute 'data'
+2025-06-09 22:48:48,838 - data_provider - WARNING - Error processing batch 3: 'dict' object has no attribute 'data'
+2025-06-09 22:48:49,003 - data_provider - WARNING - Error processing batch 4: 'dict' object has no attribute 'data'
+2025-06-09 22:48:49,171 - data_provider - WARNING - Error processing batch 5: 'dict' object has no attribute 'data'
+2025-06-09 22:48:49,344 - data_provider - WARNING - Error processing batch 6: 'dict' object has no attribute 'data'
+2025-06-09 22:48:49,493 - data_provider - WARNING - Error processing batch 7: 'dict' object has no attribute 'data'
+2025-06-09 22:48:49,646 - data_provider - WARNING - Error processing batch 8: 'dict' object has no attribute 'data'
+2025-06-09 22:48:49,797 - data_provider - WARNING - Error processing batch 9: 'dict' object has no attribute 'data'
+2025-06-09 22:48:49,954 - data_provider - WARNING - Error processing batch 10: 'dict' object has no attribute 'data'
+2025-06-09 22:48:50,118 - data_provider - WARNING - Error processing batch 11: 'dict' object has no attribute 'data'
+2025-06-09 22:48:50,277 - data_provider - WARNING - Error processing batch 12: 'dict' object has no attribute 'data'
+2025-06-09 22:48:50,428 - data_provider - WARNING - Error processing batch 13: 'dict' object has no attribute 'data'
+2025-06-09 22:48:50,573 - data_provider - WARNING - Error processing batch 14: 'dict' object has no attribute 'data'
+2025-06-09 22:48:50,722 - data_provider - WARNING - Error processing batch 15: 'dict' object has no attribute 'data'
+2025-06-09 22:48:50,876 - data_provider - WARNING - Error processing batch 16: 'dict' object has no attribute 'data'
+2025-06-09 22:48:51,034 - data_provider - WARNING - Error processing batch 17: 'dict' object has no attribute 'data'
+2025-06-09 22:48:51,202 - data_provider - WARNING - Error processing batch 18: 'dict' object has no attribute 'data'
+2025-06-09 22:48:51,360 - data_provider - WARNING - Error processing batch 19: 'dict' object has no attribute 'data'
+2025-06-09 22:48:51,509 - data_provider - WARNING - Error processing batch 20: 'dict' object has no attribute 'data'
+2025-06-09 22:48:51,680 - data_provider - WARNING - Error processing batch 21: 'dict' object has no attribute 'data'
+2025-06-09 22:48:51,844 - data_provider - WARNING - Error processing batch 22: 'dict' object has no attribute 'data'
+2025-06-09 22:48:52,000 - data_provider - WARNING - Error processing batch 23: 'dict' object has no attribute 'data'
+2025-06-09 22:48:52,163 - data_provider - WARNING - Error processing batch 24: 'dict' object has no attribute 'data'
+2025-06-09 22:48:52,325 - data_provider - WARNING - Error processing batch 25: 'dict' object has no attribute 'data'
+2025-06-09 22:48:52,495 - data_provider - WARNING - Error processing batch 26: 'dict' object has no attribute 'data'
+2025-06-09 22:50:24,729 - __main__ - INFO - ==================================================
+2025-06-09 22:50:24,731 - __main__ - INFO - Trading Algorithm Starting
+2025-06-09 22:50:24,731 - __main__ - INFO - Paper Trading: True
+2025-06-09 22:50:24,731 - __main__ - INFO - Dry Run: False
+2025-06-09 22:50:24,731 - __main__ - INFO - ==================================================
+2025-06-09 22:50:24,745 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-09 22:50:24,746 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-09 22:50:24,746 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-09 22:50:24,746 - __main__ - INFO - 📅 Session Date: 2025-06-09 22:50:24
+2025-06-09 22:50:24,746 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-09 22:50:24,746 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-09 22:50:24,746 - __main__ - INFO - ============================================================
+2025-06-09 22:50:24,805 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-09 22:50:25,003 - __main__ - INFO - 💰 Account Summary:
+2025-06-09 22:50:25,003 - __main__ - INFO -    • Equity: $10,000.00
+2025-06-09 22:50:25,003 - __main__ - INFO -    • Cash Available: $10,000.00
+2025-06-09 22:50:25,003 - __main__ - INFO -    • Current Positions: 0
+2025-06-09 22:50:25,003 - __main__ - INFO - ────────────────────────────────────────
+2025-06-09 22:50:25,003 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-09 22:50:25,454 - __main__ - INFO - ❌ No recent cached results found
+2025-06-09 22:50:25,454 - __main__ - INFO - Running new backtests...
+2025-06-09 22:50:26,095 - data_provider - INFO - Found 11032 tradable stocks before price filtering
+2025-06-09 22:50:26,269 - data_provider - WARNING - Error processing batch 1: 'dict' object has no attribute 'data'
+2025-06-09 22:50:26,427 - data_provider - WARNING - Error processing batch 2: 'dict' object has no attribute 'data'
+2025-06-09 22:50:26,580 - data_provider - WARNING - Error processing batch 3: 'dict' object has no attribute 'data'
+2025-06-09 22:50:26,738 - data_provider - WARNING - Error processing batch 4: 'dict' object has no attribute 'data'
+2025-06-09 22:50:26,893 - data_provider - WARNING - Error processing batch 5: 'dict' object has no attribute 'data'
+2025-06-09 22:50:27,047 - data_provider - WARNING - Error processing batch 6: 'dict' object has no attribute 'data'
+2025-06-09 22:50:27,191 - data_provider - WARNING - Error processing batch 7: 'dict' object has no attribute 'data'
+2025-06-09 22:50:27,334 - data_provider - WARNING - Error processing batch 8: 'dict' object has no attribute 'data'
+2025-06-09 22:50:27,477 - data_provider - WARNING - Error processing batch 9: 'dict' object has no attribute 'data'
+2025-06-09 22:50:27,628 - data_provider - WARNING - Error processing batch 10: 'dict' object has no attribute 'data'
+2025-06-09 22:50:27,769 - data_provider - WARNING - Error processing batch 11: 'dict' object has no attribute 'data'
+2025-06-09 22:50:27,920 - data_provider - WARNING - Error processing batch 12: 'dict' object has no attribute 'data'
+2025-06-09 22:50:28,077 - data_provider - WARNING - Error processing batch 13: 'dict' object has no attribute 'data'
+2025-06-09 22:50:28,241 - data_provider - WARNING - Error processing batch 14: 'dict' object has no attribute 'data'
+2025-06-09 22:50:28,411 - data_provider - WARNING - Error processing batch 15: 'dict' object has no attribute 'data'
+2025-06-09 22:50:28,571 - data_provider - WARNING - Error processing batch 16: 'dict' object has no attribute 'data'
+2025-06-09 22:50:28,726 - data_provider - WARNING - Error processing batch 17: 'dict' object has no attribute 'data'
+2025-06-09 22:50:28,879 - data_provider - WARNING - Error processing batch 18: 'dict' object has no attribute 'data'
+2025-06-09 22:50:29,038 - data_provider - WARNING - Error processing batch 19: 'dict' object has no attribute 'data'
+2025-06-09 22:50:29,199 - data_provider - WARNING - Error processing batch 20: 'dict' object has no attribute 'data'
+2025-06-09 22:50:29,346 - data_provider - WARNING - Error processing batch 21: 'dict' object has no attribute 'data'
+2025-06-09 22:50:29,499 - data_provider - WARNING - Error processing batch 22: 'dict' object has no attribute 'data'
+2025-06-09 22:50:29,835 - data_provider - WARNING - Error processing batch 23: 'dict' object has no attribute 'data'
+2025-06-09 22:50:29,990 - data_provider - WARNING - Error processing batch 24: 'dict' object has no attribute 'data'
+2025-06-09 22:50:30,151 - data_provider - WARNING - Error processing batch 25: 'dict' object has no attribute 'data'
+2025-06-09 22:50:30,312 - data_provider - WARNING - Error processing batch 26: 'dict' object has no attribute 'data'
+2025-06-09 22:50:30,460 - data_provider - WARNING - Error processing batch 27: 'dict' object has no attribute 'data'
+2025-06-09 22:50:30,614 - data_provider - WARNING - Error processing batch 28: 'dict' object has no attribute 'data'
+2025-06-09 22:50:30,761 - data_provider - WARNING - Error processing batch 29: 'dict' object has no attribute 'data'
+2025-06-09 22:50:30,917 - data_provider - WARNING - Error processing batch 30: 'dict' object has no attribute 'data'
+2025-06-09 22:50:31,080 - data_provider - WARNING - Error processing batch 31: 'dict' object has no attribute 'data'
