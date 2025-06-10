@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import asyncio
+import pytz
 from data_provider import data_provider, TechnicalIndicators
 from config import config
 
@@ -32,6 +33,7 @@ class BacktestResult:
     max_drawdown: float
     sharpe_ratio: float
     profitable: bool
+    trade_details: List[Dict] = None  # Add trade details to the result
 
 
 class RSIStrategy:
@@ -43,20 +45,35 @@ class RSIStrategy:
         self.rsi_upper = rsi_upper
         self.max_hold_days = max_hold_days or config.MAX_HOLD_DAYS
     
-    def backtest(self, data: pd.DataFrame, initial_cash: float = 10000) -> BacktestResult:
+    def backtest(self, data: pd.DataFrame, initial_cash: float = 10000, symbol: str = None) -> BacktestResult:
         """
         Run vectorized backtest of RSI strategy.
         
         Args:
             data: DataFrame with OHLCV data
             initial_cash: Starting cash amount
+            symbol: Optional symbol name (if not provided, will try to extract from data)
             
         Returns:
             BacktestResult object with performance metrics
         """
         try:
             if len(data) < self.rsi_period + 10:
-                return self._create_null_result(data.index[0] if len(data) > 0 else "UNKNOWN")
+                return self._create_null_result(symbol or "UNKNOWN")
+            
+            # Determine symbol name - prioritize passed parameter, then try to extract from data
+            if symbol is None:
+                if 'symbol' in data.columns:
+                    symbol = str(data['symbol'].iloc[0])
+                elif hasattr(data, 'symbol'):
+                    symbol = str(data.symbol)
+                else:
+                    symbol = "UNKNOWN"
+            
+            # Clean symbol name to ensure it's safe for filenames
+            symbol = str(symbol).strip().replace('\n', '').replace('\r', '')
+            if not symbol or symbol.isspace():
+                symbol = "UNKNOWN"
             
             # Calculate RSI
             rsi = TechnicalIndicators.calculate_rsi(data, self.rsi_period)
@@ -74,22 +91,23 @@ class RSIStrategy:
             total_return = returns['portfolio_value'].iloc[-1] / initial_cash - 1
             alpha = total_return - buy_and_hold_return
             
-            trades = self._analyze_trades(signals, data)
+            trades_summary, trade_details = self._analyze_trades(signals, data)
             
             return BacktestResult(
-                symbol=data.get('symbol', 'UNKNOWN'),
+                symbol=symbol,
                 rsi_period=self.rsi_period,
                 rsi_lower=self.rsi_lower,
                 rsi_upper=self.rsi_upper,
                 total_return=total_return,
                 buy_and_hold_return=buy_and_hold_return,
                 alpha=alpha,
-                num_trades=trades['num_trades'],
-                win_rate=trades['win_rate'],
-                avg_trade_duration=trades['avg_duration'],
+                num_trades=trades_summary['num_trades'],
+                win_rate=trades_summary['win_rate'],
+                avg_trade_duration=trades_summary['avg_duration'],
                 max_drawdown=self._calculate_max_drawdown(returns['portfolio_value']),
                 sharpe_ratio=self._calculate_sharpe_ratio(returns['daily_returns']),
-                profitable=total_return > 0
+                profitable=total_return > 0,
+                trade_details=trade_details
             )
             
         except Exception as e:
@@ -181,8 +199,8 @@ class RSIStrategy:
         
         return returns
     
-    def _analyze_trades(self, signals: pd.DataFrame, data: pd.DataFrame) -> Dict:
-        """Analyze individual trades."""
+    def _analyze_trades(self, signals: pd.DataFrame, data: pd.DataFrame) -> Tuple[Dict, List[Dict]]:
+        """Analyze individual trades and return both summary stats and detailed trade list."""
         trades = []
         entry_price = None
         entry_date = None
@@ -211,18 +229,20 @@ class RSIStrategy:
                 entry_date = None
         
         if not trades:
-            return {'num_trades': 0, 'win_rate': 0, 'avg_duration': 0}
+            return {'num_trades': 0, 'win_rate': 0, 'avg_duration': 0}, []
         
         num_trades = len(trades)
         winning_trades = sum(1 for trade in trades if trade['return'] > 0)
         win_rate = winning_trades / num_trades if num_trades > 0 else 0
         avg_duration = np.mean([trade['duration'] for trade in trades]) if trades else 0
         
-        return {
+        summary = {
             'num_trades': num_trades,
             'win_rate': win_rate,
             'avg_duration': avg_duration
         }
+        
+        return summary, trades
     
     def _calculate_max_drawdown(self, portfolio_values: pd.Series) -> float:
         """Calculate maximum drawdown."""
@@ -255,7 +275,85 @@ class RSIStrategy:
             sharpe_ratio=0.0,
             profitable=False
         )
-
+    
+    # Individual trade logging removed - using consolidated approach instead
+    
+    def save_all_trades_to_cloud(self, results: List[BacktestResult]) -> None:
+        """
+        Save all trades from multiple backtest results to a single CSV file in cloud storage.
+        
+        Args:
+            results: List of BacktestResult objects containing trade details
+        """
+        try:
+            from cloud_storage import cloud_storage
+            
+            all_trades = []
+            
+            # Collect all trades from all results
+            for result in results:
+                if result.trade_details:
+                    for trade in result.trade_details:
+                        # Add strategy and symbol info to each trade
+                        trade_record = {
+                            'symbol': result.symbol,
+                            'rsi_period': result.rsi_period,
+                            'rsi_lower': result.rsi_lower,
+                            'rsi_upper': result.rsi_upper,
+                            'entry_date': trade['entry_date'],
+                            'entry_price': trade['entry_price'],
+                            'exit_date': trade['exit_date'],
+                            'exit_price': trade['exit_price'],
+                            'return': trade['return'],
+                            'duration': trade['duration']
+                        }
+                        all_trades.append(trade_record)
+            
+            if not all_trades:
+                logger.info("No trades to save")
+                return
+            
+            logger.info(f"Saving {len(all_trades)} trades from {len(results)} strategies to consolidated CSV")
+            
+            # Convert to DataFrame
+            trades_df = pd.DataFrame(all_trades)
+            
+            # Convert datetime to EST timezone and format for readability
+            est = pytz.timezone('US/Eastern')
+            
+            def convert_to_est(timestamp):
+                """Convert timestamp to EST, handling both tz-aware and tz-naive timestamps."""
+                if timestamp.tz is None:
+                    # If timezone-naive, assume UTC
+                    return timestamp.tz_localize('UTC').tz_convert(est).strftime('%Y-%m-%d %H:%M:%S EST')
+                else:
+                    # If already timezone-aware, just convert
+                    return timestamp.tz_convert(est).strftime('%Y-%m-%d %H:%M:%S EST')
+            
+            trades_df['entry_date_est'] = trades_df['entry_date'].apply(convert_to_est)
+            trades_df['exit_date_est'] = trades_df['exit_date'].apply(convert_to_est)
+            
+            # Round numeric values for readability
+            trades_df['entry_price'] = trades_df['entry_price'].round(4)
+            trades_df['exit_price'] = trades_df['exit_price'].round(4)
+            trades_df['return'] = trades_df['return'].round(6)
+            
+            # Reorder columns for better readability
+            final_columns = [
+                'symbol', 'rsi_period', 'rsi_lower', 'rsi_upper',
+                'entry_date_est', 'entry_price', 'exit_date_est', 'exit_price',
+                'return', 'duration'
+            ]
+            trades_df = trades_df[final_columns]
+            
+            # Sort by entry date for chronological order
+            trades_df = trades_df.sort_values('entry_date_est')
+            
+            # Save consolidated trades to cloud storage
+            cloud_storage.save_consolidated_trades(trades_df)
+            
+        except Exception as e:
+            logger.error(f"Error saving consolidated trade log: {e}")
 
 class StrategyOptimizer:
     """Optimize RSI strategy parameters for multiple symbols."""
@@ -296,8 +394,7 @@ class StrategyOptimizer:
                             continue
                         
                         strategy = RSIStrategy(rsi_period, rsi_lower, rsi_upper)
-                        result = strategy.backtest(data, config.BACKTEST_INIT_CASH)
-                        result.symbol = symbol
+                        result = strategy.backtest(data, config.BACKTEST_INIT_CASH, symbol)
                         
                         # Score based on alpha (risk-adjusted return vs buy-and-hold)
                         score = result.alpha
@@ -356,7 +453,21 @@ class StrategyOptimizer:
             # Small delay between batches
             await asyncio.sleep(1)
         
+        # Save all trades to consolidated CSV
+        if results:
+            self.save_all_trades(results)
+        
         return [r for r in results if r is not None]
+    
+    def save_all_trades(self, results: List[BacktestResult]) -> None:
+        """
+        Save all trades from optimization results to cloud storage.
+        
+        Args:
+            results: List of BacktestResult objects
+        """
+        strategy = RSIStrategy(14, 30, 70)  # Dummy strategy instance for the method
+        strategy.save_all_trades_to_cloud(results)
     
     def filter_results(self, results: List[BacktestResult]) -> List[BacktestResult]:
         """

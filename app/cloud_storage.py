@@ -258,6 +258,105 @@ class CloudStorage:
         except Exception as e:
             logger.error(f"Error listing position files: {e}")
             return []
+    
+    def save_trade_log(self, trades_df: pd.DataFrame, symbol: str, rsi_period: int, rsi_lower: int, rsi_upper: int, timestamp: str = None) -> bool:
+        """
+        Save trade log to cloud storage in the /trades folder.
+        
+        Args:
+            trades_df: DataFrame with trade details
+            symbol: Stock symbol
+            rsi_period: RSI period parameter
+            rsi_lower: RSI lower threshold
+            rsi_upper: RSI upper threshold
+            timestamp: Optional timestamp string for filename
+            
+        Returns:
+            True if successful
+        """
+        if not self.bucket:
+            logger.error("Cloud storage not initialized")
+            return False
+        
+        try:
+            # Clean and validate symbol name for filename safety
+            clean_symbol = str(symbol).strip()
+            # Remove any problematic characters that could cause issues in filenames
+            clean_symbol = ''.join(c for c in clean_symbol if c.isalnum() or c in '-_.')
+            if not clean_symbol:
+                clean_symbol = "UNKNOWN"
+            
+            # Generate filename with strategy parameters
+            if timestamp is None:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            filename = f"trades/{clean_symbol}_trades_rsi{rsi_period}_{rsi_lower}_{rsi_upper}_{timestamp}.csv"
+            
+            # Convert DataFrame to CSV string
+            csv_buffer = io.StringIO()
+            trades_df.to_csv(csv_buffer, index=False)
+            csv_string = csv_buffer.getvalue()
+            
+            # Upload to cloud storage
+            blob = self.bucket.blob(filename)
+            blob.upload_from_string(csv_string, content_type='text/csv')
+            
+            logger.info(f"Saved {len(trades_df)} trades to {filename}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving trade log: {e}")
+            return False
+    
+    def save_consolidated_trades(self, trades_df: pd.DataFrame, timestamp: str = None) -> bool:
+        """
+        Save consolidated trade log from multiple symbols to cloud storage.
+        
+        Args:
+            trades_df: DataFrame with all trade details from multiple symbols
+            timestamp: Optional timestamp string for filename
+            
+        Returns:
+            True if successful
+        """
+        if not self.bucket:
+            logger.error("Cloud storage not initialized")
+            return False
+        
+        try:
+            # Generate filename
+            if timestamp is None:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            filename = f"trades/consolidated_trades_{timestamp}.csv"
+            
+            # Convert DataFrame to CSV string
+            csv_buffer = io.StringIO()
+            trades_df.to_csv(csv_buffer, index=False)
+            csv_string = csv_buffer.getvalue()
+            
+            # Upload to cloud storage
+            blob = self.bucket.blob(filename)
+            blob.upload_from_string(csv_string, content_type='text/csv')
+            
+            logger.info(f"Saved {len(trades_df)} consolidated trades to {filename}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving consolidated trade log: {e}")
+            return False
+
+    def list_trade_files(self) -> List[str]:
+        """List all trade log files in cloud storage."""
+        if not self.bucket:
+            return []
+        
+        try:
+            blobs = self.bucket.list_blobs(prefix='trades/')
+            return [blob.name.replace('trades/', '') for blob in blobs if blob.name.endswith('.csv')]
+        except Exception as e:
+            logger.error(f"Error listing trade files: {e}")
+            return []
 
 
 # Global cloud storage instance
