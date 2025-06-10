@@ -306,44 +306,53 @@ class DataProvider:
                     request = StockSnapshotRequest(symbol_or_symbols=batch)
                     snapshots = self.historical_client.get_stock_snapshot(request)
                     
-                    # Check if response is a dict (error response) or missing data attribute
-                    if isinstance(snapshots, dict):
-                        logger.warning(f"API returned error response for batch {i//batch_size + 1}: {snapshots}")
-                        # Include all symbols in this batch as fallback
-                        filtered_symbols.extend(batch)
-                        time.sleep(self._rate_limit_delay)
-                        continue
-                    
-                    # Check if we got a valid response with .data attribute
-                    if not hasattr(snapshots, 'data') or snapshots.data is None:
+                    # Check if we got a valid response (should be a dict)
+                    if not isinstance(snapshots, dict):
                         logger.warning(f"Invalid snapshot response for batch {i//batch_size + 1}: {type(snapshots)}")
                         # Include all symbols in this batch as fallback
                         filtered_symbols.extend(batch)
                         time.sleep(self._rate_limit_delay)
                         continue
                     
-                    # Filter by price
+                    # Filter by price and volume
                     for symbol in batch:
-                        if symbol in snapshots.data:
-                            snapshot = snapshots.data[symbol]
-                            # Check if we have valid price data
-                            if (hasattr(snapshot, 'latest_trade') and 
-                                snapshot.latest_trade and 
-                                hasattr(snapshot.latest_trade, 'price')):
+                        if symbol in snapshots:
+                            snapshot = snapshots[symbol]
+                            
+                            # Handle both Snapshot object and dict responses
+                            current_price = None
+                            daily_volume = None
+                            
+                            # Try to get price from latest_trade
+                            if hasattr(snapshot, 'latest_trade') and snapshot.latest_trade:
+                                # Snapshot object format
                                 current_price = float(snapshot.latest_trade.price)
-                                
-                                # Apply MIN_PRICE filter
+                            elif isinstance(snapshot, dict) and snapshot.get('latest_trade'):
+                                # Dict format
+                                current_price = float(snapshot['latest_trade']['price'])
+                            
+                            # Fallback to bid price if no trade data
+                            if current_price is None:
+                                if hasattr(snapshot, 'latest_quote') and snapshot.latest_quote:
+                                    # Snapshot object format
+                                    current_price = float(snapshot.latest_quote.bid_price)
+                                elif isinstance(snapshot, dict) and snapshot.get('latest_quote'):
+                                    # Dict format
+                                    current_price = float(snapshot['latest_quote']['bid_price'])
+                            
+                            # Get volume from previous_daily_bar
+                            if hasattr(snapshot, 'previous_daily_bar') and snapshot.previous_daily_bar:
+                                # Snapshot object format
+                                daily_volume = float(snapshot.previous_daily_bar.volume)
+                            elif isinstance(snapshot, dict) and snapshot.get('previous_daily_bar'):
+                                # Dict format
+                                daily_volume = float(snapshot['previous_daily_bar']['volume'])
+                            
+                            # Apply price and volume filters
+                            if current_price is not None and daily_volume is not None:
                                 if (current_price >= config.MIN_PRICE and 
-                                    current_price <= config.MAX_PRICE):
-                                    filtered_symbols.append(symbol)
-                            elif (hasattr(snapshot, 'latest_quote') and 
-                                  snapshot.latest_quote and 
-                                  hasattr(snapshot.latest_quote, 'bid_price')):
-                                # Fallback to bid price if no trade data
-                                current_price = float(snapshot.latest_quote.bid_price)
-                                
-                                if (current_price >= config.MIN_PRICE and 
-                                    current_price <= config.MAX_PRICE):
+                                    current_price <= config.MAX_PRICE and
+                                    daily_volume >= config.MIN_VOLUME):
                                     filtered_symbols.append(symbol)
                 
                 except Exception as batch_error:
@@ -354,7 +363,7 @@ class DataProvider:
                 # Rate limiting
                 await asyncio.sleep(self._rate_limit_delay)
             
-            logger.info(f"Price filtering: {len(filtered_symbols)}/{len(symbols)} symbols passed (${config.MIN_PRICE} - ${config.MAX_PRICE})")
+            logger.info(f"Price and volume filtering: {len(filtered_symbols)}/{len(symbols)} symbols passed (${config.MIN_PRICE} - ${config.MAX_PRICE}, volume >= {config.MIN_VOLUME:,})")
             return filtered_symbols
             
         except Exception as e:
@@ -380,54 +389,98 @@ class DataProvider:
             request = StockSnapshotRequest(symbol_or_symbols=[symbol])
             snapshots = self.historical_client.get_stock_snapshot(request)
             
-            # Check if response is a dict (error response)
-            if isinstance(snapshots, dict):
-                logger.warning(f"API returned error response for {symbol}: {snapshots}")
+            # Check if response is a dict (which is the expected format)
+            if not isinstance(snapshots, dict):
+                logger.warning(f"Unexpected snapshot response type for {symbol}: {type(snapshots)}")
                 return None
             
-            # Check if we got a valid response with .data attribute
-            if not hasattr(snapshots, 'data') or snapshots.data is None:
-                logger.warning(f"Invalid snapshot response for {symbol}: {type(snapshots)}")
+            # Check if response contains the symbol data
+            if symbol not in snapshots:
+                logger.warning(f"No data found for symbol {symbol} in snapshot response")
                 return None
             
-            if symbol in snapshots.data:
-                snapshot = snapshots.data[symbol]
-                result = {
-                    'symbol': symbol,
-                    'timestamp': datetime.now()
-                }
-                
-                # Get latest trade data
-                if hasattr(snapshot, 'latest_trade') and snapshot.latest_trade:
-                    result.update({
-                        'price': float(snapshot.latest_trade.price),
-                        'volume': int(snapshot.latest_trade.size) if hasattr(snapshot.latest_trade, 'size') else 0,
-                        'timestamp': snapshot.latest_trade.timestamp
-                    })
-                
-                # Get latest quote data
-                if hasattr(snapshot, 'latest_quote') and snapshot.latest_quote:
-                    result.update({
-                        'bid_price': float(snapshot.latest_quote.bid_price),
-                        'ask_price': float(snapshot.latest_quote.ask_price),
-                        'bid_size': int(snapshot.latest_quote.bid_size),
-                        'ask_size': int(snapshot.latest_quote.ask_size)
-                    })
-                
-                # Get daily bar data
-                if hasattr(snapshot, 'daily_bar') and snapshot.daily_bar:
-                    result.update({
-                        'daily_open': float(snapshot.daily_bar.open),
-                        'daily_high': float(snapshot.daily_bar.high),
-                        'daily_low': float(snapshot.daily_bar.low),
-                        'daily_close': float(snapshot.daily_bar.close),
-                        'daily_volume': int(snapshot.daily_bar.volume)
-                    })
-                
-                return result
-            else:
-                logger.warning(f"No snapshot data found for symbol {symbol}")
-                return None
+            snapshot = snapshots[symbol]
+            result = {
+                'symbol': symbol,
+                'timestamp': datetime.now()
+            }
+            
+            # Handle both Snapshot object and dict responses
+            # Get latest trade data
+            if hasattr(snapshot, 'latest_trade') and snapshot.latest_trade:
+                # Snapshot object format
+                trade_data = snapshot.latest_trade
+                result.update({
+                    'price': float(trade_data.price),
+                    'volume': int(trade_data.size) if hasattr(trade_data, 'size') else 0,
+                    'timestamp': trade_data.timestamp if hasattr(trade_data, 'timestamp') else result['timestamp']
+                })
+            elif isinstance(snapshot, dict) and snapshot.get('latest_trade'):
+                # Dict format
+                trade_data = snapshot['latest_trade']
+                result.update({
+                    'price': float(trade_data['price']),
+                    'volume': int(trade_data.get('size', 0)),
+                    'timestamp': trade_data.get('timestamp', result['timestamp'])
+                })
+            
+            # Get latest quote data
+            if hasattr(snapshot, 'latest_quote') and snapshot.latest_quote:
+                # Snapshot object format
+                quote_data = snapshot.latest_quote
+                result.update({
+                    'bid_price': float(quote_data.bid_price),
+                    'ask_price': float(quote_data.ask_price),
+                    'bid_size': int(quote_data.bid_size) if hasattr(quote_data, 'bid_size') else 0,
+                    'ask_size': int(quote_data.ask_size) if hasattr(quote_data, 'ask_size') else 0
+                })
+            elif isinstance(snapshot, dict) and snapshot.get('latest_quote'):
+                # Dict format
+                quote_data = snapshot['latest_quote']
+                result.update({
+                    'bid_price': float(quote_data['bid_price']),
+                    'ask_price': float(quote_data['ask_price']),
+                    'bid_size': int(quote_data.get('bid_size', 0)),
+                    'ask_size': int(quote_data.get('ask_size', 0))
+                })
+            
+            # Get daily bar data
+            if hasattr(snapshot, 'daily_bar') and snapshot.daily_bar:
+                # Snapshot object format
+                daily_data = snapshot.daily_bar
+                result.update({
+                    'daily_open': float(daily_data.open),
+                    'daily_high': float(daily_data.high),
+                    'daily_low': float(daily_data.low),
+                    'daily_close': float(daily_data.close),
+                    'daily_volume': int(daily_data.volume)
+                })
+            elif isinstance(snapshot, dict) and snapshot.get('daily_bar'):
+                # Dict format
+                daily_data = snapshot['daily_bar']
+                result.update({
+                    'daily_open': float(daily_data['open']),
+                    'daily_high': float(daily_data['high']),
+                    'daily_low': float(daily_data['low']),
+                    'daily_close': float(daily_data['close']),
+                    'daily_volume': int(daily_data['volume'])
+                })
+            
+            # Get previous daily bar data (for volume filtering)
+            if hasattr(snapshot, 'previous_daily_bar') and snapshot.previous_daily_bar:
+                # Snapshot object format
+                prev_daily_data = snapshot.previous_daily_bar
+                result.update({
+                    'prev_daily_volume': int(prev_daily_data.volume)
+                })
+            elif isinstance(snapshot, dict) and snapshot.get('previous_daily_bar'):
+                # Dict format
+                prev_daily_data = snapshot['previous_daily_bar']
+                result.update({
+                    'prev_daily_volume': int(prev_daily_data['volume'])
+                })
+            
+            return result
                 
         except Exception as e:
             logger.error(f"Error fetching snapshot for {symbol}: {e}")
