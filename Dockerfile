@@ -9,30 +9,26 @@ ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 ENV TZ=America/New_York
 
-# Install system dependencies including TA-Lib C library
+# Install system dependencies for building TA-Lib from source
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     wget \
     make \
     build-essential \
-    pkg-config \
-    libta-lib-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# If libta-lib-dev is not available, build from source as fallback
-RUN if ! pkg-config --exists ta-lib; then \
-        cd /tmp && \
-        wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
-        tar -xzf ta-lib-0.4.0-src.tar.gz && \
-        cd ta-lib/ && \
-        ./configure --prefix=/usr && \
-        make && \
-        make install && \
-        ldconfig && \
-        cd / && \
-        rm -rf /tmp/ta-lib*; \
-    fi
+# Install TA-Lib C library from source
+RUN cd /tmp && \
+    wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
+    cd ta-lib/ && \
+    ./configure --prefix=/usr && \
+    make && \
+    make install && \
+    ldconfig && \
+    cd / && \
+    rm -rf /tmp/ta-lib*
 
 # Set timezone to New York (same as US markets)
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
@@ -49,6 +45,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app/ ./app/
+COPY config/ ./config/
 
 # Copy credential files if they exist
 COPY ALPACA_KEYS.json* ./
