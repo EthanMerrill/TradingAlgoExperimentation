@@ -15,3 +15,4 @@ GOOGLE_APPLICATION_CREDENTIALS.json
 POLYGON_API.json
 tests.py
 app/tempCodeRunnerFile.py
+.env
