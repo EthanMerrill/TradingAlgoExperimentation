@@ -1,0 +1,60 @@
+# Use a base image that already has TA-Lib installed
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV TZ=America/New_York
+
+# Install system dependencies and TA-Lib via package manager
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install TA-Lib using conda-forge (more reliable than building from source)
+RUN curl -L https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o miniconda.sh && \
+    bash miniconda.sh -b -p /opt/conda && \
+    rm miniconda.sh && \
+    /opt/conda/bin/conda install -c conda-forge libta-lib ta-lib -y && \
+    /opt/conda/bin/conda clean -afy
+
+# Add conda to PATH
+ENV PATH=/opt/conda/bin:$PATH
+
+# Set timezone to New York (same as US markets)
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+
+# Install other Python dependencies (TA-Lib is already installed via conda)
+RUN pip install --upgrade pip && \
+    sed '/TA-Lib/d' requirements.txt > requirements_no_talib.txt && \
+    pip install --no-cache-dir -r requirements_no_talib.txt
+
+# Copy application code
+COPY app/ ./app/
+COPY config/ ./config/
+
+# Copy credential files if they exist
+COPY ALPACA_KEYS.json* ./
+COPY POLYGON_API.json* ./
+COPY GOOGLE_APPLICATION_CREDENTIALS.json* ./
+
+# Create logs directory
+RUN mkdir -p logs
+
+# Test that TA-Lib works
+RUN python -c "import talib; print('TA-Lib version:', talib.__version__)"
+
+# Set the default command to run the new main application
+CMD ["python", "app/main.py"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"

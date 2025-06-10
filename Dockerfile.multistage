@@ -18,7 +18,8 @@ RUN cd /tmp && \
     cd ta-lib/ && \
     ./configure --prefix=/usr/local && \
     make && \
-    make install
+    make install && \
+    ldconfig
 
 # Stage 2: Build Python dependencies
 FROM python:3.11-slim as python-builder
@@ -42,6 +43,8 @@ RUN ldconfig
 # Install Python dependencies
 COPY requirements.txt /tmp/
 RUN pip install --no-cache-dir --upgrade pip && \
+    export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH && \
+    export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH && \
     pip install --no-cache-dir TA-Lib>=0.4.25 && \
     pip install --no-cache-dir -r /tmp/requirements.txt
 
@@ -59,6 +62,7 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
 # Install minimal runtime dependencies
 RUN apt-get update && apt-get install -y \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy TA-Lib libraries from builder
