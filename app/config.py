@@ -143,7 +143,7 @@ class Config:
         Get environment-specific path for cloud storage.
         
         Args:
-            base_path: Base path (e.g., 'Backtests', 'Positions', 'trades')
+            base_path: Base path (e.g., 'Backtests', 'Positions', 'Trades')
             
         Returns:
             Environment-specific path (e.g., 'dev/Backtests', 'qa/Positions', 'prod/trades')

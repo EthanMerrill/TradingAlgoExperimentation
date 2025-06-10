@@ -14,6 +14,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from data_provider import data_provider, TechnicalIndicators
 from strategy import BacktestResult
 from config import config
+from cloud_storage import cloud_storage
 
 logger = logging.getLogger(__name__)
 
@@ -61,18 +62,22 @@ class TradingEngine:
             alpaca_positions = self.trading_client.get_all_positions()
             positions = []
             
+            # Load RSI metadata from the most recent positions CSV
+            position_metadata = self._get_position_metadata_from_csv()
+            
             for pos in alpaca_positions:
-                # Try to reconstruct strategy parameters from position data
-                # In production, you'd store this metadata separately
+                # Get RSI metadata for this symbol, fall back to defaults if not found
+                metadata = position_metadata.get(pos.symbol, {})
+                
                 position = Position(
                     symbol=pos.symbol,
                     quantity=float(pos.qty),
                     entry_price=float(pos.avg_entry_price),
                     current_price=float(pos.current_price),
                     entry_date=datetime.now(),  # Placeholder - would need to track separately
-                    rsi_period=14,  # Default - would need to track separately
-                    rsi_lower=30,   # Default - would need to track separately
-                    rsi_upper=70    # Default - would need to track separately
+                    rsi_period=metadata.get('rsi_period', 14),  # From CSV or default
+                    rsi_lower=metadata.get('target_rsi_lower', 30),   # From CSV or default
+                    rsi_upper=metadata.get('target_rsi_upper', 70)    # From CSV or default
                 )
                 positions.append(position)
             
@@ -257,10 +262,15 @@ class TradingEngine:
         Returns:
             True if order was placed successfully
         """
+        order_success = False
         try:
             # Calculate stop loss and take profit prices
             stop_loss_price = opportunity.entry_price * (1 - config.STOP_LOSS_PCT)
             take_profit_price = opportunity.entry_price * (1 + config.TAKE_PROFIT_PCT)
+
+            # Round stop loss and take profit prices to two decimal places
+            stop_loss_price = round(stop_loss_price, 2)
+            take_profit_price = round(take_profit_price, 2)
             
             # Create bracket order (buy with stop loss and take profit)
             order_request = MarketOrderRequest(
@@ -278,11 +288,18 @@ class TradingEngine:
             logger.info(f"Buy order placed for {shares} shares of {opportunity.symbol} at ${opportunity.entry_price:.2f}")
             logger.info(f"Stop loss: ${stop_loss_price:.2f}, Take profit: ${take_profit_price:.2f}")
             
-            return True
+            order_success = True
             
         except Exception as e:
             logger.error(f"Error placing buy order for {opportunity.symbol}: {e}")
-            return False
+        
+        # Log position entry details to cloud storage regardless of order success
+        try:
+            cloud_storage.save_position_entry(opportunity, shares, order_success)
+        except Exception as e:
+            logger.error(f"Error saving position entry log for {opportunity.symbol}: {e}")
+        
+        return order_success
     
     def place_sell_order(self, position: Position) -> bool:
         """
@@ -397,6 +414,54 @@ class TradingEngine:
         except Exception as e:
             logger.error(f"Error getting current price for {symbol}: {e}")
             return None
+    
+    def _get_position_metadata_from_csv(self) -> Dict[str, Dict]:
+        """
+        Load position metadata from the most recent positions CSV file.
+        
+        Returns:
+            Dictionary mapping symbol to metadata (rsi_period, target_rsi_lower, target_rsi_upper)
+        """
+        try:
+            # Import cloud_storage here to avoid circular imports
+            from cloud_storage import cloud_storage
+            
+            # Get list of position files
+            position_files = cloud_storage.list_position_files()
+            
+            if not position_files:
+                logger.warning("No position files found in cloud storage")
+                return {}
+            
+            # Sort files by name (assumes YYYYMMDD format) and get the most recent
+            position_files.sort(reverse=True)
+            most_recent_file = position_files[0]
+            
+            logger.info(f"Loading position metadata from {most_recent_file}")
+            
+            # Load the CSV data
+            df = cloud_storage.load_position_entries(most_recent_file)
+            
+            if df.empty:
+                logger.warning(f"No data found in {most_recent_file}")
+                return {}
+            
+            # Create metadata dictionary mapping symbol to RSI parameters
+            metadata = {}
+            for _, row in df.iterrows():
+                symbol = row['symbol']
+                metadata[symbol] = {
+                    'rsi_period': int(row.get('rsi_period', 14)),
+                    'target_rsi_lower': int(row.get('target_rsi_lower', 30)),
+                    'target_rsi_upper': int(row.get('target_rsi_upper', 70))
+                }
+            
+            logger.info(f"Loaded metadata for {len(metadata)} symbols from {most_recent_file}")
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Error loading position metadata from CSV: {e}")
+            return {}
 
 
 # Global trading engine instance

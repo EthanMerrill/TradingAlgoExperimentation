@@ -5,13 +5,16 @@ Handles Google Cloud Storage operations for backtests and positions.
 import pandas as pd
 import numpy as np
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 import logging
 import io
 import json
 from google.cloud import storage
 from config import config
 from strategy import BacktestResult
+
+if TYPE_CHECKING:
+    from trading_engine import TradingOpportunity
 
 logger = logging.getLogger(__name__)
 
@@ -241,72 +244,13 @@ class CloudStorage:
             return []
         
         try:
-            blobs = self.bucket.list_blobs(prefix='Backtests/')
-            return [blob.name.replace('Backtests/', '') for blob in blobs if blob.name.endswith('.csv')]
+            # Use environment-specific path
+            prefix = f"{config.get_environment_path('Backtests')}/"
+            blobs = self.bucket.list_blobs(prefix=prefix)
+            return [blob.name.replace(prefix, '') for blob in blobs if blob.name.endswith('.csv')]
         except Exception as e:
             logger.error(f"Error listing backtest files: {e}")
             return []
-    
-    def list_position_files(self) -> List[str]:
-        """List all position files in cloud storage."""
-        if not self.bucket:
-            return []
-        
-        try:
-            blobs = self.bucket.list_blobs(prefix='Positions/')
-            return [blob.name.replace('Positions/', '') for blob in blobs if blob.name.endswith('.csv')]
-        except Exception as e:
-            logger.error(f"Error listing position files: {e}")
-            return []
-    
-    def save_trade_log(self, trades_df: pd.DataFrame, symbol: str, rsi_period: int, rsi_lower: int, rsi_upper: int, timestamp: str = None) -> bool:
-        """
-        Save trade log to cloud storage in the /trades folder.
-        
-        Args:
-            trades_df: DataFrame with trade details
-            symbol: Stock symbol
-            rsi_period: RSI period parameter
-            rsi_lower: RSI lower threshold
-            rsi_upper: RSI upper threshold
-            timestamp: Optional timestamp string for filename
-            
-        Returns:
-            True if successful
-        """
-        if not self.bucket:
-            logger.error("Cloud storage not initialized")
-            return False
-        
-        try:
-            # Clean and validate symbol name for filename safety
-            clean_symbol = str(symbol).strip()
-            # Remove any problematic characters that could cause issues in filenames
-            clean_symbol = ''.join(c for c in clean_symbol if c.isalnum() or c in '-_.')
-            if not clean_symbol:
-                clean_symbol = "UNKNOWN"
-            
-            # Generate filename with strategy parameters
-            if timestamp is None:
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            
-            filename = f"trades/{clean_symbol}_trades_rsi{rsi_period}_{rsi_lower}_{rsi_upper}_{timestamp}.csv"
-            
-            # Convert DataFrame to CSV string
-            csv_buffer = io.StringIO()
-            trades_df.to_csv(csv_buffer, index=False)
-            csv_string = csv_buffer.getvalue()
-            
-            # Upload to cloud storage
-            blob = self.bucket.blob(filename)
-            blob.upload_from_string(csv_string, content_type='text/csv')
-            
-            logger.info(f"Saved {len(trades_df)} trades to {filename}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error saving trade log: {e}")
-            return False
     
     def save_consolidated_trades(self, trades_df: pd.DataFrame, timestamp: str = None) -> bool:
         """
@@ -352,12 +296,133 @@ class CloudStorage:
             return []
         
         try:
-            blobs = self.bucket.list_blobs(prefix='trades/')
-            return [blob.name.replace('trades/', '') for blob in blobs if blob.name.endswith('.csv')]
+            # Use environment-specific path
+            prefix = f"{config.get_environment_path('trades')}/"
+            blobs = self.bucket.list_blobs(prefix=prefix)
+            return [blob.name.replace(prefix, '') for blob in blobs if blob.name.endswith('.csv')]
         except Exception as e:
             logger.error(f"Error listing trade files: {e}")
             return []
+    
+    def save_position_entry(self, opportunity: 'TradingOpportunity', shares: int, order_success: bool, date: str = None) -> bool:
+        """
+        Save position entry details with backtest information to a daily CSV file.
+        
+        Args:
+            opportunity: TradingOpportunity with backtest details
+            shares: Number of shares purchased
+            order_success: Whether the order was successfully placed
+            date: Optional date string (YYYYMMDD format), defaults to today
+            
+        Returns:
+            True if successful
+        """
+        if not self.bucket:
+            logger.error("Cloud storage not initialized")
+            return False
+        
+        try:
+            # Use provided date or today's date
+            if date is None:
+                date = datetime.now().strftime('%Y%m%d')
+            
+            # Create position entry record
+            position_entry = {
+                'timestamp': datetime.now().isoformat(),
+                'symbol': opportunity.symbol,
+                'shares': shares,
+                'entry_price': opportunity.entry_price,
+                'order_success': order_success,
+                'current_rsi': opportunity.current_rsi,
+                'rsi_period': opportunity.rsi_period,
+                'target_rsi_lower': opportunity.target_rsi_lower,
+                'target_rsi_upper': opportunity.target_rsi_upper,
+                'expected_return': opportunity.expected_return,
+                'alpha': opportunity.alpha,
+                'confidence': opportunity.confidence,
+                'position_value': shares * opportunity.entry_price
+            }
+            
+            # Generate filename for daily positions file
+            filename = f"{config.get_environment_path('Positions')}/positions_{date}.csv"
+            
+            # Check if file already exists and load existing data
+            blob = self.bucket.blob(filename)
+            existing_df = pd.DataFrame()
+            
+            if blob.exists():
+                try:
+                    csv_string = blob.download_as_text()
+                    existing_df = pd.read_csv(io.StringIO(csv_string))
+                except Exception as e:
+                    logger.warning(f"Could not load existing positions file {filename}: {e}")
+                    existing_df = pd.DataFrame()
+            
+            # Create new DataFrame with this position entry
+            new_entry_df = pd.DataFrame([position_entry])
+            
+            # Combine with existing data
+            if not existing_df.empty:
+                combined_df = pd.concat([existing_df, new_entry_df], ignore_index=True)
+            else:
+                combined_df = new_entry_df
+            
+            # Upload updated CSV to cloud storage
+            stream = io.StringIO()
+            combined_df.to_csv(stream, index=False)
+            blob.upload_from_string(stream.getvalue(), content_type='text/csv')
+            
+            logger.info(f"Saved position entry for {opportunity.symbol} to {filename}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving position entry: {e}")
+            return False
 
+    def list_position_files(self) -> List[str]:
+        """List all position entry files in cloud storage."""
+        if not self.bucket:
+            return []
+        
+        try:
+            # Use environment-specific path
+            prefix = f"{config.get_environment_path('Positions')}/"
+            blobs = self.bucket.list_blobs(prefix=prefix)
+            return [blob.name.replace(prefix, '') for blob in blobs if blob.name.endswith('.csv')]
+        except Exception as e:
+            logger.error(f"Error listing position files: {e}")
+            return []
+    
+    def load_position_entries(self, filename: str) -> pd.DataFrame:
+        """
+        Load position entries from a specific daily file.
+        
+        Args:
+            filename: Filename in cloud storage (e.g., 'positions_20240610.csv')
+            
+        Returns:
+            DataFrame with position entry data
+        """
+        if not self.bucket:
+            logger.error("Cloud storage not initialized")
+            return pd.DataFrame()
+        
+        try:
+            blob = self.bucket.blob(f"{config.get_environment_path('Positions')}/{filename}")
+            
+            if not blob.exists():
+                logger.error(f"Position file {filename} not found in cloud storage")
+                return pd.DataFrame()
+            
+            csv_string = blob.download_as_text()
+            df = pd.read_csv(io.StringIO(csv_string))
+            
+            logger.info(f"Loaded position entries from {filename}")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error loading position entries: {e}")
+            return pd.DataFrame()
 
 # Global cloud storage instance
 cloud_storage = CloudStorage()

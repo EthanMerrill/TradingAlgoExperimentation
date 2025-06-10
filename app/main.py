@@ -45,7 +45,15 @@ class TradingAlgorithm:
             Dictionary with session results
         """
         self.session_metadata['start_time'] = datetime.now()
-        logger.info("Starting trading algorithm full cycle")
+        
+        # Startup banner
+        logger.info("🚀" * 20)
+        logger.info("🚀 TRADING ALGORITHM STARTING")
+        logger.info("🚀" * 20)
+        logger.info(f"📅 Session Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"💼 Paper Trading: {config.PAPER_TRADE}")
+        logger.info(f"🔄 Force Backtest: {force_backtest}")
+        logger.info("=" * 60)
         
         try:
             # Check if it's a trading day
@@ -54,18 +62,24 @@ class TradingAlgorithm:
                 return {'status': 'market_closed'}
             
             # Step 1: Check current positions and account status
+            logger.info("🔍 Checking account status and current positions...")
             account_info = data_provider.get_account_info()
             current_positions = trading_engine.get_current_positions()
             
-            logger.info(f"Account equity: ${account_info.get('equity', 0):,.2f}")
-            logger.info(f"Cash available: ${account_info.get('cash', 0):,.2f}")
-            logger.info(f"Current positions: {len(current_positions)}")
+            logger.info("💰 Account Summary:")
+            logger.info(f"   • Equity: ${account_info.get('equity', 0):,.2f}")
+            logger.info(f"   • Cash Available: ${account_info.get('cash', 0):,.2f}")
+            logger.info(f"   • Current Positions: {len(current_positions)}")
+            logger.info("─" * 40)
             
             # Check if we have enough cash to potentially trade
             cash_pct = account_info.get('cash', 0) / account_info.get('equity', 1)
             
             if cash_pct < config.MIN_CASH_PCT and not force_backtest:
-                logger.info(f"Insufficient cash percentage ({cash_pct:.2%}) - skipping backtest")
+                logger.info(f"💸 Insufficient cash for new positions:")
+                logger.info(f"   • Current cash: {cash_pct:.2%} of equity")
+                logger.info(f"   • Required minimum: {config.MIN_CASH_PCT:.2%}")
+                logger.info("🔄 Checking existing positions for exit opportunities only...")
                 # Still check for exit opportunities
                 return await self._handle_exits_only()
             
@@ -77,15 +91,25 @@ class TradingAlgorithm:
                 return {'status': 'no_backtest_results'}
             
             # Step 3: Execute trading session
+            logger.info("🎯 Analyzing trading opportunities and executing orders...")
             trading_summary = trading_engine.execute_trading_session(backtest_results)
             
             # Step 4: Save results and metadata
+            logger.info("💾 Saving session results and metadata...")
             await self._save_session_results(backtest_results, trading_summary)
             
             self.session_metadata['end_time'] = datetime.now()
             self.session_metadata['results_summary'] = trading_summary
             
-            logger.info("Trading algorithm cycle completed successfully")
+            # Success banner
+            session_duration = (self.session_metadata['end_time'] - self.session_metadata['start_time']).total_seconds()
+            logger.info("🎉" * 20)
+            logger.info("🎉 TRADING ALGORITHM COMPLETE!")
+            logger.info("🎉" * 20)
+            logger.info(f"⏱️  Session Duration: {session_duration/60:.1f} minutes")
+            logger.info(f"📊 Backtest Results: {len(backtest_results)} strategies")
+            logger.info(f"💼 Trading Summary: {trading_summary}")
+            logger.info("=" * 60)
             return {
                 'status': 'success',
                 'trading_summary': trading_summary,
@@ -102,10 +126,16 @@ class TradingAlgorithm:
         
         # Check for recent backtest results
         if not force_backtest:
+            logger.info("🔍 Checking for recent cached backtest results...")
             recent_results = self._load_recent_backtest_results()
             if recent_results:
-                logger.info(f"Using cached backtest results: {len(recent_results)} strategies")
+                logger.info(f"✅ Found cached results: {len(recent_results)} profitable strategies")
+                logger.info("⚡ Skipping backtest - using cached data")
                 return recent_results
+            else:
+                logger.info("❌ No recent cached results found")
+        else:
+            logger.info("🔄 Force backtest enabled - ignoring cached results")
         
         logger.info("Running new backtests...")
         
@@ -117,21 +147,29 @@ class TradingAlgorithm:
             return []
         
         symbols = universe_df['symbol'].tolist()
-        logger.info(f"Running backtests for {len(symbols)} symbols")
+        logger.info(f"📋 Stock universe loaded: {len(symbols)} symbols")
         
         # Step 2: Set backtest date range
         end_date = datetime.now()
         start_date = config.BACKTEST_START_DATE
         
+        logger.info(f"📊 Starting comprehensive backtest analysis...")
+        logger.info(f"🕐 This may take 30-90 minutes depending on market conditions")
+        
         # Step 3: Run optimization for all symbols
         results = await self.optimizer.optimize_universe(symbols, start_date, end_date)
         
         # Step 4: Filter results
+        logger.info("🔍 Filtering and analyzing results...")
         filtered_results = self.optimizer.filter_results(results)
         
-        logger.info(f"Backtest complete: {len(results)} total results, {len(filtered_results)} profitable")
+        logger.info(f"📈 Backtest analysis complete!")
+        logger.info(f"   • Total strategies tested: {len(results)}")
+        logger.info(f"   • Profitable strategies: {len(filtered_results)}")
+        logger.info(f"   • Success rate: {(len(filtered_results)/len(results)*100) if results else 0:.1f}%")
         
         # Step 5: Save results to cloud storage
+        logger.info("💾 Saving results to cloud storage...")
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         cloud_storage.save_backtest_results(filtered_results, timestamp)
         

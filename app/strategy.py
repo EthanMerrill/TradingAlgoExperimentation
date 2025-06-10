@@ -13,6 +13,7 @@ import asyncio
 import pytz
 from data_provider import data_provider, TechnicalIndicators
 from config import config
+from utils import ProgressIndicator
 
 logger = logging.getLogger(__name__)
 
@@ -380,11 +381,22 @@ class StrategyOptimizer:
             data = data_provider.get_single_stock_bars(symbol, start_date, end_date)
             
             if data.empty or len(data) < 50:
-                logger.warning(f"Insufficient data for {symbol}")
+                logger.debug(f"⚠️  {symbol}: Insufficient data ({len(data)} rows)")
                 return None
+            
+            # Calculate total parameter combinations
+            total_combinations = 0
+            for rsi_period in self.rsi_periods:
+                for rsi_lower in self.rsi_lowers:
+                    for rsi_upper in self.rsi_uppers:
+                        if rsi_lower < rsi_upper:  # Valid combination
+                            total_combinations += 1
+            
+            logger.debug(f"🔍 {symbol}: Testing {total_combinations} parameter combinations...")
             
             best_result = None
             best_score = -float('inf')
+            tested_combinations = 0
             
             # Grid search optimization
             for rsi_period in self.rsi_periods:
@@ -393,6 +405,7 @@ class StrategyOptimizer:
                         if rsi_lower >= rsi_upper:
                             continue
                         
+                        tested_combinations += 1
                         strategy = RSIStrategy(rsi_period, rsi_lower, rsi_upper)
                         result = strategy.backtest(data, config.BACKTEST_INIT_CASH, symbol)
                         
@@ -402,11 +415,21 @@ class StrategyOptimizer:
                         if score > best_score and result.profitable:
                             best_score = score
                             best_result = result
+                            logger.debug(f"🎯 {symbol}: New best strategy found - "
+                                       f"RSI({rsi_period}, {rsi_lower}, {rsi_upper}) "
+                                       f"Alpha: {score:.2%}")
+            
+            if best_result:
+                logger.debug(f"✅ {symbol}: Optimization complete - "
+                           f"Best: RSI({best_result.rsi_period}, {best_result.rsi_lower}, {best_result.rsi_upper}) "
+                           f"Alpha: {best_result.alpha:.2%}, Trades: {best_result.num_trades}")
+            else:
+                logger.debug(f"❌ {symbol}: No profitable strategies found from {tested_combinations} combinations")
             
             return best_result
             
         except Exception as e:
-            logger.error(f"Error optimizing {symbol}: {e}")
+            logger.error(f"💥 Error optimizing {symbol}: {e}")
             return None
     
     async def optimize_universe(self, symbols: List[str], start_date: datetime, end_date: datetime) -> List[BacktestResult]:
@@ -422,14 +445,34 @@ class StrategyOptimizer:
             List of BacktestResult objects
         """
         results = []
+        processed_count = 0
+        successful_count = 0
+        total_symbols = len(symbols)
+        
+        # Track timing for progress estimates
+        import time
+        start_time = time.time()
+        
+        logger.info(f"🚀 Starting backtest optimization for {total_symbols} symbols")
+        logger.info(f"📅 Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        logger.info(f"⚙️  RSI Parameters - Periods: {self.rsi_periods}, Lower: {self.rsi_lowers}, Upper: {self.rsi_uppers}")
+        logger.info("=" * 60)
+        
+        # Initialize progress indicator
+        progress = ProgressIndicator(total_symbols, "🔍 Optimizing strategies")
         
         # Use ThreadPoolExecutor for I/O bound operations
         loop = asyncio.get_event_loop()
         
         # Process symbols in batches to avoid overwhelming the API
         batch_size = 10
-        for i in range(0, len(symbols), batch_size):
+        total_batches = (total_symbols + batch_size - 1) // batch_size
+        
+        for batch_num, i in enumerate(range(0, len(symbols), batch_size), 1):
             batch = symbols[i:i + batch_size]
+            batch_start_time = time.time()
+            
+            logger.info(f"📊 Processing batch {batch_num}/{total_batches} ({len(batch)} symbols): {', '.join(batch)}")
             
             tasks = []
             for symbol in batch:
@@ -444,17 +487,61 @@ class StrategyOptimizer:
             
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
             
+            batch_successful = 0
             for result in batch_results:
+                processed_count += 1
+                progress.update(1, f"Batch {batch_num}/{total_batches}")
+                
                 if isinstance(result, BacktestResult):
                     results.append(result)
+                    successful_count += 1
+                    batch_successful += 1
                 elif result is not None:
                     logger.error(f"Error in batch processing: {result}")
+            
+            # Calculate progress and time estimates
+            batch_time = time.time() - batch_start_time
+            total_elapsed = time.time() - start_time
+            completion_pct = (processed_count / total_symbols) * 100
+            
+            if processed_count > 0:
+                avg_time_per_symbol = total_elapsed / processed_count
+                remaining_symbols = total_symbols - processed_count
+                estimated_remaining_time = avg_time_per_symbol * remaining_symbols
+                
+                # Clear progress line and show batch summary
+                print()  # New line after progress bar
+                logger.info(f"✅ Batch {batch_num} complete: {batch_successful}/{len(batch)} successful (took {batch_time:.1f}s)")
+                logger.info(f"📈 Progress: {processed_count}/{total_symbols} ({completion_pct:.1f}%) | "
+                          f"Successful: {successful_count} | "
+                          f"ETA: {estimated_remaining_time/60:.1f} min")
+                logger.info("─" * 60)
             
             # Small delay between batches
             await asyncio.sleep(1)
         
+        # Finish progress indicator
+        progress.finish("All symbols processed!")
+        
+        # Final summary
+        total_time = time.time() - start_time
+        success_rate = (successful_count / total_symbols) * 100 if total_symbols > 0 else 0
+        
+        logger.info("=" * 60)
+        logger.info("🎯 BACKTEST OPTIMIZATION COMPLETE!")
+        logger.info(f"📊 Results Summary:")
+        logger.info(f"   • Total symbols processed: {processed_count}/{total_symbols}")
+        logger.info(f"   • Successful optimizations: {successful_count} ({success_rate:.1f}%)")
+        logger.info(f"   • Total time: {total_time/60:.1f} minutes")
+        logger.info(f"   • Average time per symbol: {total_time/total_symbols:.1f}s")
+        if successful_count > 0:
+            profitable_count = len([r for r in results if r.profitable])
+            logger.info(f"   • Profitable strategies: {profitable_count}/{successful_count}")
+        logger.info("=" * 60)
+        
         # Save all trades to consolidated CSV
         if results:
+            logger.info("💾 Saving trade details to cloud storage...")
             self.save_all_trades(results)
         
         return [r for r in results if r is not None]

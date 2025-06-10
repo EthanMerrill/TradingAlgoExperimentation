@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Any
 import logging
 from dataclasses import dataclass
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 from config import config
@@ -199,7 +199,7 @@ class DataProvider:
                     'market_value': float(position.market_value),
                     'avg_entry_price': float(position.avg_entry_price),
                     'unrealized_pl': float(position.unrealized_pl),
-                    'unrealized_plpc': float(position.unrealized_plpc),
+                    'unrealized_plpc': float(position.unrealized.plpc),
                     'current_price': float(position.current_price)
                 })
             
@@ -230,7 +230,7 @@ class DataProvider:
     async def get_stock_universe(self, date: datetime = None) -> pd.DataFrame:
         """
         Get filtered universe of stocks for trading.
-        Replaces the polygon-based approach with Alpaca screener.
+        Filters stocks based on price using Alpaca snapshots API and MIN_PRICE config.
         
         Args:
             date: Date for universe (defaults to today)
@@ -246,7 +246,6 @@ class DataProvider:
             assets = self.trading_client.get_all_assets()
             
             # Filter for tradable stocks
-            # Check what attributes are available and filter accordingly
             tradable_stocks = []
             for asset in assets:
                 if (asset.tradable and 
@@ -256,34 +255,186 @@ class DataProvider:
                     tradable_stocks.append(asset)
             
             symbols = [asset.symbol for asset in tradable_stocks]
+            logger.info(f"Found {len(symbols)} tradable stocks before price filtering")
             
-            # Get market data for filtering
-            # Note: This is a simplified approach. In production, you might want to use
-            # a market data service that provides volume and market cap data
-            logger.info(f"Found {len(symbols)} tradable stocks")
+            # Apply price filtering using snapshots
+            price_filtered_symbols = await self._filter_symbols_by_price(symbols)
             
-            # For now, return a subset for testing
-            # In production, you'd want to implement proper filtering based on:
-            # - Market cap
-            # - Volume
-            # - Price range
-            
+            # Create universe dataframe with price-filtered symbols
             universe_data = []
-            for asset in tradable_stocks[:100]:  # Limit for testing
-                universe_data.append({
-                    'symbol': asset.symbol,
-                    'name': asset.name,
-                    'exchange': asset.exchange,
-                    'tradable': asset.tradable
-                })
+            for asset in tradable_stocks:
+                if asset.symbol in price_filtered_symbols:
+                    universe_data.append({
+                        'symbol': asset.symbol,
+                        'name': asset.name,
+                        'exchange': asset.exchange,
+                        'tradable': asset.tradable
+                    })
             
             df = pd.DataFrame(universe_data)
-            logger.info(f"Returning universe of {len(df)} stocks")
+            logger.info(f"Returning universe of {len(df)} stocks after price filtering (min price: ${config.MIN_PRICE})")
             return df
             
         except Exception as e:
             logger.error(f"Error getting stock universe: {e}")
             return pd.DataFrame()
+    
+    async def _filter_symbols_by_price(self, symbols: List[str]) -> List[str]:
+        """
+        Filter symbols by current price using Alpaca snapshots API.
+        
+        Args:
+            symbols: List of symbols to filter
+            
+        Returns:
+            List of symbols that meet minimum price criteria
+        """
+        if not self.historical_client:
+            logger.warning("Historical client not initialized - skipping price filtering")
+            return symbols
+        
+        try:
+            # Process symbols in batches to avoid API limits
+            batch_size = 100  # Alpaca snapshot API limit
+            filtered_symbols = []
+            
+            for i in range(0, len(symbols), batch_size):
+                batch = symbols[i:i + batch_size]
+                
+                # Get snapshots for this batch
+                try:
+                    request = StockSnapshotRequest(symbol_or_symbols=batch)
+                    snapshots = self.historical_client.get_stock_snapshot(request)
+                    
+                    # Check if response is a dict (error response) or missing data attribute
+                    if isinstance(snapshots, dict):
+                        logger.warning(f"API returned error response for batch {i//batch_size + 1}: {snapshots}")
+                        # Include all symbols in this batch as fallback
+                        filtered_symbols.extend(batch)
+                        time.sleep(self._rate_limit_delay)
+                        continue
+                    
+                    # Check if we got a valid response with .data attribute
+                    if not hasattr(snapshots, 'data') or snapshots.data is None:
+                        logger.warning(f"Invalid snapshot response for batch {i//batch_size + 1}: {type(snapshots)}")
+                        # Include all symbols in this batch as fallback
+                        filtered_symbols.extend(batch)
+                        time.sleep(self._rate_limit_delay)
+                        continue
+                    
+                    # Filter by price
+                    for symbol in batch:
+                        if symbol in snapshots.data:
+                            snapshot = snapshots.data[symbol]
+                            # Check if we have valid price data
+                            if (hasattr(snapshot, 'latest_trade') and 
+                                snapshot.latest_trade and 
+                                hasattr(snapshot.latest_trade, 'price')):
+                                current_price = float(snapshot.latest_trade.price)
+                                
+                                # Apply MIN_PRICE filter
+                                if (current_price >= config.MIN_PRICE and 
+                                    current_price <= config.MAX_PRICE):
+                                    filtered_symbols.append(symbol)
+                            elif (hasattr(snapshot, 'latest_quote') and 
+                                  snapshot.latest_quote and 
+                                  hasattr(snapshot.latest_quote, 'bid_price')):
+                                # Fallback to bid price if no trade data
+                                current_price = float(snapshot.latest_quote.bid_price)
+                                
+                                if (current_price >= config.MIN_PRICE and 
+                                    current_price <= config.MAX_PRICE):
+                                    filtered_symbols.append(symbol)
+                
+                except Exception as batch_error:
+                    logger.warning(f"Error processing batch {i//batch_size + 1}: {batch_error}")
+                    # If snapshots fail, include all symbols in this batch (fallback)
+                    filtered_symbols.extend(batch)
+                
+                # Rate limiting
+                await asyncio.sleep(self._rate_limit_delay)
+            
+            logger.info(f"Price filtering: {len(filtered_symbols)}/{len(symbols)} symbols passed (${config.MIN_PRICE} - ${config.MAX_PRICE})")
+            return filtered_symbols
+            
+        except Exception as e:
+            logger.error(f"Error in price filtering: {e}")
+            # Return original list if filtering fails
+            return symbols
+    
+    def get_current_snapshot(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Get current snapshot data for a single symbol.
+        
+        Args:
+            symbol: Stock symbol
+            
+        Returns:
+            Dictionary with current price and volume data, or None if error
+        """
+        if not self.historical_client:
+            logger.error("Historical client not initialized - missing API credentials")
+            return None
+        
+        try:
+            request = StockSnapshotRequest(symbol_or_symbols=[symbol])
+            snapshots = self.historical_client.get_stock_snapshot(request)
+            
+            # Check if response is a dict (error response)
+            if isinstance(snapshots, dict):
+                logger.warning(f"API returned error response for {symbol}: {snapshots}")
+                return None
+            
+            # Check if we got a valid response with .data attribute
+            if not hasattr(snapshots, 'data') or snapshots.data is None:
+                logger.warning(f"Invalid snapshot response for {symbol}: {type(snapshots)}")
+                return None
+            
+            if symbol in snapshots.data:
+                snapshot = snapshots.data[symbol]
+                result = {
+                    'symbol': symbol,
+                    'timestamp': datetime.now()
+                }
+                
+                # Get latest trade data
+                if hasattr(snapshot, 'latest_trade') and snapshot.latest_trade:
+                    result.update({
+                        'price': float(snapshot.latest_trade.price),
+                        'volume': int(snapshot.latest_trade.size) if hasattr(snapshot.latest_trade, 'size') else 0,
+                        'timestamp': snapshot.latest_trade.timestamp
+                    })
+                
+                # Get latest quote data
+                if hasattr(snapshot, 'latest_quote') and snapshot.latest_quote:
+                    result.update({
+                        'bid_price': float(snapshot.latest_quote.bid_price),
+                        'ask_price': float(snapshot.latest_quote.ask_price),
+                        'bid_size': int(snapshot.latest_quote.bid_size),
+                        'ask_size': int(snapshot.latest_quote.ask_size)
+                    })
+                
+                # Get daily bar data
+                if hasattr(snapshot, 'daily_bar') and snapshot.daily_bar:
+                    result.update({
+                        'daily_open': float(snapshot.daily_bar.open),
+                        'daily_high': float(snapshot.daily_bar.high),
+                        'daily_low': float(snapshot.daily_bar.low),
+                        'daily_close': float(snapshot.daily_bar.close),
+                        'daily_volume': int(snapshot.daily_bar.volume)
+                    })
+                
+                return result
+            else:
+                logger.warning(f"No snapshot data found for symbol {symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error fetching snapshot for {symbol}: {e}")
+            return None
+        
+        finally:
+            time.sleep(self._rate_limit_delay)
 
 
 class TechnicalIndicators:
