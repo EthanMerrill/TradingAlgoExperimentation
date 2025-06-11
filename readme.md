@@ -28,9 +28,15 @@ Some Experimenting with a trading algorithm for US Common Stock.
 ### Get Exits
 
 _Positions DF:_
-symbol|rsi_period|rsi_lower|rsi_upper|current_rsi|modeled_returns|alpha|entry_date|entry_price|exit_date|exit|price
-_Backtests DF_
+symbol|rsi*period|rsi_lower|rsi_upper|current_rsi|modeled_returns|alpha|entry_date|entry_price|exit_date|exit|price
+Backtests DF*
 symbol|rsi_period|rsi_lower|rsi_upper|current_rsi|profit|ROI|Buy_and_hold
+
+# New Todo:
+
+- [ ] Clean up the trading engine (limits and stops calculated multiple times)
+- [ ] Add short selling strategies
+- [ ] either use or remove the metadata json file. it may be replaced by the positions csv file.
 
 todo:
 

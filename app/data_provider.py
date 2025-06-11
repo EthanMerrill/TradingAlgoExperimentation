@@ -199,7 +199,7 @@ class DataProvider:
                     'market_value': float(position.market_value),
                     'avg_entry_price': float(position.avg_entry_price),
                     'unrealized_pl': float(position.unrealized_pl),
-                    'unrealized_plpc': float(position.unrealized.plpc),
+                    'unrealized_plpc': float(position.unrealized_plpc),
                     'current_price': float(position.current_price)
                 })
             

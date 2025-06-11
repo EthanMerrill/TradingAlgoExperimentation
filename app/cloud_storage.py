@@ -83,7 +83,8 @@ class CloudStorage:
                     'avg_trade_duration': result.avg_trade_duration,
                     'max_drawdown': result.max_drawdown,
                     'sharpe_ratio': result.sharpe_ratio,
-                    'profitable': result.profitable
+                    'profitable': result.profitable,
+                    'current_rsi': result.current_rsi
                 }
                 results_data.append(self._round_floats(result_dict))
             
@@ -148,7 +149,8 @@ class CloudStorage:
                     avg_trade_duration=float(row['avg_trade_duration']),
                     max_drawdown=float(row['max_drawdown']),
                     sharpe_ratio=float(row['sharpe_ratio']),
-                    profitable=bool(row['profitable'])
+                    profitable=bool(row['profitable']),
+                    current_rsi=float(row['current_rsi']) if 'current_rsi' in row and pd.notna(row['current_rsi']) else None
                 )
                 results.append(result)
             
@@ -331,7 +333,8 @@ class CloudStorage:
             logger.error(f"Error listing trade files: {e}")
             return []
     
-    def save_position_entry(self, opportunity: 'TradingOpportunity', shares: int, order_success: bool, date: str = None) -> bool:
+    def save_position_entry(self, opportunity: 'TradingOpportunity', shares: int, order_success: bool, 
+                           stop_loss_price: float = None, take_profit_price: float = None, date: str = None) -> bool:
         """
         Save position entry details with backtest information to a daily CSV file.
         
@@ -339,6 +342,8 @@ class CloudStorage:
             opportunity: TradingOpportunity with backtest details
             shares: Number of shares purchased
             order_success: Whether the order was successfully placed
+            stop_loss_price: Stop loss price for the position
+            take_profit_price: Take profit price for the position
             date: Optional date string (YYYYMMDD format), defaults to today
             
         Returns:
@@ -367,7 +372,9 @@ class CloudStorage:
                 'backtest_return': opportunity.backtest_return,
                 'alpha': opportunity.alpha,
                 'win_rate': opportunity.win_rate,
-                'position_value': shares * opportunity.entry_price
+                'position_value': shares * opportunity.entry_price,
+                'stop_loss_price': stop_loss_price,
+                'take_profit_price': take_profit_price
             }
             
             # Round floats in position entry

@@ -7,16 +7,14 @@ import logging
 import sys
 from datetime import datetime, timedelta
 import argparse
-import pandas as pd
 from typing import List
-import time
 
 from config import config
 from data_provider import data_provider
 from strategy import StrategyOptimizer
-from trading_engine import trading_engine
+from trading_engine import TradingEngine
 from cloud_storage import cloud_storage
-from utils import setup_logging, is_trading_day, TradingCalendar
+from utils import setup_logging, TradingCalendar
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +24,7 @@ class TradingAlgorithm:
     
     def __init__(self):
         self.optimizer = StrategyOptimizer()
+        self.trading_engine = TradingEngine()
         self.trading_calendar = TradingCalendar()
         self.session_metadata = {
             'start_time': None,
@@ -34,26 +33,31 @@ class TradingAlgorithm:
             'results_summary': {}
         }
     
-    async def run_full_cycle(self, force_backtest: bool = False) -> dict:
+    async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False) -> dict:
         """
         Run the complete trading algorithm cycle.
         
         Args:
             force_backtest: Force running backtest even if recent results exist
+            dry_run: Run in dry run mode without placing actual orders
             
         Returns:
             Dictionary with session results
         """
         self.session_metadata['start_time'] = datetime.now()
-        
+            
         # Startup banner
         logger.info("🚀" * 20)
         logger.info("🚀 TRADING ALGORITHM STARTING")
         logger.info("🚀" * 20)
-        logger.info(f"📅 Session Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logger.info(f"💼 Paper Trading: {config.PAPER_TRADE}")
-        logger.info(f"🔄 Force Backtest: {force_backtest}")
+        logger.info("📅 Session Date: %s", datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+        logger.info("💼 Paper Trading: %s", config.PAPER_TRADE)
+        logger.info("🔄 Force Backtest: %s", force_backtest)
+        logger.info("🔍 Dry Run Mode: %s", dry_run)
         logger.info("=" * 60)
+        
+        # Set dry run mode on trading engine
+        self.trading_engine.set_dry_run_mode(dry_run)
         
         try:
             # Check if it's a trading day
@@ -64,27 +68,26 @@ class TradingAlgorithm:
             # Step 1: Check current positions and account status
             logger.info("🔍 Checking account status and current positions...")
             account_info = data_provider.get_account_info()
-            current_positions = trading_engine.get_current_positions()
+            current_positions = self.trading_engine.get_current_positions()
             
             logger.info("💰 Account Summary:")
-            logger.info(f"   • Equity: ${account_info.get('equity', 0):,.2f}")
-            logger.info(f"   • Cash Available: ${account_info.get('cash', 0):,.2f}")
-            logger.info(f"   • Current Positions: {len(current_positions)}")
+            logger.info("   • Equity: $%.2f", account_info.get('equity', 0))
+            logger.info("   • Cash Available: $%.2f", account_info.get('cash', 0))
+            logger.info("   • Current Positions: %d", len(current_positions))
             logger.info("─" * 40)
             
             # Check if we have enough cash to potentially trade
             cash_pct = account_info.get('cash', 0) / account_info.get('equity', 1)
             
-            if cash_pct < config.MIN_CASH_PCT and not force_backtest:
-                logger.info(f"💸 Insufficient cash for new positions:")
-                logger.info(f"   • Current cash: {cash_pct:.2%} of equity")
-                logger.info(f"   • Required minimum: {config.MIN_CASH_PCT:.2%}")
-                logger.info("🔄 Checking existing positions for exit opportunities only...")
-                # Still check for exit opportunities
-                return await self._handle_exits_only()
+            # Initialize backtest_results to avoid UnboundLocalError
+            backtest_results = []
             
-            # Step 2: Get or run backtests
-            backtest_results = await self._get_backtest_results(force_backtest)
+            if cash_pct > config.MIN_CASH_PCT or force_backtest:
+                # Step 2: Get or run backtests
+                backtest_results = await self._get_backtest_results(force_backtest)
+            else:
+                logger.warning("Insufficient cash available for purchases. Minimum required: %.1f%%", config.MIN_CASH_PCT * 100)
+                logger.info("Skipping backtest due to insufficient cash - will only process existing positions")
             
             if not backtest_results:
                 logger.warning("No backtest results available")
@@ -92,7 +95,7 @@ class TradingAlgorithm:
             
             # Step 3: Execute trading session
             logger.info("🎯 Analyzing trading opportunities and executing orders...")
-            trading_summary = trading_engine.execute_trading_session(backtest_results)
+            trading_summary = self.trading_engine.execute_trading_session(backtest_results)
             
             # Step 4: Save results and metadata
             logger.info("💾 Saving session results and metadata...")
@@ -175,27 +178,6 @@ class TradingAlgorithm:
         
         return filtered_results
     
-    async def _handle_exits_only(self) -> dict:
-        """Handle position exits when not running full backtests."""
-        try:
-            current_positions = trading_engine.get_current_positions()
-            exit_positions = trading_engine.identify_exit_opportunities(current_positions)
-            
-            exits_executed = 0
-            for position in exit_positions:
-                if trading_engine.place_sell_order(position):
-                    exits_executed += 1
-            
-            return {
-                'status': 'exits_only',
-                'positions_exited': exits_executed,
-                'total_positions': len(current_positions)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error handling exits: {e}")
-            return {'status': 'error', 'error': str(e)}
-    
     def _load_recent_backtest_results(self) -> List:
         """Load recent backtest results from cloud storage."""
         try:
@@ -271,32 +253,28 @@ async def main():
     
     logger.info("=" * 50)
     logger.info("Trading Algorithm Starting")
-    logger.info(f"Paper Trading: {config.PAPER_TRADE}")
-    logger.info(f"Dry Run: {args.dry_run}")
+    logger.info("Paper Trading: %s", config.PAPER_TRADE)
+    logger.info("Dry Run: %s", args.dry_run)
     logger.info("=" * 50)
     
     try:
         # Initialize and run the trading algorithm
         algorithm = TradingAlgorithm()
         
-        if args.dry_run:
-            logger.info("DRY RUN MODE - No orders will be placed")
-            # You could implement a dry run mode here
-        
-        result = await algorithm.run_full_cycle(force_backtest=args.force_backtest)
+        session_result = await algorithm.run_full_cycle(force_backtest=args.force_backtest, dry_run=args.dry_run)
         
         logger.info("=" * 50)
         logger.info("Trading Algorithm Complete")
-        logger.info(f"Result: {result}")
+        logger.info("Result: %s", session_result)
         logger.info("=" * 50)
         
-        return result
+        return session_result
         
     except KeyboardInterrupt:
         logger.info("Algorithm interrupted by user")
         return {'status': 'interrupted'}
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        logger.error("Unexpected error: %s", e)
         return {'status': 'error', 'error': str(e)}
 
 

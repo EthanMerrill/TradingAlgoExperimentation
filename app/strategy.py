@@ -34,6 +34,7 @@ class BacktestResult:
     max_drawdown: float
     sharpe_ratio: float
     profitable: bool
+    current_rsi: float = None  # Current RSI value at time of backtest
     trade_details: List[Dict] = None  # Add trade details to the result
 
 
@@ -45,6 +46,111 @@ class RSIStrategy:
         self.rsi_lower = rsi_lower
         self.rsi_upper = rsi_upper
         self.max_hold_days = max_hold_days or config.MAX_HOLD_DAYS
+    
+    @staticmethod
+    def calculate_price_for_target_rsi(data: pd.DataFrame, target_rsi: float, rsi_period: int = 14) -> Optional[float]:
+        """
+        Calculate the price needed to achieve a target RSI value.
+        
+        Args:
+            data: DataFrame with OHLCV data (needs at least rsi_period + 1 rows)
+            target_rsi: Desired RSI value (0-100)
+            rsi_period: RSI calculation period
+            
+        Returns:
+            Price needed to achieve target RSI, or None if calculation fails
+        """
+        try:
+            if len(data) < rsi_period + 1:
+                logger.warning(f"Insufficient data for RSI calculation. Need {rsi_period + 1} rows, got {len(data)}")
+                return None
+            
+            if not (0 <= target_rsi <= 100):
+                logger.warning(f"Invalid RSI target: {target_rsi}. Must be between 0 and 100")
+                return None
+            
+            # Get the most recent prices (excluding the current/future price we're solving for)
+            prices = data['c'].iloc[-(rsi_period):].values  # Last rsi_period closing prices
+            
+            if len(prices) < rsi_period:
+                return None
+            
+            # Calculate price changes for the historical period
+            price_changes = np.diff(prices)
+            
+            # Separate gains and losses
+            gains = np.where(price_changes > 0, price_changes, 0)
+            losses = np.where(price_changes < 0, -price_changes, 0)
+            
+            # Calculate current average gain and loss
+            avg_gain = np.mean(gains) if len(gains) > 0 else 0
+            avg_loss = np.mean(losses) if len(losses) > 0 else 0
+            
+            # Avoid division by zero
+            if avg_loss == 0:
+                if target_rsi < 100:
+                    # If no losses and target RSI < 100, we need a loss
+                    # Return a price lower than current to create a loss
+                    return prices[-1] * 0.99
+                else:
+                    # If no losses and target RSI = 100, any gain works
+                    return prices[-1] * 1.01
+            
+            # RSI formula: RSI = 100 - (100 / (1 + RS))
+            # Where RS = Average Gain / Average Loss
+            # Solving for RS: RS = (100 - target_rsi) / target_rsi * 100
+            rs_target = (100 / target_rsi) - 1
+            
+            # We need: new_avg_gain / new_avg_loss = rs_target
+            # With Wilder's smoothing: new_avg_gain = (old_avg_gain * (period-1) + new_gain) / period
+            # Similar for losses
+            
+            current_price = prices[-1]
+            
+            # Binary search for the target price
+            min_price = current_price * 0.5  # 50% down
+            max_price = current_price * 1.5  # 50% up
+            tolerance = 0.01  # RSI tolerance
+            max_iterations = 100
+            
+            for _ in range(max_iterations):
+                test_price = (min_price + max_price) / 2
+                price_change = test_price - current_price
+                
+                # Calculate new gains and losses with the test price
+                if price_change > 0:
+                    new_gain = price_change
+                    new_loss = 0
+                else:
+                    new_gain = 0
+                    new_loss = -price_change
+                
+                # Calculate new averages using Wilder's smoothing
+                new_avg_gain = (avg_gain * (rsi_period - 1) + new_gain) / rsi_period
+                new_avg_loss = (avg_loss * (rsi_period - 1) + new_loss) / rsi_period
+                
+                if new_avg_loss == 0:
+                    calculated_rsi = 100
+                else:
+                    rs = new_avg_gain / new_avg_loss
+                    calculated_rsi = 100 - (100 / (1 + rs))
+                
+                # Check if we're close enough
+                if abs(calculated_rsi - target_rsi) < tolerance:
+                    return test_price
+                
+                # Adjust search range
+                if calculated_rsi < target_rsi:
+                    min_price = test_price
+                else:
+                    max_price = test_price
+            
+            # Return best approximation
+            return (min_price + max_price) / 2
+            
+        except Exception as e:
+            logger.error(f"Error calculating price for target RSI: {e}")
+            return None
     
     def backtest(self, data: pd.DataFrame, initial_cash: float = 10000, symbol: str = None) -> BacktestResult:
         """
@@ -79,6 +185,9 @@ class RSIStrategy:
             # Calculate RSI
             rsi = TechnicalIndicators.calculate_rsi(data, self.rsi_period)
             
+            # Get current RSI (last value)
+            current_rsi = rsi.iloc[-1] if not rsi.empty else None
+            
             # Generate signals
             signals = self._generate_signals(data, rsi)
             
@@ -107,6 +216,7 @@ class RSIStrategy:
                 max_drawdown=self._calculate_max_drawdown(returns['portfolio_value']),
                 sharpe_ratio=self._calculate_sharpe_ratio(returns['daily_returns']),
                 profitable=total_return > 0,
+                current_rsi=current_rsi,
                 trade_details=trade_details
             )
             
@@ -187,16 +297,12 @@ class RSIStrategy:
             if curr_position == 1 and prev_position == 0:
                 shares = cash / price
                 cash = 0.0
-                trade_count += 1
-                logger.debug(f"Buy signal at {returns.index[i]}, price: {price:.2f}, shares: {shares:.2f}")
-            
+                trade_count += 1            
             # Sell signal
             elif curr_position == 0 and prev_position == 1:
                 old_value = shares * price
                 cash = shares * price
-                shares = 0.0
-                logger.debug(f"Sell signal at {returns.index[i]}, price: {price:.2f}, value: {old_value:.2f}")
-            
+                shares = 0.0            
             returns.at[returns.index[i], 'cash'] = cash
             returns.at[returns.index[i], 'shares'] = shares
             returns.at[returns.index[i], 'portfolio_value'] = cash + (shares * price)
@@ -287,7 +393,8 @@ class RSIStrategy:
             avg_trade_duration=0.0,
             max_drawdown=0.0,
             sharpe_ratio=0.0,
-            profitable=False
+            profitable=False,
+            current_rsi=None
         )
     
     # Individual trade logging removed - using consolidated approach instead

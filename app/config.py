@@ -80,6 +80,7 @@ class Config:
             self.STOP_LOSS_PCT = trading.get('stop_loss_pct', 0.05)
             self.TAKE_PROFIT_PCT = trading.get('take_profit_pct', 0.15)
             self.MAX_HOLD_DAYS = trading.get('max_hold_days', 30)
+            self.MIN_WIN_RATE = trading.get('min_win_rate', 0.7)
             
             # Backtesting parameters
             backtesting = config_data.get('backtesting', {})
@@ -148,6 +149,7 @@ class Config:
         self.STOP_LOSS_PCT = 0.05  # 5% stop loss
         self.TAKE_PROFIT_PCT = 0.15  # 15% take profit
         self.MAX_HOLD_DAYS = 30  # Max 30 days per trade
+        self.MIN_WIN_RATE = 0.7  # Minimum win rate of 70%
     
     def setup_backtesting_parameters(self):
         """Set up backtesting parameters (fallback method)."""
