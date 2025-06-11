@@ -84,7 +84,6 @@ class RSIStrategy:
             
             # Calculate returns
             returns = self._calculate_returns(data, signals, initial_cash)
-            
             # Calculate buy and hold return
             buy_and_hold_return = (data['c'].iloc[-1] / data['c'].iloc[0]) - 1
             
@@ -154,6 +153,7 @@ class RSIStrategy:
     
     def _calculate_returns(self, data: pd.DataFrame, signals: pd.DataFrame, initial_cash: float) -> pd.DataFrame:
         """Calculate portfolio returns based on signals."""
+        logger.debug(f"Calculating returns with initial cash: {initial_cash}, RSI({self.rsi_period}, {self.rsi_lower}, {self.rsi_upper})")
         returns = pd.DataFrame(index=data.index)
         returns['price'] = data['c']
         returns['position'] = signals['position']
@@ -173,6 +173,8 @@ class RSIStrategy:
         cash = float(initial_cash)
         shares = 0.0
         
+        trade_count = 0
+        
         for i in range(len(returns)):
             if i == 0:
                 continue
@@ -185,11 +187,15 @@ class RSIStrategy:
             if curr_position == 1 and prev_position == 0:
                 shares = cash / price
                 cash = 0.0
+                trade_count += 1
+                logger.debug(f"Buy signal at {returns.index[i]}, price: {price:.2f}, shares: {shares:.2f}")
             
             # Sell signal
             elif curr_position == 0 and prev_position == 1:
+                old_value = shares * price
                 cash = shares * price
                 shares = 0.0
+                logger.debug(f"Sell signal at {returns.index[i]}, price: {price:.2f}, value: {old_value:.2f}")
             
             returns.at[returns.index[i], 'cash'] = cash
             returns.at[returns.index[i], 'shares'] = shares
@@ -197,6 +203,13 @@ class RSIStrategy:
         
         # Calculate daily returns
         returns['daily_returns'] = returns['portfolio_value'].pct_change().fillna(0)
+        
+        final_portfolio_value = returns['portfolio_value'].iloc[-1]
+        total_return_pct = (final_portfolio_value / initial_cash - 1) * 100
+        
+        logger.debug(f"Return calculation complete - trades: {trade_count}, " 
+                   f"final value: {final_portfolio_value:.2f}, " 
+                   f"return: {total_return_pct:.2f}%")
         
         return returns
     

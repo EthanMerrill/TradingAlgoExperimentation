@@ -31,6 +31,26 @@ class CloudStorage:
             self.client = None
             self.bucket = None
     
+    def _round_floats(self, data):
+        """
+        Round all float values in data structure to 2 decimal places.
+        
+        Args:
+            data: Dictionary, DataFrame, or other data structure
+            
+        Returns:
+            Data with floats rounded to 2 decimal places
+        """
+        if isinstance(data, dict):
+            return {k: round(v, 2) if isinstance(v, (float, np.float64, np.float32)) else v 
+                   for k, v in data.items()}
+        elif isinstance(data, pd.DataFrame):
+            return data.round(2)
+        elif isinstance(data, (list, tuple)):
+            return [self._round_floats(item) for item in data]
+        else:
+            return round(data, 2) if isinstance(data, (float, np.float64, np.float32)) else data
+    
     def save_backtest_results(self, results: List[BacktestResult], timestamp: str = None) -> bool:
         """
         Save backtest results to cloud storage.
@@ -50,7 +70,7 @@ class CloudStorage:
             # Convert results to DataFrame
             results_data = []
             for result in results:
-                results_data.append({
+                result_dict = {
                     'symbol': result.symbol,
                     'rsi_period': result.rsi_period,
                     'rsi_lower': result.rsi_lower,
@@ -64,7 +84,8 @@ class CloudStorage:
                     'max_drawdown': result.max_drawdown,
                     'sharpe_ratio': result.sharpe_ratio,
                     'profitable': result.profitable
-                })
+                }
+                results_data.append(self._round_floats(result_dict))
             
             df = pd.DataFrame(results_data)
             
@@ -160,10 +181,13 @@ class CloudStorage:
             
             filename = f"{config.get_environment_path('Positions')}/positions_{timestamp}.csv"
             
+            # Round floats before uploading
+            rounded_df = self._round_floats(positions_df)
+            
             # Upload to cloud storage
             blob = self.bucket.blob(filename)
             stream = io.StringIO()
-            positions_df.to_csv(stream, index=False)
+            rounded_df.to_csv(stream, index=False)
             blob.upload_from_string(stream.getvalue(), content_type='text/csv')
             
             logger.info(f"Saved positions to {filename}")
@@ -274,9 +298,12 @@ class CloudStorage:
             
             filename = f"{config.get_environment_path('trades')}/consolidated_trades_{timestamp}.csv"
             
+            # Round floats before converting to CSV
+            rounded_df = self._round_floats(trades_df)
+            
             # Convert DataFrame to CSV string
             csv_buffer = io.StringIO()
-            trades_df.to_csv(csv_buffer, index=False)
+            rounded_df.to_csv(csv_buffer, index=False)
             csv_string = csv_buffer.getvalue()
             
             # Upload to cloud storage
@@ -337,11 +364,14 @@ class CloudStorage:
                 'rsi_period': opportunity.rsi_period,
                 'target_rsi_lower': opportunity.target_rsi_lower,
                 'target_rsi_upper': opportunity.target_rsi_upper,
-                'expected_return': opportunity.expected_return,
+                'backtest_return': opportunity.backtest_return,
                 'alpha': opportunity.alpha,
-                'confidence': opportunity.confidence,
+                'win_rate': opportunity.win_rate,
                 'position_value': shares * opportunity.entry_price
             }
+            
+            # Round floats in position entry
+            position_entry = self._round_floats(position_entry)
             
             # Generate filename for daily positions file
             filename = f"{config.get_environment_path('Positions')}/positions_{date}.csv"
@@ -361,11 +391,14 @@ class CloudStorage:
             # Create new DataFrame with this position entry
             new_entry_df = pd.DataFrame([position_entry])
             
-            # Combine with existing data
+            # Combine with existing data and round all floats
             if not existing_df.empty:
                 combined_df = pd.concat([existing_df, new_entry_df], ignore_index=True)
             else:
                 combined_df = new_entry_df
+            
+            # Round all floats in the combined DataFrame
+            combined_df = self._round_floats(combined_df)
             
             # Upload updated CSV to cloud storage
             stream = io.StringIO()

@@ -200,20 +200,22 @@ class TradingAlgorithm:
         """Load recent backtest results from cloud storage."""
         try:
             backtest_files = cloud_storage.list_backtest_files()
-            
+
             if not backtest_files:
                 return []
             
             # Sort by filename (which contains timestamp) and get most recent
             backtest_files.sort(reverse=True)
             most_recent = backtest_files[0]
-            
+            logger.info(f"Most recent backtest file: {most_recent}")
             # Check if file is recent enough (within last 24 hours)
             try:
-                file_timestamp = most_recent.split('_')[2].split('.')[0]  # Extract timestamp
-                file_date = datetime.strptime(file_timestamp, '%H%M%S')
-                # Combine with today's date for comparison
-                file_datetime = datetime.combine(datetime.now().date(), file_date.time())
+                # For filenames like backtest_results_20250610_170343.csv
+                date_part = most_recent.split('_')[2]  # Extract date (20250610)
+                time_part = most_recent.split('_')[3].split('.')[0]  # Extract time (170343)
+                
+                # Parse as date+time
+                file_datetime = datetime.strptime(f"{date_part}_{time_part}", '%Y%m%d_%H%M%S')
                 
                 if (datetime.now() - file_datetime).total_seconds() < 24 * 3600:
                     return cloud_storage.load_backtest_results(most_recent)

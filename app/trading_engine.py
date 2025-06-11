@@ -27,9 +27,9 @@ class TradingOpportunity:
     target_rsi_lower: int
     target_rsi_upper: int
     rsi_period: int
-    expected_return: float
+    backtest_return: float
     alpha: float
-    confidence: float
+    win_rate: float
     entry_price: float
 
 
@@ -117,14 +117,14 @@ class TradingEngine:
                     
                     opportunity = TradingOpportunity(
                         symbol=result.symbol,
-                        current_rsi=current_rsi,
+                        current_rsi=round(current_rsi, 2),
                         target_rsi_lower=result.rsi_lower,
                         target_rsi_upper=result.rsi_upper,
                         rsi_period=result.rsi_period,
-                        expected_return=result.total_return,
-                        alpha=result.alpha,
-                        confidence=result.win_rate,
-                        entry_price=current_price
+                        backtest_return=round(result.total_return, 2),
+                        alpha=round(result.alpha, 2),
+                        win_rate=round(result.win_rate, 2),
+                        entry_price=round(current_price, 2)
                     )
                     opportunities.append(opportunity)
                     
@@ -208,6 +208,7 @@ class TradingEngine:
             current_positions = self.get_current_positions()
             
             if not account_info:
+                logger.warning("Account info not available - cannot calculate position sizes")
                 return []
             
             cash = account_info['cash']
