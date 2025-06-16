@@ -1,0 +1,308 @@
+2025-06-14 20:03:32,750 - __main__ - INFO - ==================================================
+2025-06-14 20:03:32,751 - __main__ - INFO - Trading Algorithm Starting
+2025-06-14 20:03:32,751 - __main__ - INFO - Paper Trading: True
+2025-06-14 20:03:32,751 - __main__ - INFO - Dry Run: True
+2025-06-14 20:03:32,751 - __main__ - INFO - ==================================================
+2025-06-14 20:03:32,766 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:03:32,767 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-14 20:03:32,767 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:03:32,767 - __main__ - INFO - 📅 Session Date: 2025-06-14 20:03:32
+2025-06-14 20:03:32,767 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-14 20:03:32,767 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-14 20:03:32,767 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-14 20:03:32,767 - __main__ - INFO - ============================================================
+2025-06-14 20:03:32,767 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-14 20:03:32,767 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-14 20:03:33,784 - cloud_storage - INFO - Loaded position entries from positions_20250614_194927.csv
+2025-06-14 20:03:33,813 - __main__ - INFO - 💰 Account Summary:
+2025-06-14 20:03:33,814 - __main__ - INFO -    • Equity: $9769.13
+2025-06-14 20:03:33,814 - __main__ - INFO -    • Cash Available: $6445.25
+2025-06-14 20:03:33,814 - __main__ - INFO -    • Current Positions: 0
+2025-06-14 20:03:33,814 - __main__ - INFO - ────────────────────────────────────────
+2025-06-14 20:03:33,814 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-14 20:03:33,884 - __main__ - INFO - Most recent backtest file: backtest_results_20250613_063125.csv
+2025-06-14 20:03:33,885 - __main__ - INFO - ❌ No recent cached results found
+2025-06-14 20:03:33,885 - __main__ - INFO - Running new backtests...
+2025-06-14 20:03:35,138 - data_provider - INFO - Found 11068 tradable stocks before price filtering
+2025-06-14 20:11:36,631 - __main__ - INFO - ==================================================
+2025-06-14 20:11:36,631 - __main__ - INFO - Trading Algorithm Starting
+2025-06-14 20:11:36,631 - __main__ - INFO - Paper Trading: True
+2025-06-14 20:11:36,631 - __main__ - INFO - Dry Run: True
+2025-06-14 20:11:36,631 - __main__ - INFO - ==================================================
+2025-06-14 20:11:36,646 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:11:36,646 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-14 20:11:36,646 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:11:36,646 - __main__ - INFO - 📅 Session Date: 2025-06-14 20:11:36
+2025-06-14 20:11:36,646 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-14 20:11:36,646 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-14 20:11:36,646 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-14 20:11:36,646 - __main__ - INFO - ============================================================
+2025-06-14 20:11:36,646 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-14 20:11:36,646 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-14 20:11:37,635 - cloud_storage - INFO - Loaded position entries from positions_20250614_194927.csv
+2025-06-14 20:11:37,664 - __main__ - INFO - 💰 Account Summary:
+2025-06-14 20:11:37,664 - __main__ - INFO -    • Equity: $9769.13
+2025-06-14 20:11:37,665 - __main__ - INFO -    • Cash Available: $6445.25
+2025-06-14 20:11:37,665 - __main__ - INFO -    • Current Positions: 0
+2025-06-14 20:11:37,665 - __main__ - INFO - ────────────────────────────────────────
+2025-06-14 20:11:37,665 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-14 20:11:37,731 - __main__ - INFO - Most recent backtest file: backtest_results_20250613_063125.csv
+2025-06-14 20:11:37,732 - __main__ - INFO - ❌ No recent cached results found
+2025-06-14 20:11:37,732 - __main__ - INFO - Running new backtests...
+2025-06-14 20:11:38,606 - data_provider - INFO - Found 11068 tradable stocks before price filtering
+2025-06-14 20:12:31,993 - __main__ - INFO - ==================================================
+2025-06-14 20:12:31,993 - __main__ - INFO - Trading Algorithm Starting
+2025-06-14 20:12:31,993 - __main__ - INFO - Paper Trading: True
+2025-06-14 20:12:31,993 - __main__ - INFO - Dry Run: True
+2025-06-14 20:12:31,993 - __main__ - INFO - ==================================================
+2025-06-14 20:12:32,008 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:12:32,008 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-14 20:12:32,008 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:12:32,008 - __main__ - INFO - 📅 Session Date: 2025-06-14 20:12:32
+2025-06-14 20:12:32,008 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-14 20:12:32,008 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-14 20:12:32,008 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-14 20:12:32,008 - __main__ - INFO - ============================================================
+2025-06-14 20:12:32,008 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-14 20:12:32,008 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-14 20:12:32,873 - cloud_storage - INFO - Loaded position entries from positions_20250614_194927.csv
+2025-06-14 20:12:33,016 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_201232.csv
+2025-06-14 20:12:33,017 - __main__ - INFO - 💰 Account Summary:
+2025-06-14 20:12:33,017 - __main__ - INFO -    • Equity: $9769.13
+2025-06-14 20:12:33,017 - __main__ - INFO -    • Cash Available: $6445.25
+2025-06-14 20:12:33,017 - __main__ - INFO -    • Current Positions: 0
+2025-06-14 20:12:33,017 - __main__ - INFO - ────────────────────────────────────────
+2025-06-14 20:12:33,017 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-14 20:12:33,089 - __main__ - INFO - Most recent backtest file: backtest_results_20250613_063125.csv
+2025-06-14 20:12:33,090 - __main__ - INFO - ❌ No recent cached results found
+2025-06-14 20:12:33,090 - __main__ - INFO - Running new backtests...
+2025-06-14 20:12:34,125 - data_provider - INFO - Found 11068 tradable stocks before price filtering
+2025-06-14 20:14:46,090 - __main__ - INFO - ==================================================
+2025-06-14 20:14:46,090 - __main__ - INFO - Trading Algorithm Starting
+2025-06-14 20:14:46,090 - __main__ - INFO - Paper Trading: True
+2025-06-14 20:14:46,091 - __main__ - INFO - Dry Run: True
+2025-06-14 20:14:46,091 - __main__ - INFO - ==================================================
+2025-06-14 20:14:46,105 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:14:46,105 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-14 20:14:46,105 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:14:46,105 - __main__ - INFO - 📅 Session Date: 2025-06-14 20:14:46
+2025-06-14 20:14:46,105 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-14 20:14:46,105 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-14 20:14:46,105 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-14 20:14:46,105 - __main__ - INFO - ============================================================
+2025-06-14 20:14:46,105 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-14 20:14:46,105 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-14 20:14:46,947 - cloud_storage - INFO - Loaded position entries from positions_20250614_201232.csv
+2025-06-14 20:14:46,965 - positions - WARNING - Found 1 symbols in cloud storage that are not in Alpaca: {'SOXL'}. Marking as closed
+2025-06-14 20:14:46,967 - positions - INFO - Marked 1 positions as closed in cloud storage
+2025-06-14 20:14:47,092 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_201446.csv
+2025-06-14 20:14:47,093 - __main__ - INFO - 💰 Account Summary:
+2025-06-14 20:14:47,093 - __main__ - INFO -    • Equity: $9769.13
+2025-06-14 20:14:47,093 - __main__ - INFO -    • Cash Available: $6445.25
+2025-06-14 20:14:47,093 - __main__ - INFO -    • Current Positions: 0
+2025-06-14 20:14:47,093 - __main__ - INFO - ────────────────────────────────────────
+2025-06-14 20:14:47,093 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-14 20:14:47,153 - __main__ - INFO - Most recent backtest file: backtest_results_20250613_063125.csv
+2025-06-14 20:14:47,155 - __main__ - INFO - ❌ No recent cached results found
+2025-06-14 20:14:47,155 - __main__ - INFO - Running new backtests...
+2025-06-14 20:14:48,209 - data_provider - INFO - Found 11068 tradable stocks before price filtering
+2025-06-14 20:37:27,701 - __main__ - INFO - ==================================================
+2025-06-14 20:37:27,702 - __main__ - INFO - Trading Algorithm Starting
+2025-06-14 20:37:27,702 - __main__ - INFO - Paper Trading: True
+2025-06-14 20:37:27,702 - __main__ - INFO - Dry Run: True
+2025-06-14 20:37:27,702 - __main__ - INFO - ==================================================
+2025-06-14 20:37:27,717 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:37:27,717 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-14 20:37:27,717 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-14 20:37:27,717 - __main__ - INFO - 📅 Session Date: 2025-06-14 20:37:27
+2025-06-14 20:37:27,717 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-14 20:37:27,717 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-14 20:37:27,717 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-14 20:37:27,717 - __main__ - INFO - ============================================================
+2025-06-14 20:37:27,717 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-14 20:37:27,717 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-14 20:37:28,910 - cloud_storage - INFO - Loaded position entries from positions_20250614_201446.csv
+2025-06-14 20:37:29,097 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_203728.csv
+2025-06-14 20:37:29,099 - __main__ - INFO - 💰 Account Summary:
+2025-06-14 20:37:29,099 - __main__ - INFO -    • Equity: $9769.13
+2025-06-14 20:37:29,099 - __main__ - INFO -    • Cash Available: $6445.25
+2025-06-14 20:37:29,099 - __main__ - INFO -    • Current Positions: 0
+2025-06-14 20:37:29,099 - __main__ - INFO - ────────────────────────────────────────
+2025-06-14 20:37:29,100 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-14 20:37:29,224 - __main__ - INFO - Most recent backtest file: backtest_results_20250613_063125.csv
+2025-06-14 20:37:29,226 - __main__ - INFO - ❌ No recent cached results found
+2025-06-14 20:37:29,227 - __main__ - INFO - Running new backtests...
+2025-06-14 20:37:30,429 - data_provider - INFO - Found 11068 tradable stocks before price filtering
+2025-06-14 20:37:49,331 - data_provider - INFO - Price and volume filtering: 245/11068 symbols passed ($15.0 - $350.0, volume >= 200,000)
+2025-06-14 20:37:49,368 - data_provider - INFO - Returning universe of 245 stocks after price filtering (min price: $15.0)
+2025-06-14 20:37:49,381 - __main__ - INFO - 📋 Stock universe loaded: 245 symbols
+2025-06-14 20:37:49,381 - __main__ - INFO - 📊 Starting comprehensive backtest analysis...
+2025-06-14 20:37:49,381 - __main__ - INFO - 🕐 This may take 30-90 minutes depending on market conditions
+2025-06-14 20:37:49,381 - strategy - INFO - 🚀 Starting backtest optimization for 245 symbols
+2025-06-14 20:37:49,381 - strategy - INFO - 📅 Date range: 2024-12-16 to 2025-06-14
+2025-06-14 20:37:49,381 - strategy - INFO - ⚙️  RSI Parameters - Periods: [3, 13, 23, 33], Lower: [20, 25, 30, 35, 40], Upper: [60, 65, 70, 75, 80]
+2025-06-14 20:37:49,381 - strategy - INFO - ============================================================
+2025-06-14 20:37:49,381 - strategy - INFO - 📊 Processing batch 1/25 (10 symbols): IAU, IBIT, IEF, IEFA, IEMG, IGSB, IGV, IJH, INDA, INFY
+2025-06-14 20:38:03,903 - strategy - INFO - ✅ Batch 1 complete: 10/10 successful (took 14.5s)
+2025-06-14 20:38:03,904 - strategy - INFO - 📈 Progress: 10/245 (4.1%) | Successful: 10 | ETA: 5.7 min
+2025-06-14 20:38:03,904 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:38:04,905 - strategy - INFO - 📊 Processing batch 2/25 (10 symbols): INSM, INTC, IONQ, IPG, IWM, BITO, JHX, JNJ, JNK, JPST
+2025-06-14 20:38:19,231 - strategy - INFO - ✅ Batch 2 complete: 10/10 successful (took 14.3s)
+2025-06-14 20:38:19,232 - strategy - INFO - 📈 Progress: 20/245 (8.2%) | Successful: 20 | ETA: 5.6 min
+2025-06-14 20:38:19,232 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:38:20,233 - strategy - INFO - 📊 Processing batch 3/25 (10 symbols): K, KDP, KEY, KHC, KMI, KRE, KVUE, KWEB, LQD, LULU
+2025-06-14 20:38:34,410 - strategy - INFO - ✅ Batch 3 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:38:34,410 - strategy - INFO - 📈 Progress: 30/245 (12.2%) | Successful: 30 | ETA: 5.4 min
+2025-06-14 20:38:34,410 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:38:35,411 - strategy - INFO - 📊 Processing batch 4/25 (10 symbols): LUV, MARA, MBB, MCHP, MDLZ, MDT, MNST, MO, MOS, MP
+2025-06-14 20:38:49,527 - strategy - INFO - ✅ Batch 4 complete: 10/10 successful (took 14.1s)
+2025-06-14 20:38:49,528 - strategy - INFO - 📈 Progress: 40/245 (16.3%) | Successful: 40 | ETA: 5.1 min
+2025-06-14 20:38:49,528 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:38:50,529 - strategy - INFO - 📊 Processing batch 5/25 (10 symbols): MRK, MRNA, MRVL, MU, NBIS, NCLH, NEE, NET, NKE, NVDA
+2025-06-14 20:39:04,879 - strategy - INFO - ✅ Batch 5 complete: 10/10 successful (took 14.4s)
+2025-06-14 20:39:04,880 - strategy - INFO - 📈 Progress: 50/245 (20.4%) | Successful: 50 | ETA: 4.9 min
+2025-06-14 20:39:04,881 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:39:05,882 - strategy - INFO - 📊 Processing batch 6/25 (10 symbols): NVO, O, OMC, ON, ONON, ORCL, ORLY, OWL, OXY, PENN
+2025-06-14 20:39:20,056 - strategy - INFO - ✅ Batch 6 complete: 9/10 successful (took 14.2s)
+2025-06-14 20:39:20,056 - strategy - INFO - 📈 Progress: 60/245 (24.5%) | Successful: 59 | ETA: 4.7 min
+2025-06-14 20:39:20,056 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:39:21,058 - strategy - INFO - 📊 Processing batch 7/25 (10 symbols): PEP, PFE, PINS, PLTR, PM, PPL, PRMB, PYPL, QBTS, QXO
+2025-06-14 20:39:35,203 - strategy - INFO - ✅ Batch 7 complete: 10/10 successful (took 14.1s)
+2025-06-14 20:39:35,203 - strategy - INFO - 📈 Progress: 70/245 (28.6%) | Successful: 69 | ETA: 4.4 min
+2025-06-14 20:39:35,203 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:39:36,205 - strategy - INFO - 📊 Processing batch 8/25 (10 symbols): RBLX, RELY, RF, RKLB, ROST, RPRX, S, SATS, SBUX, SCHX
+2025-06-14 20:39:50,488 - strategy - INFO - ✅ Batch 8 complete: 10/10 successful (took 14.3s)
+2025-06-14 20:39:50,489 - strategy - INFO - 📈 Progress: 80/245 (32.7%) | Successful: 79 | ETA: 4.2 min
+2025-06-14 20:39:50,489 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:39:51,490 - strategy - INFO - 📊 Processing batch 9/25 (10 symbols): SGOV, ET, SHEL, SHOP, SIRI, SLB, SLV, SMCI, SMR, SNOW
+2025-06-14 20:40:05,676 - strategy - INFO - ✅ Batch 9 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:40:05,677 - strategy - INFO - 📈 Progress: 90/245 (36.7%) | Successful: 89 | ETA: 3.9 min
+2025-06-14 20:40:05,677 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:40:06,679 - strategy - INFO - 📊 Processing batch 10/25 (10 symbols): SO, SOXL, SPIB, SPTL, ASHR, SPXU, SQQQ, STM, T, ARKK
+2025-06-14 20:40:20,907 - strategy - INFO - ✅ Batch 10 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:40:20,907 - strategy - INFO - 📈 Progress: 100/245 (40.8%) | Successful: 99 | ETA: 3.7 min
+2025-06-14 20:40:20,907 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:40:21,909 - strategy - INFO - 📊 Processing batch 11/25 (10 symbols): TEAM, TECK, TEVA, TFC, TLT, TME, TMUS, TQQQ, TSLQ, TSLA
+2025-06-14 20:40:36,139 - strategy - INFO - ✅ Batch 11 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:40:36,139 - strategy - INFO - 📈 Progress: 110/245 (44.9%) | Successful: 109 | ETA: 3.4 min
+2025-06-14 20:40:36,139 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:40:37,141 - strategy - INFO - 📊 Processing batch 12/25 (10 symbols): GLXY, TSM, U, UAL, UBER, UNH, URA, USB, USHY, VCIT
+2025-06-14 20:40:49,896 - strategy - INFO - ✅ Batch 12 complete: 9/10 successful (took 12.8s)
+2025-06-14 20:40:49,897 - strategy - INFO - 📈 Progress: 120/245 (49.0%) | Successful: 118 | ETA: 3.1 min
+2025-06-14 20:40:49,897 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:40:50,899 - strategy - INFO - 📊 Processing batch 13/25 (10 symbols): VCSH, VEA, UNG, VRT, USO, UVXY, VZ, WFC, VG, WMT
+2025-06-14 20:41:05,070 - strategy - INFO - ✅ Batch 13 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:41:05,071 - strategy - INFO - 📈 Progress: 130/245 (53.1%) | Successful: 128 | ETA: 2.9 min
+2025-06-14 20:41:05,071 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:41:06,073 - strategy - INFO - 📊 Processing batch 14/25 (10 symbols): X, XBI, XEL, XLE, XLF, XLI, XLP, XLU, XLV, XOM
+2025-06-14 20:41:20,310 - strategy - INFO - ✅ Batch 14 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:41:20,311 - strategy - INFO - 📈 Progress: 140/245 (57.1%) | Successful: 138 | ETA: 2.6 min
+2025-06-14 20:41:20,311 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:41:21,313 - strategy - INFO - 📊 Processing batch 15/25 (10 symbols): XP, XPEV, ZIM, VTEB, COIN, KO, IOT, JETS, BWX, FCX
+2025-06-14 20:41:35,465 - strategy - INFO - ✅ Batch 15 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:41:35,465 - strategy - INFO - 📈 Progress: 150/245 (61.2%) | Successful: 148 | ETA: 2.4 min
+2025-06-14 20:41:35,465 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:41:36,467 - strategy - INFO - 📊 Processing batch 16/25 (10 symbols): KGC, NEM, SDS, CHYM, AA, AAOI, AAPL, ABBV, AGG, AMD
+2025-06-14 20:41:49,193 - strategy - INFO - ✅ Batch 16 complete: 9/10 successful (took 12.7s)
+2025-06-14 20:41:49,194 - strategy - INFO - 📈 Progress: 160/245 (65.3%) | Successful: 157 | ETA: 2.1 min
+2025-06-14 20:41:49,194 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:41:50,196 - strategy - INFO - 📊 Processing batch 17/25 (10 symbols): AMX, AMZN, ANET, APA, AVGO, B, BA, BAC, BCS, BEKE
+2025-06-14 20:42:04,433 - strategy - INFO - ✅ Batch 17 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:42:04,434 - strategy - INFO - 📈 Progress: 170/245 (69.4%) | Successful: 167 | ETA: 1.9 min
+2025-06-14 20:42:04,434 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:42:05,436 - strategy - INFO - 📊 Processing batch 18/25 (10 symbols): BF.B, BKR, BMY, BND, BP, BRO, BSX, BTI, BWA, C
+2025-06-14 20:42:19,612 - strategy - INFO - ✅ Batch 18 complete: 9/10 successful (took 14.2s)
+2025-06-14 20:42:19,612 - strategy - INFO - 📈 Progress: 180/245 (73.5%) | Successful: 176 | ETA: 1.6 min
+2025-06-14 20:42:19,612 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:42:20,613 - strategy - INFO - 📊 Processing batch 19/25 (10 symbols): CAG, CCL, CFG, CHWY, CL, CMCSA, CMG, CNM, CNP, COLD
+2025-06-14 20:42:34,835 - strategy - INFO - ✅ Batch 19 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:42:34,835 - strategy - INFO - 📈 Progress: 190/245 (77.6%) | Successful: 186 | ETA: 1.4 min
+2025-06-14 20:42:34,835 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:42:35,836 - strategy - INFO - 📊 Processing batch 20/25 (10 symbols): COP, CPB, CPNG, CPRT, CRM, CSCO, CSX, CTRA, CVNA, CVS
+2025-06-14 20:42:49,982 - strategy - INFO - ✅ Batch 20 complete: 10/10 successful (took 14.1s)
+2025-06-14 20:42:49,983 - strategy - INFO - 📈 Progress: 200/245 (81.6%) | Successful: 196 | ETA: 1.1 min
+2025-06-14 20:42:49,983 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:42:50,985 - strategy - INFO - 📊 Processing batch 21/25 (10 symbols): CZR, DAL, DAR, DDOG, DHR, OKLO, DIS, DKNG, DOW, DVN
+2025-06-14 20:43:05,339 - strategy - INFO - ✅ Batch 21 complete: 10/10 successful (took 14.4s)
+2025-06-14 20:43:05,340 - strategy - INFO - 📈 Progress: 210/245 (85.7%) | Successful: 206 | ETA: 0.9 min
+2025-06-14 20:43:05,340 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:43:06,343 - strategy - INFO - 📊 Processing batch 22/25 (10 symbols): EBAY, EEM, EFA, EIX, EMB, EMLC, EPD, ETHA, ETSY, EWT
+2025-06-14 20:43:20,527 - strategy - INFO - ✅ Batch 22 complete: 9/10 successful (took 14.2s)
+2025-06-14 20:43:20,528 - strategy - INFO - 📈 Progress: 220/245 (89.8%) | Successful: 215 | ETA: 0.6 min
+2025-06-14 20:43:20,528 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:43:21,531 - strategy - INFO - 📊 Processing batch 23/25 (10 symbols): EWZ, EXC, FE, FLR, FXI, GAP, GDX, GDXJ, GE, GEN
+2025-06-14 20:43:35,749 - strategy - INFO - ✅ Batch 23 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:43:35,750 - strategy - INFO - 📈 Progress: 230/245 (93.9%) | Successful: 225 | ETA: 0.4 min
+2025-06-14 20:43:35,750 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:43:36,752 - strategy - INFO - 📊 Processing batch 24/25 (10 symbols): GILD, GM, GME, GOOG, GOOGL, GPK, GTLB, HAL, HBAN, HIMS
+2025-06-14 20:43:50,937 - strategy - INFO - ✅ Batch 24 complete: 10/10 successful (took 14.2s)
+2025-06-14 20:43:50,937 - strategy - INFO - 📈 Progress: 240/245 (98.0%) | Successful: 235 | ETA: 0.1 min
+2025-06-14 20:43:50,937 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:43:51,940 - strategy - INFO - 📊 Processing batch 25/25 (5 symbols): HOOD, HPE, HST, HYG, QUBT
+2025-06-14 20:43:59,036 - strategy - INFO - ✅ Batch 25 complete: 5/5 successful (took 7.1s)
+2025-06-14 20:43:59,036 - strategy - INFO - 📈 Progress: 245/245 (100.0%) | Successful: 240 | ETA: 0.0 min
+2025-06-14 20:43:59,036 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-14 20:44:00,043 - strategy - INFO - ============================================================
+2025-06-14 20:44:00,044 - strategy - INFO - 🎯 BACKTEST OPTIMIZATION COMPLETE!
+2025-06-14 20:44:00,044 - strategy - INFO - 📊 Results Summary:
+2025-06-14 20:44:00,044 - strategy - INFO -    • Total symbols processed: 245/245
+2025-06-14 20:44:00,044 - strategy - INFO -    • Successful optimizations: 240 (98.0%)
+2025-06-14 20:44:00,044 - strategy - INFO -    • Total time: 6.2 minutes
+2025-06-14 20:44:00,044 - strategy - INFO -    • Average time per symbol: 1.5s
+2025-06-14 20:44:00,045 - strategy - INFO -    • Profitable strategies: 240/240
+2025-06-14 20:44:00,045 - strategy - INFO - ============================================================
+2025-06-14 20:44:00,045 - strategy - INFO - 💾 Saving trade details to cloud storage...
+2025-06-14 20:44:00,047 - strategy - INFO - Saving 1055 trades from 240 strategies to consolidated CSV
+2025-06-14 20:44:00,410 - cloud_storage - INFO - Saved 1055 consolidated trades to qa/trades/consolidated_trades_20250614_204400.csv
+2025-06-14 20:44:00,413 - __main__ - INFO - 🔍 Filtering and analyzing results...
+2025-06-14 20:44:00,413 - __main__ - INFO - 📈 Backtest analysis complete!
+2025-06-14 20:44:00,413 - __main__ - INFO -    • Total strategies tested: 240
+2025-06-14 20:44:00,413 - __main__ - INFO -    • Profitable strategies: 222
+2025-06-14 20:44:00,414 - __main__ - INFO -    • Success rate: 92.5%
+2025-06-14 20:44:00,414 - __main__ - INFO - 💾 Saving results to cloud storage...
+2025-06-14 20:44:00,560 - cloud_storage - INFO - Saved 222 backtest results to qa/Backtests/backtest_results_20250614_204400.csv
+2025-06-14 20:44:00,563 - __main__ - INFO - 🎯 Analyzing trading opportunities and executing orders...
+2025-06-14 20:44:00,564 - trading_engine - INFO - Starting trading session...
+2025-06-14 20:44:01,193 - cloud_storage - INFO - Loaded position entries from positions_20250614_203728.csv
+2025-06-14 20:44:01,421 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_204401.csv
+2025-06-14 20:44:01,424 - trading_engine - INFO - No current positions found
+2025-06-14 20:44:47,626 - cloud_storage - INFO - Loaded position entries from positions_20250614_204401.csv
+2025-06-14 20:44:47,888 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_204447.csv
+2025-06-14 20:44:47,947 - trading_engine - INFO - 📥 Found 2 new buying opportunities:
+2025-06-14 20:44:47,948 - trading_engine - INFO -    1. IONQ: 15 shares @ $37.84 = $567.60
+2025-06-14 20:44:47,948 - trading_engine - INFO -       RSI: 27.3, Alpha: 1.750, Win Rate: 92.0%
+2025-06-14 20:44:47,948 - trading_engine - INFO -    2. RKLB: 22 shares @ $25.41 = $559.02
+2025-06-14 20:44:47,948 - trading_engine - INFO -       RSI: 17.8, Alpha: 1.610, Win Rate: 100.0%
+2025-06-14 20:44:47,948 - trading_engine - INFO -    Total investment: $1126.62
+2025-06-14 20:44:47,948 - trading_engine - INFO - 🔍 DRY RUN: Would place buy order for 15 shares of IONQ at $37.84
+2025-06-14 20:44:47,949 - trading_engine - INFO - 🔍 DRY RUN: Stop loss: $35.95, Take profit: $43.52
+2025-06-14 20:44:47,949 - trading_engine - INFO - 🔍 DRY RUN: Position value: $567.60
+2025-06-14 20:44:48,155 - cloud_storage - INFO - Saved position entry for IONQ to qa/Positions/positions_20250614.csv
+2025-06-14 20:44:48,458 - cloud_storage - INFO - Loaded position entries from positions_20250614_204447.csv
+2025-06-14 20:44:48,601 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_204448.csv
+2025-06-14 20:44:48,731 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_204448.csv
+2025-06-14 20:44:48,731 - positions - INFO - Opened new position for IONQ.
+2025-06-14 20:44:48,731 - trading_engine - INFO - 🔍 DRY RUN: Would place buy order for 22 shares of RKLB at $25.41
+2025-06-14 20:44:48,731 - trading_engine - INFO - 🔍 DRY RUN: Stop loss: $24.14, Take profit: $29.22
+2025-06-14 20:44:48,731 - trading_engine - INFO - 🔍 DRY RUN: Position value: $559.02
+2025-06-14 20:44:49,022 - cloud_storage - INFO - Saved position entry for RKLB to qa/Positions/positions_20250614.csv
+2025-06-14 20:44:49,346 - cloud_storage - ERROR - Error loading position entries: No columns to parse from file
+2025-06-14 20:44:49,471 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_204449.csv
+2025-06-14 20:44:49,604 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_204449.csv
+2025-06-14 20:44:49,605 - positions - INFO - Opened new position for RKLB.
+2025-06-14 20:44:49,605 - trading_engine - INFO - Trading session complete: {'timestamp': datetime.datetime(2025, 6, 14, 20, 44, 0, 564080), 'opportunities_found': 36, 'new_positions': 2, 'orders_placed': 2, 'positions_exited': 0, 'errors': [], 'dry_run': True}
+2025-06-14 20:44:49,605 - __main__ - INFO - 💾 Saving session results and metadata...
+2025-06-14 20:44:49,902 - cloud_storage - ERROR - Error loading position entries: No columns to parse from file
+2025-06-14 20:44:50,040 - cloud_storage - INFO - Saved positions to qa/Positions/positions_20250614_204449.csv
+2025-06-14 20:44:50,141 - cloud_storage - INFO - Saved metadata to qa/Metadata/metadata_20250614_204449.json
+2025-06-14 20:44:50,142 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-14 20:44:50,142 - __main__ - INFO - 🎉 TRADING ALGORITHM COMPLETE!
+2025-06-14 20:44:50,142 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-14 20:44:50,142 - __main__ - INFO - ⏱️  Session Duration: 7.4 minutes
+2025-06-14 20:44:50,142 - __main__ - INFO - 📊 Backtest Results: 222 strategies
+2025-06-14 20:44:50,142 - __main__ - INFO - 💼 Trading Summary: {'timestamp': datetime.datetime(2025, 6, 14, 20, 44, 0, 564080), 'opportunities_found': 36, 'new_positions': 2, 'orders_placed': 2, 'positions_exited': 0, 'errors': [], 'dry_run': True}
+2025-06-14 20:44:50,142 - __main__ - INFO - ============================================================
+2025-06-14 20:44:50,145 - __main__ - INFO - ==================================================
+2025-06-14 20:44:50,145 - __main__ - INFO - Trading Algorithm Complete
+2025-06-14 20:44:50,145 - __main__ - INFO - Result: {'status': 'success', 'trading_summary': {'timestamp': datetime.datetime(2025, 6, 14, 20, 44, 0, 564080), 'opportunities_found': 36, 'new_positions': 2, 'orders_placed': 2, 'positions_exited': 0, 'errors': [], 'dry_run': True}, 'backtest_count': 222, 'duration': 442.424483}
+2025-06-14 20:44:50,145 - __main__ - INFO - ==================================================
