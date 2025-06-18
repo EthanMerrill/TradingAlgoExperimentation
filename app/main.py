@@ -7,7 +7,7 @@ import logging
 import sys
 from datetime import datetime, timedelta
 import argparse
-from typing import List
+from typing import List, Dict, Any
 
 from data_provider import data_provider
 from strategy import StrategyOptimizer
@@ -15,7 +15,7 @@ from trading_engine import TradingEngine
 from cloud_storage import cloud_storage
 from positions import PositionsManager
 from utils import setup_logging, TradingCalendar
-from config import config  # type: ignore
+from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,8 @@ class TradingAlgorithm:
         self.session_metadata = {
             'start_time': None,
             'end_time': None,
-            'config': config.to_dict(),
+            'config': globalConfig.to_dict(),
+            'portfolio_value': 0,
             'results_summary': {}
         }
 
@@ -56,7 +57,7 @@ class TradingAlgorithm:
         logger.info("🚀" * 20)
         logger.info("📅 Session Date: %s",
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-        logger.info("💼 Paper Trading: %s", config.PAPER_TRADE)
+        logger.info("💼 Paper Trading: %s", globalConfig.PAPER_TRADE)
         logger.info("🔄 Force Backtest: %s", force_backtest)
         logger.info("🔍 Dry Run Mode: %s", dry_run)
         logger.info("=" * 60)
@@ -66,9 +67,9 @@ class TradingAlgorithm:
 
         try:
             # Check if it's a trading day
-            # if not self.trading_calendar.is_trading_day():
-            #     logger.info("Market is closed today - skipping execution")
-            #     return {'status': 'market_closed'}
+            if not self.trading_calendar.is_trading_day():
+                logger.info("Market is closed today - skipping execution")
+                return {'status': 'market_closed'}
 
             # Step 1: Check current positions and account status
             logger.info("🔍 Checking account status and current positions...")
@@ -89,12 +90,12 @@ class TradingAlgorithm:
             # Initialize backtest_results to avoid UnboundLocalError
             backtest_results = []
 
-            if cash_pct > config.MIN_CASH_PCT or force_backtest:
+            if cash_pct > globalConfig.MIN_CASH_PCT or force_backtest:
                 # Step 2: Get or run backtests
                 backtest_results = await self._get_backtest_results(force_backtest)
             else:
                 logger.warning(
-                    "Insufficient cash available for purchases. Minimum required: %.1f%%", config.MIN_CASH_PCT * 100)
+                    "Insufficient cash available for purchases. Minimum required: %.1f%%", globalConfig.MIN_CASH_PCT * 100)
                 logger.info(
                     "Skipping backtest due to insufficient cash - will only process existing positions")
 
@@ -110,7 +111,7 @@ class TradingAlgorithm:
 
             # Step 4: Save results and metadata
             logger.info("💾 Saving session results and metadata...")
-            await self._save_session_results(backtest_results, trading_summary)
+            await self._save_session_results(dry_run, account_info, backtest_results, trading_summary)
 
             self.session_metadata['end_time'] = datetime.now()
             self.session_metadata['results_summary'] = trading_summary
@@ -169,7 +170,7 @@ class TradingAlgorithm:
 
         # Step 2: Set backtest date range
         end_date = datetime.now() - timedelta(minutes=20)
-        start_date = config.BACKTEST_START_DATE
+        start_date = globalConfig.BACKTEST_START_DATE
 
         logger.info("📊 Starting comprehensive backtest analysis...")
         logger.info(
@@ -230,14 +231,24 @@ class TradingAlgorithm:
             logger.error("Error loading recent backtest results: %s", e)
             return []
 
-    async def _save_session_results(self, backtest_results: List, trading_summary: dict):
+    async def _save_session_results(self, dryRun: bool, account_info: Dict[str, Any], backtest_results: List, trading_summary: dict):
         """Save session results and metadata."""
         try:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
             # Save session metadata
             self.session_metadata['backtest_count'] = len(backtest_results)
-            self.session_metadata['trading_summary'] = trading_summary
+            self.session_metadata['portfolio_value'] = account_info.get(
+                'equity', 0)
+            self.session_metadata['long_market_value'] = account_info.get(
+                'long_market_value', 0)
+            self.session_metadata['short_market_value'] = account_info.get(
+                'short_market_value', 0)
+            self.session_metadata['dry_run'] = dryRun
+            # Flatten trading_summary into individual columns
+            for key, value in trading_summary.items():
+                self.session_metadata[f'trading_{key}'] = value
+
             cloud_storage.save_metadata(self.session_metadata, timestamp)
 
         except (ValueError, TypeError, KeyError) as e:
@@ -262,13 +273,13 @@ async def main():
     # Setup logging
     setup_logging(args.log_level)
 
-    # Override config if needed
+    # Override globalConfig if needed
     if args.paper_trading:
-        config.PAPER_TRADE = True
+        globalConfig.PAPER_TRADE = True
 
     logger.info("=" * 50)
     logger.info("Trading Algorithm Starting")
-    logger.info("Paper Trading: %s", config.PAPER_TRADE)
+    logger.info("Paper Trading: %s", globalConfig.PAPER_TRADE)
     logger.info("Dry Run: %s", args.dry_run)
     logger.info("=" * 50)
 

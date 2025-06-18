@@ -2,18 +2,19 @@
 Strategy backtesting module.
 Replaces the legacy backtrader-based approach with a modern vectorized implementation.
 """
+from datetime import datetime, timedelta
+from data_provider import data_provider, TechnicalIndicators
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import logging
 from dataclasses import dataclass
-from concurrent.futures import ProcessPoolExecutor, as_completed
 import asyncio
 import pytz
-from data_provider import data_provider, TechnicalIndicators
-from config import config
+from config import globalConfig  # type: ignore
+
 from utils import ProgressIndicator
+
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +44,11 @@ class BacktestResult:
 class RSIStrategy:
     """Vectorized RSI trading strategy."""
 
-    def __init__(self, rsi_period: int, rsi_lower: int, rsi_upper: int, max_hold_days: int = None):
+    def __init__(self, rsi_period: int, rsi_lower: int, rsi_upper: int, max_hold_days: Optional[int] = None):
         self.rsi_period = rsi_period
         self.rsi_lower = rsi_lower
         self.rsi_upper = rsi_upper
-        self.max_hold_days = max_hold_days or config.MAX_HOLD_DAYS
+        self.max_hold_days = max_hold_days or globalConfig.MAX_HOLD_DAYS
 
     @staticmethod
     def calculate_price_for_target_rsi(data: pd.DataFrame, target_rsi: float, rsi_period: int = 14) -> Optional[float]:
@@ -160,7 +161,7 @@ class RSIStrategy:
             logger.error("Error calculating price for target RSI: %s", e)
             return None
 
-    def backtest(self, data: pd.DataFrame, initial_cash: float = 10000, symbol: str = None) -> BacktestResult:
+    def backtest(self, data: pd.DataFrame, symbol: str, initial_cash: float = 10000) -> BacktestResult:
         """
         Run vectorized backtest of RSI strategy.
 
@@ -518,9 +519,9 @@ class StrategyOptimizer:
     """Optimize RSI strategy parameters for multiple symbols."""
 
     def __init__(self):
-        self.rsi_periods = list(range(*config.RSI_PERIOD_RANGE))
-        self.rsi_lowers = list(range(*config.RSI_LOWER_RANGE))
-        self.rsi_uppers = list(range(*config.RSI_UPPER_RANGE))
+        self.rsi_periods = list(range(*globalConfig.RSI_PERIOD_RANGE))
+        self.rsi_lowers = list(range(*globalConfig.RSI_LOWER_RANGE))
+        self.rsi_uppers = list(range(*globalConfig.RSI_UPPER_RANGE))
 
     def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[BacktestResult]:
         """
@@ -570,7 +571,7 @@ class StrategyOptimizer:
                         strategy = RSIStrategy(
                             rsi_period, rsi_lower, rsi_upper)
                         result = strategy.backtest(
-                            data, config.BACKTEST_INIT_CASH, symbol)
+                            data, symbol, globalConfig.BACKTEST_INIT_CASH)
 
                         # Score based on alpha (risk-adjusted return vs buy-and-hold)
                         score = result.alpha

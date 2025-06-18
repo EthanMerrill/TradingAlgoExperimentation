@@ -98,9 +98,6 @@ class PositionsManager:
             cloud_positions = alpaca_positions.copy()
             cloud_positions['closed'] = False
 
-        print("Updated cloud positions: %s", cloud_positions)
-        # Save the updated cloud positions back to storage
-        self.cloud_storage.save_positions(cloud_positions)
         # Convert cloud positions DataFrame to a list of Position objects
         self.positions = []
         if not cloud_positions.empty:
@@ -136,6 +133,9 @@ class PositionsManager:
                 )
                 self.positions.append(position)
 
+        # Save the updated cloud positions back to storage
+        # self.cloud_storage.save_positions(cloud_positions)  # Only save at the VERY end
+
         return self.positions
 
     def close_position(self, symbol: str):
@@ -163,7 +163,7 @@ class PositionsManager:
                                 == symbol, 'closed'] = True
             cloud_positions['closed'] = cloud_positions['closed'].astype(bool)
             cloud_positions['closed_date'] = datetime.now()
-            self.cloud_storage.save_positions(cloud_positions)
+            # self.cloud_storage.save_positions(cloud_positions) SAVE AT END
         # Log the removal
         logger.info("Removed position for %s.", symbol)
 
@@ -183,6 +183,6 @@ class PositionsManager:
         # Add the new position
         self.positions.append(position)
         # Save the updated positions to cloud storage
-        self.cloud_storage.save_positions(self.positions)
+        # self.cloud_storage.save_positions(self.positions) SAVE AT END
         logger.info(
             "Opened new position for %s. Full saved positions: %s", position.symbol, self.positions)

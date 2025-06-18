@@ -85,7 +85,7 @@ class TestRSIStrategy(unittest.TestCase):
 
     @patch('strategy.config')
     def test_rsi_strategy_init_with_config_max_hold_days(self, mock_config):
-        """Test RSIStrategy initialization using config for max_hold_days."""
+        """Test RSIStrategy initialization using globalConfig for max_hold_days."""
         mock_config.MAX_HOLD_DAYS = 45
 
         strategy = RSIStrategy(rsi_period=21, rsi_lower=25, rsi_upper=75)

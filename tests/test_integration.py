@@ -139,7 +139,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
                 (14, 30, 70), (21, 25, 75)]},
         ]
 
-        for config in valid_configs:
+        for globalConfig in valid_configs:
             with self.subTest(config=config):
                 # Configuration should be valid
                 self.assertIsInstance(config['SYMBOLS'], list)

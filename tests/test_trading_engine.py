@@ -107,32 +107,6 @@ class TestTradingEngine(unittest.TestCase):
                 "🚀 LIVE TRADING MODE ENABLED - Orders will be placed")
 
     @patch('trading_engine.data_provider')
-    def test_get_current_positions_success(self, mock_data_provider):
-        """Test successful current positions retrieval."""
-        # Mock Alpaca position
-        mock_position = Mock()
-        mock_position.symbol = "AAPL"
-        mock_position.qty = "100"
-        mock_position.avg_entry_price = "150.00"
-        mock_position.current_price = "155.00"
-
-        mock_trading_client = Mock()
-        mock_trading_client.get_all_positions.return_value = [mock_position]
-        mock_data_provider.trading_client = mock_trading_client
-
-        # Mock position metadata
-        with patch.object(self.trading_engine, '_get_position_metadata_from_csv', return_value={'AAPL': {'rsi_period': 14}}):
-            engine = TradingEngine()
-
-            positions = engine.get_current_positions()
-
-            self.assertEqual(len(positions), 1)
-            self.assertEqual(positions[0].symbol, "AAPL")
-            self.assertEqual(positions[0].quantity, 100.0)
-            self.assertEqual(positions[0].entry_price, 150.00)
-            self.assertEqual(positions[0].current_price, 155.00)
-
-    @patch('trading_engine.data_provider')
     def test_get_current_positions_exception(self, mock_data_provider):
         """Test current positions retrieval with exception."""
         mock_trading_client = Mock()
@@ -335,38 +309,6 @@ class TestTradingEngine(unittest.TestCase):
 
             self.assertEqual(portfolio_value, 0.0)
             mock_logger.error.assert_called()
-
-    def test_get_position_metadata_from_csv_success(self):
-        """Test successful position metadata retrieval from CSV."""
-        # Mock cloud storage
-        with patch('trading_engine.cloud_storage') as mock_cloud_storage:
-            mock_cloud_storage.list_position_files.return_value = [
-                'positions_20250614.csv']
-            mock_df = pd.DataFrame({
-                'symbol': ['AAPL', 'TSLA'],
-                'rsi_period': [14, 21],
-                'target_rsi_lower': [30, 25],
-                'target_rsi_upper': [70, 75],
-                'stop_loss_price': [140.0, 750.0],
-                'take_profit_price': [160.0, 850.0]
-            })
-            mock_cloud_storage.load_position_entries.return_value = mock_df
-
-            metadata = self.trading_engine._get_position_metadata_from_csv()
-
-            self.assertIn('AAPL', metadata)
-            self.assertIn('TSLA', metadata)
-            self.assertEqual(metadata['AAPL']['rsi_period'], 14)
-            self.assertEqual(metadata['TSLA']['rsi_period'], 21)
-
-    def test_get_position_metadata_from_csv_no_files(self):
-        """Test position metadata retrieval when no files exist."""
-        with patch('trading_engine.cloud_storage') as mock_cloud_storage:
-            mock_cloud_storage.list_position_files.return_value = []
-
-            metadata = self.trading_engine._get_position_metadata_from_csv()
-
-            self.assertEqual(metadata, {})
 
 
 if __name__ == '__main__':

@@ -1,0 +1,375 @@
+2025-06-18 06:15:56,216 - __main__ - INFO - ==================================================
+2025-06-18 06:15:56,216 - __main__ - INFO - Trading Algorithm Starting
+2025-06-18 06:15:56,216 - __main__ - INFO - Paper Trading: True
+2025-06-18 06:15:56,216 - __main__ - INFO - Dry Run: True
+2025-06-18 06:15:56,216 - __main__ - INFO - ==================================================
+2025-06-18 06:15:56,232 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 06:15:56,232 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-18 06:15:56,232 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 06:15:56,232 - __main__ - INFO - 📅 Session Date: 2025-06-18 06:15:56
+2025-06-18 06:15:56,232 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-18 06:15:56,232 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-18 06:15:56,232 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-18 06:15:56,232 - __main__ - INFO - ============================================================
+2025-06-18 06:15:56,232 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-18 06:15:56,298 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-18 06:15:57,309 - cloud_storage - INFO - Loaded position entries from positions_20250618_053659.csv
+2025-06-18 06:15:57,474 - cloud_storage - INFO - Saved positions to dev/Positions/positions_20250618_061557.csv
+2025-06-18 06:15:57,474 - __main__ - INFO - 💰 Account Summary:
+2025-06-18 06:15:57,475 - __main__ - INFO -    • Equity: $9917.10
+2025-06-18 06:15:57,475 - __main__ - INFO -    • Cash Available: $7513.41
+2025-06-18 06:15:57,475 - __main__ - INFO -    • Current Positions: 3
+2025-06-18 06:15:57,475 - __main__ - INFO - ────────────────────────────────────────
+2025-06-18 06:15:57,475 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-18 06:15:57,550 - __main__ - INFO - Most recent backtest file: backtest_results_20250616_124338.csv
+2025-06-18 06:15:57,550 - __main__ - INFO - ❌ No recent cached results found
+2025-06-18 06:15:57,550 - __main__ - INFO - Running new backtests...
+2025-06-18 06:15:58,380 - data_provider - INFO - Found 11082 tradable stocks before price filtering
+2025-06-18 06:22:51,740 - __main__ - INFO - ==================================================
+2025-06-18 06:22:51,740 - __main__ - INFO - Trading Algorithm Starting
+2025-06-18 06:22:51,740 - __main__ - INFO - Paper Trading: True
+2025-06-18 06:22:51,740 - __main__ - INFO - Dry Run: True
+2025-06-18 06:22:51,741 - __main__ - INFO - ==================================================
+2025-06-18 06:22:51,755 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 06:22:51,755 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-18 06:22:51,755 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 06:22:51,755 - __main__ - INFO - 📅 Session Date: 2025-06-18 06:22:51
+2025-06-18 06:22:51,755 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-18 06:22:51,755 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-18 06:22:51,755 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-18 06:22:51,755 - __main__ - INFO - ============================================================
+2025-06-18 06:22:51,755 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-18 06:22:51,813 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-18 06:22:52,885 - cloud_storage - INFO - Loaded position entries from positions_20250618_061557.csv
+2025-06-18 06:22:53,093 - cloud_storage - INFO - Saved positions to dev/Positions/positions_20250618_062252.csv
+2025-06-18 06:22:53,093 - __main__ - INFO - 💰 Account Summary:
+2025-06-18 06:22:53,093 - __main__ - INFO -    • Equity: $9920.07
+2025-06-18 06:22:53,093 - __main__ - INFO -    • Cash Available: $7513.41
+2025-06-18 06:22:53,093 - __main__ - INFO -    • Current Positions: 3
+2025-06-18 06:22:53,093 - __main__ - INFO - ────────────────────────────────────────
+2025-06-18 06:22:53,093 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-18 06:22:53,168 - __main__ - INFO - Most recent backtest file: backtest_results_20250616_124338.csv
+2025-06-18 06:22:53,171 - __main__ - INFO - ❌ No recent cached results found
+2025-06-18 06:22:53,171 - __main__ - INFO - Running new backtests...
+2025-06-18 06:22:54,255 - data_provider - INFO - Found 11082 tradable stocks before price filtering
+2025-06-18 06:23:07,614 - data_provider - INFO - Price and volume filtering: 264/11082 symbols passed ($15.0 - $350.0, volume >= 200,000)
+2025-06-18 06:23:07,642 - data_provider - INFO - Returning universe of 264 stocks after price filtering (min price: $15.0)
+2025-06-18 06:23:07,655 - __main__ - INFO - 📋 Stock universe loaded: 264 symbols
+2025-06-18 06:23:07,655 - __main__ - INFO - 📊 Starting comprehensive backtest analysis...
+2025-06-18 06:23:07,655 - __main__ - INFO - 🕐 This may take 30-90 minutes depending on market conditions
+2025-06-18 06:23:07,655 - strategy - INFO - 🚀 Starting backtest optimization for 264 symbols
+2025-06-18 06:23:07,655 - strategy - INFO - 📅 Date range: 2024-12-20 to 2025-06-18
+2025-06-18 06:23:07,655 - strategy - INFO - ⚙️  RSI Parameters - Periods: [3, 13, 23, 33], Lower: [20, 25, 30, 35, 40], Upper: [60, 65, 70, 75, 80]
+2025-06-18 06:23:07,655 - strategy - INFO - ============================================================
+2025-06-18 06:23:07,655 - strategy - INFO - 📊 Processing batch 1/27 (10 symbols): VLO, VRT, VWO, VZ, WFC, WMT, X, XBI, XLB, XLE
+2025-06-18 06:23:21,804 - strategy - INFO - ✅ Batch 1 complete: 10/10 successful (took 14.1s)
+2025-06-18 06:23:21,804 - strategy - INFO - 📈 Progress: 10/264 (3.8%) | Successful: 10 | ETA: 6.0 min
+2025-06-18 06:23:21,804 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:23:22,805 - strategy - INFO - 📊 Processing batch 2/27 (10 symbols): XLF, XLI, XLP, XLRE, XLU, XLV, XOM, XP, XYZ, ZIM
+2025-06-18 06:23:37,236 - strategy - INFO - ✅ Batch 2 complete: 10/10 successful (took 14.4s)
+2025-06-18 06:23:37,236 - strategy - INFO - 📈 Progress: 20/264 (7.6%) | Successful: 20 | ETA: 6.0 min
+2025-06-18 06:23:37,236 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:23:38,237 - strategy - INFO - 📊 Processing batch 3/27 (10 symbols): NKE, PFE, JD, BP, LVS, ET, EWG, HST, RWM, ARKK
+2025-06-18 06:23:52,870 - strategy - INFO - ✅ Batch 3 complete: 10/10 successful (took 14.6s)
+2025-06-18 06:23:52,870 - strategy - INFO - 📈 Progress: 30/264 (11.4%) | Successful: 30 | ETA: 5.9 min
+2025-06-18 06:23:52,870 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:23:53,870 - strategy - INFO - 📊 Processing batch 4/27 (10 symbols): ASHR, ASTS, BCE, CRCL, CRWV, DJT, GME, OKLO, FENY, FCX
+2025-06-18 06:24:06,105 - strategy - INFO - ✅ Batch 4 complete: 9/10 successful (took 12.2s)
+2025-06-18 06:24:06,105 - strategy - INFO - 📈 Progress: 40/264 (15.2%) | Successful: 39 | ETA: 5.5 min
+2025-06-18 06:24:06,106 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:24:07,107 - strategy - INFO - 📊 Processing batch 5/27 (10 symbols): QUBT, VTEB, MUB, SDS, U, CPNG, COP, NEE, PSTG, AI
+2025-06-18 06:24:21,139 - strategy - INFO - ✅ Batch 5 complete: 10/10 successful (took 14.0s)
+2025-06-18 06:24:21,140 - strategy - INFO - 📈 Progress: 50/264 (18.9%) | Successful: 49 | ETA: 5.2 min
+2025-06-18 06:24:21,140 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:24:22,150 - strategy - INFO - 📊 Processing batch 6/27 (10 symbols): AAOI, AAPL, ADM, AGG, AGI, AMAT, AMD, AMZN, ANET, APA
+2025-06-18 06:24:36,145 - strategy - INFO - ✅ Batch 6 complete: 10/10 successful (took 14.0s)
+2025-06-18 06:24:36,145 - strategy - INFO - 📈 Progress: 60/264 (22.7%) | Successful: 59 | ETA: 5.0 min
+2025-06-18 06:24:36,145 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:24:37,146 - strategy - INFO - 📊 Processing batch 7/27 (10 symbols): AVGO, B, BABA, BAC, BBWI, BCS, BEKE, BF.B, BKR, BMY
+2025-06-18 06:24:51,652 - strategy - INFO - ✅ Batch 7 complete: 9/10 successful (took 14.5s)
+2025-06-18 06:24:51,652 - strategy - INFO - 📈 Progress: 70/264 (26.5%) | Successful: 68 | ETA: 4.8 min
+2025-06-18 06:24:51,652 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:24:52,655 - strategy - INFO - 📊 Processing batch 8/27 (10 symbols): BND, BSX, BTI, C, CAG, CARR, CART, CCJ, CCL, CELH
+2025-06-18 06:25:07,254 - strategy - INFO - ✅ Batch 8 complete: 10/10 successful (took 14.6s)
+2025-06-18 06:25:07,254 - strategy - INFO - 📈 Progress: 80/264 (30.3%) | Successful: 78 | ETA: 4.6 min
+2025-06-18 06:25:07,254 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:25:08,256 - strategy - INFO - 📊 Processing batch 9/27 (10 symbols): CF, CFG, CFLT, CL, CMCSA, CMG, CNC, CNP, CNQ, COIN
+2025-06-18 06:25:23,107 - strategy - INFO - ✅ Batch 9 complete: 10/10 successful (took 14.9s)
+2025-06-18 06:25:23,107 - strategy - INFO - 📈 Progress: 90/264 (34.1%) | Successful: 88 | ETA: 4.4 min
+2025-06-18 06:25:23,107 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:25:24,108 - strategy - INFO - 📊 Processing batch 10/27 (10 symbols): CPB, CPRT, CRM, CSCO, CSX, CTRA, CVNA, CVS, CVX, CWAN
+2025-06-18 06:25:38,485 - strategy - INFO - ✅ Batch 10 complete: 10/10 successful (took 14.4s)
+2025-06-18 06:25:38,485 - strategy - INFO - 📈 Progress: 100/264 (37.9%) | Successful: 98 | ETA: 4.1 min
+2025-06-18 06:25:38,485 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:25:39,487 - strategy - INFO - 📊 Processing batch 11/27 (10 symbols): CWB, CZR, DAL, DAR, DIS, DKNG, DOW, DVN, EEM, EFA
+2025-06-18 06:25:53,834 - strategy - INFO - ✅ Batch 11 complete: 10/10 successful (took 14.3s)
+2025-06-18 06:25:53,834 - strategy - INFO - 📈 Progress: 110/264 (41.7%) | Successful: 108 | ETA: 3.9 min
+2025-06-18 06:25:53,834 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:25:54,836 - strategy - INFO - 📊 Processing batch 12/27 (10 symbols): EIX, EL, EMB, ENPH, EPD, EQNR, EQT, ETHA, ETSY, EWZ
+2025-06-18 06:26:08,879 - strategy - INFO - ✅ Batch 12 complete: 9/10 successful (took 14.0s)
+2025-06-18 06:26:08,879 - strategy - INFO - 📈 Progress: 120/264 (45.5%) | Successful: 117 | ETA: 3.6 min
+2025-06-18 06:26:08,879 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:26:09,880 - strategy - INFO - 📊 Processing batch 13/27 (10 symbols): FANG, FHN, FI, FLR, FRO, FXI, GAP, GDX, GEN, GLD
+2025-06-18 06:26:24,265 - strategy - INFO - ✅ Batch 13 complete: 10/10 successful (took 14.4s)
+2025-06-18 06:26:24,266 - strategy - INFO - 📈 Progress: 130/264 (49.2%) | Successful: 127 | ETA: 3.4 min
+2025-06-18 06:26:24,266 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:26:25,267 - strategy - INFO - 📊 Processing batch 14/27 (10 symbols): GM, GOOG, GOOGL, GPK, HAL, HBAN, HIMS, HOOD, HPE, HPQ
+2025-06-18 06:26:39,470 - strategy - INFO - ✅ Batch 14 complete: 10/10 successful (took 14.2s)
+2025-06-18 06:26:39,470 - strategy - INFO - 📈 Progress: 140/264 (53.0%) | Successful: 137 | ETA: 3.1 min
+2025-06-18 06:26:39,470 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:26:40,471 - strategy - INFO - 📊 Processing batch 15/27 (10 symbols): HYG, IAU, IBIT, IEF, IEFA, IEMG, IJH, INDA, INFY, INSM
+2025-06-18 06:26:55,123 - strategy - INFO - ✅ Batch 15 complete: 10/10 successful (took 14.7s)
+2025-06-18 06:26:55,124 - strategy - INFO - 📈 Progress: 150/264 (56.8%) | Successful: 147 | ETA: 2.9 min
+2025-06-18 06:26:55,124 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:26:56,125 - strategy - INFO - 📊 Processing batch 16/27 (10 symbols): INTC, IONQ, IOT, IPG, IWM, JNJ, JNK, KDP, KEY, KGC
+2025-06-18 06:27:10,979 - strategy - INFO - ✅ Batch 16 complete: 10/10 successful (took 14.9s)
+2025-06-18 06:27:10,980 - strategy - INFO - 📈 Progress: 160/264 (60.6%) | Successful: 157 | ETA: 2.6 min
+2025-06-18 06:27:10,981 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:27:11,982 - strategy - INFO - 📊 Processing batch 17/27 (10 symbols): KHC, KMI, KO, KR, KRE, KVUE, KWEB, LEVI, LQD, LRCX
+2025-06-18 06:27:26,323 - strategy - INFO - ✅ Batch 17 complete: 10/10 successful (took 14.3s)
+2025-06-18 06:27:26,324 - strategy - INFO - 📈 Progress: 170/264 (64.4%) | Successful: 167 | ETA: 2.4 min
+2025-06-18 06:27:26,324 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:27:27,327 - strategy - INFO - 📊 Processing batch 18/27 (10 symbols): LUV, MCHP, MDLZ, MDT, MGM, MNST, MO, MOS, MP, MRK
+2025-06-18 06:27:41,717 - strategy - INFO - ✅ Batch 18 complete: 10/10 successful (took 14.4s)
+2025-06-18 06:27:41,718 - strategy - INFO - 📈 Progress: 180/264 (68.2%) | Successful: 177 | ETA: 2.1 min
+2025-06-18 06:27:41,718 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:27:42,719 - strategy - INFO - 📊 Processing batch 19/27 (10 symbols): MRNA, MRVL, MS, MU, NBIS, NCLH, NEM, NLY, NVDA, ON
+2025-06-18 06:27:57,607 - strategy - INFO - ✅ Batch 19 complete: 9/10 successful (took 14.9s)
+2025-06-18 06:27:57,607 - strategy - INFO - 📈 Progress: 190/264 (72.0%) | Successful: 186 | ETA: 1.9 min
+2025-06-18 06:27:57,607 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:27:58,609 - strategy - INFO - 📊 Processing batch 20/27 (10 symbols): ONON, ORCL, OSCR, OWL, OXY, PAAS, PBF, PDD, PENN, PEP
+2025-06-18 06:28:13,390 - strategy - INFO - ✅ Batch 20 complete: 10/10 successful (took 14.8s)
+2025-06-18 06:28:13,390 - strategy - INFO - 📈 Progress: 200/264 (75.8%) | Successful: 196 | ETA: 1.6 min
+2025-06-18 06:28:13,390 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:28:14,394 - strategy - INFO - 📊 Processing batch 21/27 (10 symbols): PINS, PLTR, PRMB, PYPL, QBTS, RBLX, RDDT, RF, RKLB, ROKU
+2025-06-18 06:28:28,939 - strategy - INFO - ✅ Batch 21 complete: 10/10 successful (took 14.5s)
+2025-06-18 06:28:28,939 - strategy - INFO - 📈 Progress: 210/264 (79.5%) | Successful: 206 | ETA: 1.4 min
+2025-06-18 06:28:28,939 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:28:29,941 - strategy - INFO - 📊 Processing batch 22/27 (10 symbols): S, SATS, SBUX, SCHD, SCHG, SCHH, SCHW, SCHX, SE, SEDG
+2025-06-18 06:28:44,680 - strategy - INFO - ✅ Batch 22 complete: 10/10 successful (took 14.7s)
+2025-06-18 06:28:44,681 - strategy - INFO - 📈 Progress: 220/264 (83.3%) | Successful: 216 | ETA: 1.1 min
+2025-06-18 06:28:44,681 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:28:45,682 - strategy - INFO - 📊 Processing batch 23/27 (10 symbols): SHEL, SHOP, SILJ, SJNK, SLB, SLV, SMCI, SMR, SNDK, SOXL
+2025-06-18 06:28:59,953 - strategy - INFO - ✅ Batch 23 complete: 10/10 successful (took 14.3s)
+2025-06-18 06:28:59,954 - strategy - INFO - 📈 Progress: 230/264 (87.1%) | Successful: 226 | ETA: 0.9 min
+2025-06-18 06:28:59,954 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:29:00,955 - strategy - INFO - 📊 Processing batch 24/27 (10 symbols): SPHY, SPTL, SPXU, SQQQ, SRPT, SW, T, TEM, TEVA, TFC
+2025-06-18 06:29:15,815 - strategy - INFO - ✅ Batch 24 complete: 9/10 successful (took 14.9s)
+2025-06-18 06:29:15,816 - strategy - INFO - 📈 Progress: 240/264 (90.9%) | Successful: 235 | ETA: 0.6 min
+2025-06-18 06:29:15,816 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:29:16,818 - strategy - INFO - 📊 Processing batch 25/27 (10 symbols): THC, TLT, TME, JETS, JHX, TPR, TQQQ, TRP, TSLA, TSM
+2025-06-18 06:29:31,791 - strategy - INFO - ✅ Batch 25 complete: 10/10 successful (took 15.0s)
+2025-06-18 06:29:31,792 - strategy - INFO - 📈 Progress: 250/264 (94.7%) | Successful: 245 | ETA: 0.4 min
+2025-06-18 06:29:31,792 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:29:32,794 - strategy - INFO - 📊 Processing batch 26/27 (10 symbols): USO, TTD, UVXY, VG, UAL, UBER, UCO, UNH, URA, USB
+2025-06-18 06:29:47,514 - strategy - INFO - ✅ Batch 26 complete: 10/10 successful (took 14.7s)
+2025-06-18 06:29:47,515 - strategy - INFO - 📈 Progress: 260/264 (98.5%) | Successful: 255 | ETA: 0.1 min
+2025-06-18 06:29:47,515 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:29:48,516 - strategy - INFO - 📊 Processing batch 27/27 (4 symbols): USHY, VCIT, VCLT, VEA
+2025-06-18 06:29:54,542 - strategy - INFO - ✅ Batch 27 complete: 4/4 successful (took 6.0s)
+2025-06-18 06:29:54,542 - strategy - INFO - 📈 Progress: 264/264 (100.0%) | Successful: 259 | ETA: 0.0 min
+2025-06-18 06:29:54,542 - strategy - INFO - ────────────────────────────────────────────────────────────
+2025-06-18 06:29:55,544 - strategy - INFO - ============================================================
+2025-06-18 06:29:55,544 - strategy - INFO - 🎯 BACKTEST OPTIMIZATION COMPLETE!
+2025-06-18 06:29:55,544 - strategy - INFO - 📊 Results Summary:
+2025-06-18 06:29:55,544 - strategy - INFO -    • Total symbols processed: 264/264
+2025-06-18 06:29:55,544 - strategy - INFO -    • Successful optimizations: 259 (98.1%)
+2025-06-18 06:29:55,544 - strategy - INFO -    • Total time: 6.8 minutes
+2025-06-18 06:29:55,544 - strategy - INFO -    • Average time per symbol: 1.5s
+2025-06-18 06:29:55,544 - strategy - INFO -    • Profitable strategies: 259/259
+2025-06-18 06:29:55,544 - strategy - INFO - ============================================================
+2025-06-18 06:29:55,544 - strategy - INFO - 💾 Saving trade details to cloud storage...
+2025-06-18 06:29:55,547 - strategy - INFO - Saving 1144 trades from 259 strategies to consolidated CSV
+2025-06-18 06:29:55,959 - cloud_storage - INFO - Saved 1144 consolidated trades to dev/trades/consolidated_trades_20250618_062955.csv
+2025-06-18 06:29:55,960 - __main__ - INFO - 🔍 Filtering and analyzing results...
+2025-06-18 06:29:55,960 - __main__ - INFO - 📈 Backtest analysis complete!
+2025-06-18 06:29:55,960 - __main__ - INFO -    • Total strategies tested: 259
+2025-06-18 06:29:55,960 - __main__ - INFO -    • Profitable strategies: 236
+2025-06-18 06:29:55,960 - __main__ - INFO -    • Success rate: 91.1%
+2025-06-18 06:29:55,960 - __main__ - INFO - 💾 Saving results to cloud storage...
+2025-06-18 06:29:56,110 - cloud_storage - INFO - Saved 236 backtest results to dev/Backtests/backtest_results_20250618_062955.csv
+2025-06-18 06:29:56,114 - __main__ - INFO - 🎯 Analyzing trading opportunities and executing orders...
+2025-06-18 06:29:56,114 - trading_engine - INFO - Starting trading session...
+2025-06-18 06:29:56,757 - cloud_storage - INFO - Loaded position entries from positions_20250618_062252.csv
+2025-06-18 06:29:56,886 - cloud_storage - INFO - Saved positions to dev/Positions/positions_20250618_062956.csv
+2025-06-18 06:29:56,983 - trading_engine - INFO - Calculated target price for SQQQ based on RSI: $28.26
+2025-06-18 06:29:57,082 - trading_engine - INFO - Calculated new stop loss: $21.03 and take profit: $28.26 for SQQQ
+2025-06-18 06:29:57,082 - trading_engine - INFO - 🔍 DRY RUN: Would update stop loss for SQQQ to $21.03 and take profit to $28.26
+2025-06-18 06:29:57,191 - trading_engine - INFO - Calculated target price for ORLY based on RSI: $95.28
+2025-06-18 06:29:57,284 - trading_engine - INFO - Calculated new stop loss: $84.21 and take profit: $95.28 for ORLY
+2025-06-18 06:29:57,284 - trading_engine - INFO - 🔍 DRY RUN: Would update stop loss for ORLY to $84.21 and take profit to $95.28
+2025-06-18 06:29:57,389 - trading_engine - INFO - Calculated target price for IONQ based on RSI: $38.04
+2025-06-18 06:29:57,490 - trading_engine - INFO - Calculated new stop loss: $36.21 and take profit: $38.06 for IONQ
+2025-06-18 06:29:57,490 - trading_engine - INFO - 🔍 DRY RUN: Would update stop loss for IONQ to $36.21 and take profit to $38.06
+2025-06-18 06:29:57,491 - trading_engine - INFO - Updated existing positions with new stop loss and take profit orders
+2025-06-18 06:30:35,173 - trading_engine - INFO - 📥 Found 2 new buying opportunities:
+2025-06-18 06:30:35,173 - trading_engine - INFO -    1. ENPH: 19 shares @ $34.92 = $663.48
+2025-06-18 06:30:35,173 - trading_engine - INFO -       RSI: 5.6, Alpha: 0.670, Win Rate: 86.0%
+2025-06-18 06:30:35,175 - trading_engine - INFO -    2. GAP: 32 shares @ $20.99 = $671.68
+2025-06-18 06:30:35,175 - trading_engine - INFO -       RSI: 23.9, Alpha: 0.660, Win Rate: 100.0%
+2025-06-18 06:30:35,175 - trading_engine - INFO -    Total investment: $1335.16
+2025-06-18 06:30:35,175 - trading_engine - INFO - 🔍 DRY RUN: Would place buy order for 19 shares of ENPH at $34.92
+2025-06-18 06:30:35,175 - trading_engine - INFO - 🔍 DRY RUN: Stop loss: $33.17, Take profit: $40.16
+2025-06-18 06:30:35,175 - trading_engine - INFO - 🔍 DRY RUN: Position value: $663.48
+2025-06-18 06:30:35,175 - positions - INFO - Opened new position for ENPH. Full saved positions: [Position(symbol='SQQQ', quantity=40.0, entry_price=22.14, current_price=22.33, current_rsi=0.0, entry_date='2025-06-16 10:39:09.372271', alpha=0.0, rsi_period=14, rsi_lower=30, rsi_upper=70, stop_loss_price=21.03, take_profit_price=np.float64(28.26), exit_date=None, closed=False), Position(symbol='ORLY', quantity=9.0, entry_price=88.64, current_price=88.89, current_rsi=0.0, entry_date='2025-06-16 10:39:53.662591', alpha=0.0, rsi_period=3, rsi_lower=20, rsi_upper=80, stop_loss_price=84.21, take_profit_price=np.float64(95.28), exit_date=None, closed=False), Position(symbol='IONQ', quantity=19.0, entry_price=38.12, current_price=37.48, current_rsi=28.03, entry_date='2025-06-17 10:51:52.075811', alpha=1.03, rsi_period=3, rsi_lower=40, rsi_upper=60, stop_loss_price=36.21, take_profit_price=np.float64(38.06), exit_date=None, closed=False), Position(symbol='ENPH', quantity=19.0, entry_price=np.float64(34.92), current_price=np.float64(34.92), current_rsi=np.float64(5.59), entry_date=datetime.datetime(2025, 6, 18, 6, 30, 35, 175374), alpha=np.float64(0.67), rsi_period=3, rsi_lower=20, rsi_upper=60, stop_loss_price=np.float64(33.17), take_profit_price=np.float64(40.16), exit_date=datetime.datetime(2025, 6, 18, 6, 30, 35, 175375), closed=False)]
+2025-06-18 06:30:35,175 - trading_engine - INFO - 🔍 DRY RUN: Would place buy order for 32 shares of GAP at $20.99
+2025-06-18 06:30:35,175 - trading_engine - INFO - 🔍 DRY RUN: Stop loss: $19.94, Take profit: $24.14
+2025-06-18 06:30:35,175 - trading_engine - INFO - 🔍 DRY RUN: Position value: $671.68
+2025-06-18 06:30:35,175 - positions - INFO - Opened new position for GAP. Full saved positions: [Position(symbol='SQQQ', quantity=40.0, entry_price=22.14, current_price=22.33, current_rsi=0.0, entry_date='2025-06-16 10:39:09.372271', alpha=0.0, rsi_period=14, rsi_lower=30, rsi_upper=70, stop_loss_price=21.03, take_profit_price=np.float64(28.26), exit_date=None, closed=False), Position(symbol='ORLY', quantity=9.0, entry_price=88.64, current_price=88.89, current_rsi=0.0, entry_date='2025-06-16 10:39:53.662591', alpha=0.0, rsi_period=3, rsi_lower=20, rsi_upper=80, stop_loss_price=84.21, take_profit_price=np.float64(95.28), exit_date=None, closed=False), Position(symbol='IONQ', quantity=19.0, entry_price=38.12, current_price=37.48, current_rsi=28.03, entry_date='2025-06-17 10:51:52.075811', alpha=1.03, rsi_period=3, rsi_lower=40, rsi_upper=60, stop_loss_price=36.21, take_profit_price=np.float64(38.06), exit_date=None, closed=False), Position(symbol='ENPH', quantity=19.0, entry_price=np.float64(34.92), current_price=np.float64(34.92), current_rsi=np.float64(5.59), entry_date=datetime.datetime(2025, 6, 18, 6, 30, 35, 175374), alpha=np.float64(0.67), rsi_period=3, rsi_lower=20, rsi_upper=60, stop_loss_price=np.float64(33.17), take_profit_price=np.float64(40.16), exit_date=datetime.datetime(2025, 6, 18, 6, 30, 35, 175375), closed=False), Position(symbol='GAP', quantity=32.0, entry_price=np.float64(20.99), current_price=np.float64(20.99), current_rsi=np.float64(23.92), entry_date=datetime.datetime(2025, 6, 18, 6, 30, 35, 175603), alpha=np.float64(0.66), rsi_period=3, rsi_lower=30, rsi_upper=70, stop_loss_price=np.float64(19.94), take_profit_price=np.float64(24.14), exit_date=datetime.datetime(2025, 6, 18, 6, 30, 35, 175604), closed=False)]
+2025-06-18 06:30:35,301 - cloud_storage - INFO - Saved positions to dev/Positions/positions_20250618_063035.csv
+2025-06-18 06:30:35,301 - trading_engine - INFO - Trading session complete: {'timestamp': datetime.datetime(2025, 6, 18, 6, 29, 56, 114870), 'opportunities_found': 30, 'new_positions': 2, 'orders_placed': 2, 'positions_exited': 0, 'errors': [], 'dry_run': True}
+2025-06-18 06:30:35,301 - __main__ - INFO - 💾 Saving session results and metadata...
+2025-06-18 06:30:35,509 - cloud_storage - INFO - Updated metadata CSV with today's data: dev/Metadata/metadata.csv
+2025-06-18 06:30:35,510 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-18 06:30:35,510 - __main__ - INFO - 🎉 TRADING ALGORITHM COMPLETE!
+2025-06-18 06:30:35,510 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-18 06:30:35,510 - __main__ - INFO - ⏱️  Session Duration: 7.7 minutes
+2025-06-18 06:30:35,510 - __main__ - INFO - 📊 Backtest Results: 236 strategies
+2025-06-18 06:30:35,510 - __main__ - INFO - 💼 Trading Summary: {'timestamp': datetime.datetime(2025, 6, 18, 6, 29, 56, 114870), 'opportunities_found': 30, 'new_positions': 2, 'orders_placed': 2, 'positions_exited': 0, 'errors': [], 'dry_run': True}
+2025-06-18 06:30:35,511 - __main__ - INFO - ============================================================
+2025-06-18 06:30:35,511 - __main__ - INFO - ==================================================
+2025-06-18 06:30:35,511 - __main__ - INFO - Trading Algorithm Complete
+2025-06-18 06:30:35,511 - __main__ - INFO - Result: {'status': 'success', 'trading_summary': {'timestamp': datetime.datetime(2025, 6, 18, 6, 29, 56, 114870), 'opportunities_found': 30, 'new_positions': 2, 'orders_placed': 2, 'positions_exited': 0, 'errors': [], 'dry_run': True}, 'backtest_count': 236, 'duration': 463.754621}
+2025-06-18 06:30:35,511 - __main__ - INFO - ==================================================
+2025-06-18 07:09:45,566 - __main__ - INFO - ==================================================
+2025-06-18 07:09:45,567 - __main__ - INFO - Trading Algorithm Starting
+2025-06-18 07:09:45,567 - __main__ - INFO - Paper Trading: True
+2025-06-18 07:09:45,567 - __main__ - INFO - Dry Run: True
+2025-06-18 07:09:45,567 - __main__ - INFO - ==================================================
+2025-06-18 07:09:45,582 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 07:09:45,582 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-18 07:09:45,582 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 07:09:45,582 - __main__ - INFO - 📅 Session Date: 2025-06-18 07:09:45
+2025-06-18 07:09:45,582 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-18 07:09:45,582 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-18 07:09:45,582 - __main__ - INFO - 🔍 Dry Run Mode: True
+2025-06-18 07:09:45,582 - __main__ - INFO - ============================================================
+2025-06-18 07:09:45,582 - trading_engine - INFO - 🌵 DRY RUN MODE ENABLED - No actual orders will be placed
+2025-06-18 07:09:45,640 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-18 07:09:46,681 - cloud_storage - INFO - Loaded position entries from positions_20250617_105152.csv
+2025-06-18 07:09:46,703 - __main__ - INFO - 💰 Account Summary:
+2025-06-18 07:09:46,703 - __main__ - INFO -    • Equity: $9922.23
+2025-06-18 07:09:46,704 - __main__ - INFO -    • Cash Available: $7513.41
+2025-06-18 07:09:46,704 - __main__ - INFO -    • Current Positions: 3
+2025-06-18 07:09:46,704 - __main__ - INFO - ────────────────────────────────────────
+2025-06-18 07:09:46,704 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-18 07:09:46,774 - __main__ - INFO - Most recent backtest file: backtest_results_20250618_062955.csv
+2025-06-18 07:09:47,017 - cloud_storage - INFO - Loaded 236 backtest results from backtest_results_20250618_062955.csv
+2025-06-18 07:09:47,017 - __main__ - INFO - ✅ Found cached results: 236 profitable strategies
+2025-06-18 07:09:47,017 - __main__ - INFO - ⚡ Skipping backtest - using cached data
+2025-06-18 07:09:47,017 - __main__ - INFO - 🎯 Analyzing trading opportunities and executing orders...
+2025-06-18 07:09:47,017 - trading_engine - INFO - Starting trading session...
+2025-06-18 07:09:47,329 - cloud_storage - INFO - Loaded position entries from positions_20250617_105152.csv
+2025-06-18 07:09:47,600 - trading_engine - INFO - Calculated target price for SQQQ based on RSI: $28.26
+2025-06-18 07:09:47,714 - trading_engine - INFO - Calculated new stop loss: $21.03 and take profit: $28.26 for SQQQ
+2025-06-18 07:09:47,714 - trading_engine - INFO - 🔍 DRY RUN: Would update stop loss for SQQQ to $21.03 and take profit to $28.26
+2025-06-18 07:09:47,812 - trading_engine - INFO - Calculated target price for ORLY based on RSI: $95.28
+2025-06-18 07:09:47,922 - trading_engine - INFO - Calculated new stop loss: $84.21 and take profit: $95.28 for ORLY
+2025-06-18 07:09:47,922 - trading_engine - INFO - 🔍 DRY RUN: Would update stop loss for ORLY to $84.21 and take profit to $95.28
+2025-06-18 07:09:48,031 - trading_engine - INFO - Calculated target price for IONQ based on RSI: $38.04
+2025-06-18 07:09:48,131 - trading_engine - INFO - Calculated new stop loss: $36.21 and take profit: $38.06 for IONQ
+2025-06-18 07:09:48,133 - trading_engine - INFO - 🔍 DRY RUN: Would update stop loss for IONQ to $36.21 and take profit to $38.06
+2025-06-18 07:09:48,133 - trading_engine - INFO - Updated existing positions with new stop loss and take profit orders
+2025-06-18 07:10:19,444 - trading_engine - INFO - 📥 Found 2 new buying opportunities:
+2025-06-18 07:10:19,446 - trading_engine - INFO -    1. ENPH: 19 shares @ $34.92 = $663.48
+2025-06-18 07:10:19,446 - trading_engine - INFO -       RSI: 5.6, Alpha: 0.670, Win Rate: 86.0%
+2025-06-18 07:10:19,447 - trading_engine - INFO -    2. GAP: 32 shares @ $20.99 = $671.68
+2025-06-18 07:10:19,447 - trading_engine - INFO -       RSI: 23.9, Alpha: 0.660, Win Rate: 100.0%
+2025-06-18 07:10:19,447 - trading_engine - INFO -    Total investment: $1335.16
+2025-06-18 07:10:19,448 - trading_engine - INFO - 🔍 DRY RUN: Would place buy order for 19 shares of ENPH at $34.92
+2025-06-18 07:10:19,448 - trading_engine - INFO - 🔍 DRY RUN: Stop loss: $33.17, Take profit: $40.16
+2025-06-18 07:10:19,448 - trading_engine - INFO - 🔍 DRY RUN: Position value: $663.48
+2025-06-18 07:10:19,448 - trading_engine - INFO - 🔍 DRY RUN: Would place buy order for 32 shares of GAP at $20.99
+2025-06-18 07:10:19,448 - trading_engine - INFO - 🔍 DRY RUN: Stop loss: $19.94, Take profit: $24.14
+2025-06-18 07:10:19,448 - trading_engine - INFO - 🔍 DRY RUN: Position value: $671.68
+2025-06-18 07:10:19,656 - cloud_storage - INFO - Saved positions to dev/Positions/positions_20250618_1.csv
+2025-06-18 07:10:19,656 - trading_engine - INFO - Trading session complete: {'timestamp': datetime.datetime(2025, 6, 18, 7, 9, 47, 17944), 'opportunities_found': 30, 'new_positions': 0, 'orders_placed': 0, 'positions_exited': 0, 'errors': [], 'dry_run': True}
+2025-06-18 07:10:19,656 - __main__ - INFO - 💾 Saving session results and metadata...
+2025-06-18 07:10:19,843 - cloud_storage - INFO - Saved metadata to dev/Metadata/metadata_20250618_071019_1.csv
+2025-06-18 07:10:19,844 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-18 07:10:19,844 - __main__ - INFO - 🎉 TRADING ALGORITHM COMPLETE!
+2025-06-18 07:10:19,844 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-18 07:10:19,844 - __main__ - INFO - ⏱️  Session Duration: 0.6 minutes
+2025-06-18 07:10:19,844 - __main__ - INFO - 📊 Backtest Results: 236 strategies
+2025-06-18 07:10:19,844 - __main__ - INFO - 💼 Trading Summary: {'timestamp': datetime.datetime(2025, 6, 18, 7, 9, 47, 17944), 'opportunities_found': 30, 'new_positions': 0, 'orders_placed': 0, 'positions_exited': 0, 'errors': [], 'dry_run': True}
+2025-06-18 07:10:19,844 - __main__ - INFO - ============================================================
+2025-06-18 07:10:19,845 - __main__ - INFO - ==================================================
+2025-06-18 07:10:19,845 - __main__ - INFO - Trading Algorithm Complete
+2025-06-18 07:10:19,845 - __main__ - INFO - Result: {'status': 'success', 'trading_summary': {'timestamp': datetime.datetime(2025, 6, 18, 7, 9, 47, 17944), 'opportunities_found': 30, 'new_positions': 0, 'orders_placed': 0, 'positions_exited': 0, 'errors': [], 'dry_run': True}, 'backtest_count': 236, 'duration': 34.262021}
+2025-06-18 07:10:19,845 - __main__ - INFO - ==================================================
+2025-06-18 09:33:10,060 - __main__ - INFO - ==================================================
+2025-06-18 09:33:10,061 - __main__ - INFO - Trading Algorithm Starting
+2025-06-18 09:33:10,061 - __main__ - INFO - Paper Trading: True
+2025-06-18 09:33:10,061 - __main__ - INFO - Dry Run: False
+2025-06-18 09:33:10,061 - __main__ - INFO - ==================================================
+2025-06-18 09:33:10,076 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 09:33:10,076 - __main__ - INFO - 🚀 TRADING ALGORITHM STARTING
+2025-06-18 09:33:10,076 - __main__ - INFO - 🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀
+2025-06-18 09:33:10,076 - __main__ - INFO - 📅 Session Date: 2025-06-18 09:33:10
+2025-06-18 09:33:10,076 - __main__ - INFO - 💼 Paper Trading: True
+2025-06-18 09:33:10,076 - __main__ - INFO - 🔄 Force Backtest: False
+2025-06-18 09:33:10,076 - __main__ - INFO - 🔍 Dry Run Mode: False
+2025-06-18 09:33:10,076 - __main__ - INFO - ============================================================
+2025-06-18 09:33:10,076 - trading_engine - INFO - 🚀 LIVE TRADING MODE ENABLED - Orders will be placed
+2025-06-18 09:33:10,133 - __main__ - INFO - 🔍 Checking account status and current positions...
+2025-06-18 09:33:11,451 - cloud_storage - INFO - Loaded position entries from positions_20250617_105152.csv
+2025-06-18 09:33:11,472 - __main__ - INFO - 💰 Account Summary:
+2025-06-18 09:33:11,473 - __main__ - INFO -    • Equity: $9930.90
+2025-06-18 09:33:11,473 - __main__ - INFO -    • Cash Available: $7513.41
+2025-06-18 09:33:11,473 - __main__ - INFO -    • Current Positions: 3
+2025-06-18 09:33:11,473 - __main__ - INFO - ────────────────────────────────────────
+2025-06-18 09:33:11,473 - __main__ - INFO - 🔍 Checking for recent cached backtest results...
+2025-06-18 09:33:11,627 - __main__ - INFO - Most recent backtest file: backtest_results_20250618_062955.csv
+2025-06-18 09:33:11,887 - cloud_storage - INFO - Loaded 236 backtest results from backtest_results_20250618_062955.csv
+2025-06-18 09:33:11,887 - __main__ - INFO - ✅ Found cached results: 236 profitable strategies
+2025-06-18 09:33:11,887 - __main__ - INFO - ⚡ Skipping backtest - using cached data
+2025-06-18 09:33:11,887 - __main__ - INFO - 🎯 Analyzing trading opportunities and executing orders...
+2025-06-18 09:33:11,887 - trading_engine - INFO - Starting trading session...
+2025-06-18 09:33:12,351 - cloud_storage - INFO - Loaded position entries from positions_20250617_105152.csv
+2025-06-18 09:33:12,828 - trading_engine - INFO - Calculated target price for SQQQ based on $70.00 RSI: $28.41
+2025-06-18 09:33:12,931 - trading_engine - INFO - Calculated new stop loss: $21.03 and take profit: $28.41 for SQQQ
+2025-06-18 09:33:13,132 - trading_engine - INFO - Cancelling existing order c8e0b76a-ffc7-45b5-a55c-407ecfd805d5 for SQQQ
+2025-06-18 09:33:15,233 - trading_engine - INFO - Order placed successfully: 143190cc-37f8-48f4-abf8-bc0b0f2b8d99
+2025-06-18 09:33:15,234 - trading_engine - INFO - OCO sell order placed for 40 shares of SQQQ
+2025-06-18 09:33:15,234 - trading_engine - INFO - Take profit limit: $28.41, Stop loss: $21.03
+2025-06-18 09:33:15,341 - trading_engine - INFO - Calculated target price for ORLY based on $80.00 RSI: $88.00
+2025-06-18 09:33:15,449 - trading_engine - INFO - Calculated new stop loss: $84.21 and take profit: $88.94 for ORLY
+2025-06-18 09:33:15,596 - trading_engine - INFO - Cancelling existing order a68999ab-6042-4fec-acb6-4db296be6d61 for ORLY
+2025-06-18 09:33:17,781 - trading_engine - INFO - Order placed successfully: 9a7042fe-512a-4006-8f8f-f664d37fc0de
+2025-06-18 09:33:17,784 - trading_engine - INFO - OCO sell order placed for 9 shares of ORLY
+2025-06-18 09:33:17,784 - trading_engine - INFO - Take profit limit: $88.94, Stop loss: $84.21
+2025-06-18 09:33:17,921 - trading_engine - INFO - Calculated target price for IONQ based on $60.00 RSI: $38.83
+2025-06-18 09:33:18,058 - trading_engine - INFO - Calculated new stop loss: $36.21 and take profit: $38.83 for IONQ
+2025-06-18 09:33:20,302 - trading_engine - INFO - Order placed successfully: 32d6bd2d-7189-4495-bd61-3a55e7bafd77
+2025-06-18 09:33:20,303 - trading_engine - INFO - OCO sell order placed for 19 shares of IONQ
+2025-06-18 09:33:20,304 - trading_engine - INFO - Take profit limit: $38.83, Stop loss: $36.21
+2025-06-18 09:33:20,305 - trading_engine - INFO - Updated existing positions with new stop loss and take profit orders
+2025-06-18 09:33:54,365 - trading_engine - INFO - 📥 Found 2 new buying opportunities:
+2025-06-18 09:33:54,368 - trading_engine - INFO -    1. ENPH: 20 shares @ $35.73 = $714.60
+2025-06-18 09:33:54,368 - trading_engine - INFO -       RSI: 14.4, Alpha: 0.670, Win Rate: 86.0%
+2025-06-18 09:33:54,368 - trading_engine - INFO -    2. FI: 4 shares @ $163.16 = $652.64
+2025-06-18 09:33:54,368 - trading_engine - INFO -       RSI: 22.6, Alpha: 0.550, Win Rate: 100.0%
+2025-06-18 09:33:54,368 - trading_engine - INFO -    Total investment: $1367.24
+2025-06-18 09:33:54,418 - trading_engine - INFO - Order placed successfully: 290bcc62-36a6-4640-8972-f3486ab46ded
+2025-06-18 09:33:54,418 - trading_engine - INFO - Buy order placed for 20 shares of ENPH at $35.73
+2025-06-18 09:33:54,418 - trading_engine - INFO - Stop loss: $33.94, Take profit: $41.09
+2025-06-18 09:33:54,418 - positions - INFO - Opened new position for ENPH. Full saved positions: [Position(symbol='SQQQ', quantity=40.0, entry_price=22.14, current_price=22.54, current_rsi=0.0, entry_date='2025-06-16 10:39:09.372271', alpha=0.0, rsi_period=14, rsi_lower=30, rsi_upper=70, stop_loss_price=21.03, take_profit_price=np.float64(28.41), exit_date=None, closed=False), Position(symbol='ORLY', quantity=9.0, entry_price=88.64, current_price=88.935, current_rsi=0.0, entry_date='2025-06-16 10:39:53.662591', alpha=0.0, rsi_period=3, rsi_lower=20, rsi_upper=80, stop_loss_price=84.21, take_profit_price=np.float64(88.94), exit_date=None, closed=False), Position(symbol='IONQ', quantity=19.0, entry_price=38.12, current_price=37.65, current_rsi=28.03, entry_date='2025-06-17 10:51:52.075811', alpha=1.03, rsi_period=3, rsi_lower=40, rsi_upper=60, stop_loss_price=36.21, take_profit_price=np.float64(38.83), exit_date=None, closed=False), Position(symbol='ENPH', quantity=20.0, entry_price=np.float64(35.73), current_price=np.float64(35.73), current_rsi=np.float64(14.37), entry_date=datetime.datetime(2025, 6, 18, 9, 33, 54, 418780), alpha=0.67, rsi_period=3, rsi_lower=20, rsi_upper=60, stop_loss_price=np.float64(33.94), take_profit_price=np.float64(41.09), exit_date=datetime.datetime(2025, 6, 18, 9, 33, 54, 418784), closed=False)]
+2025-06-18 09:33:54,460 - trading_engine - INFO - Order placed successfully: 32279b17-6003-4ce0-9edd-37fe3e63f3ed
+2025-06-18 09:33:54,460 - trading_engine - INFO - Buy order placed for 4 shares of FI at $163.16
+2025-06-18 09:33:54,460 - trading_engine - INFO - Stop loss: $155.00, Take profit: $187.63
+2025-06-18 09:33:54,460 - positions - INFO - Opened new position for FI. Full saved positions: [Position(symbol='SQQQ', quantity=40.0, entry_price=22.14, current_price=22.54, current_rsi=0.0, entry_date='2025-06-16 10:39:09.372271', alpha=0.0, rsi_period=14, rsi_lower=30, rsi_upper=70, stop_loss_price=21.03, take_profit_price=np.float64(28.41), exit_date=None, closed=False), Position(symbol='ORLY', quantity=9.0, entry_price=88.64, current_price=88.935, current_rsi=0.0, entry_date='2025-06-16 10:39:53.662591', alpha=0.0, rsi_period=3, rsi_lower=20, rsi_upper=80, stop_loss_price=84.21, take_profit_price=np.float64(88.94), exit_date=None, closed=False), Position(symbol='IONQ', quantity=19.0, entry_price=38.12, current_price=37.65, current_rsi=28.03, entry_date='2025-06-17 10:51:52.075811', alpha=1.03, rsi_period=3, rsi_lower=40, rsi_upper=60, stop_loss_price=36.21, take_profit_price=np.float64(38.83), exit_date=None, closed=False), Position(symbol='ENPH', quantity=20.0, entry_price=np.float64(35.73), current_price=np.float64(35.73), current_rsi=np.float64(14.37), entry_date=datetime.datetime(2025, 6, 18, 9, 33, 54, 418780), alpha=0.67, rsi_period=3, rsi_lower=20, rsi_upper=60, stop_loss_price=np.float64(33.94), take_profit_price=np.float64(41.09), exit_date=datetime.datetime(2025, 6, 18, 9, 33, 54, 418784), closed=False), Position(symbol='FI', quantity=4.0, entry_price=np.float64(163.16), current_price=np.float64(163.16), current_rsi=np.float64(22.64), entry_date=datetime.datetime(2025, 6, 18, 9, 33, 54, 460401), alpha=0.55, rsi_period=3, rsi_lower=25, rsi_upper=80, stop_loss_price=np.float64(155.0), take_profit_price=np.float64(187.63), exit_date=datetime.datetime(2025, 6, 18, 9, 33, 54, 460404), closed=False)]
+2025-06-18 09:33:54,695 - cloud_storage - INFO - Saved positions to dev/Positions/positions_20250618_1.csv
+2025-06-18 09:33:54,696 - trading_engine - INFO - Trading session complete: {'timestamp': datetime.datetime(2025, 6, 18, 9, 33, 11, 887263), 'opportunities_found': 24, 'new_positions': 2, 'orders_placed': 5, 'positions_exited': 0, 'errors': [], 'dry_run': False}
+2025-06-18 09:33:54,696 - __main__ - INFO - 💾 Saving session results and metadata...
+2025-06-18 09:33:54,989 - cloud_storage - INFO - Appended metadata to dev/Metadata/metadata_20250618_093354_1.csv
+2025-06-18 09:33:54,990 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-18 09:33:54,990 - __main__ - INFO - 🎉 TRADING ALGORITHM COMPLETE!
+2025-06-18 09:33:54,990 - __main__ - INFO - 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉
+2025-06-18 09:33:54,990 - __main__ - INFO - ⏱️  Session Duration: 0.7 minutes
+2025-06-18 09:33:54,990 - __main__ - INFO - 📊 Backtest Results: 236 strategies
+2025-06-18 09:33:54,991 - __main__ - INFO - 💼 Trading Summary: {'timestamp': datetime.datetime(2025, 6, 18, 9, 33, 11, 887263), 'opportunities_found': 24, 'new_positions': 2, 'orders_placed': 5, 'positions_exited': 0, 'errors': [], 'dry_run': False}
+2025-06-18 09:33:54,991 - __main__ - INFO - ============================================================
+2025-06-18 09:33:54,991 - __main__ - INFO - ==================================================
+2025-06-18 09:33:54,991 - __main__ - INFO - Trading Algorithm Complete
+2025-06-18 09:33:54,991 - __main__ - INFO - Result: {'status': 'success', 'trading_summary': {'timestamp': datetime.datetime(2025, 6, 18, 9, 33, 11, 887263), 'opportunities_found': 24, 'new_positions': 2, 'orders_placed': 5, 'positions_exited': 0, 'errors': [], 'dry_run': False}, 'backtest_count': 236, 'duration': 44.913777}
+2025-06-18 09:33:54,991 - __main__ - INFO - ==================================================

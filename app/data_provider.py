@@ -14,7 +14,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
-from config import config  # type: ignore
+from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ class DataProvider:
     """Modern data provider using Alpaca's latest API."""
 
     def __init__(self):
-        alpaca_config = config.get_alpaca_config()
+        alpaca_config = globalConfig.get_alpaca_config()
 
         # Check if we have valid credentials
         if not alpaca_config['api_key'] or not alpaca_config['secret_key']:
@@ -52,14 +52,14 @@ class DataProvider:
                 self.trading_client: Optional[TradingClient] = TradingClient(
                     api_key=alpaca_config['api_key'],
                     secret_key=alpaca_config['secret_key'],
-                    paper=config.PAPER_TRADE
+                    paper=globalConfig.PAPER_TRADE
                 )
             except Exception as e:
                 logger.error("Failed to initialize Alpaca clients: %s", e)
                 self.historical_client = None
                 self.trading_client = None
 
-        self._rate_limit_delay: float = config.API_RATE_LIMIT_DELAY
+        self._rate_limit_delay: float = globalConfig.API_RATE_LIMIT_DELAY
 
     async def get_historical_bars(
         self,
@@ -264,6 +264,13 @@ class DataProvider:
                     'current_price': float(current_price) if current_price else 0.0
                 })
 
+                # if current price is not available, fetch it from the snapshot
+                if not current_price and symbol:
+                    snapshot = self.get_current_snapshot(symbol)
+                    if snapshot and 'latest_trade' in snapshot:
+                        position_data[-1]['current_price'] = snapshot['latest_trade'].get(
+                            'price', 0.0)
+
             return pd.DataFrame(position_data)
 
         except Exception as e:
@@ -285,7 +292,7 @@ class DataProvider:
             long_market_value = getattr(account, 'long_market_value', 0)
             short_market_value = getattr(account, 'short_market_value', 0)
             buying_power = getattr(account, 'buying_power', 0)
-            portfolio_value = getattr(account, 'portfolio_value', 0)
+            equity = getattr(account, 'equity', 0)
 
             return {
                 'cash': float(cash) if cash else 0.0,
@@ -293,7 +300,7 @@ class DataProvider:
                 'long_market_value': float(long_market_value) if long_market_value else 0.0,
                 'short_market_value': float(short_market_value) if short_market_value else 0.0,
                 'buying_power': float(buying_power) if buying_power else 0.0,
-                'portfolio_value': float(portfolio_value) if portfolio_value else 0.0
+                'equity': float(equity) if equity else 0.0
             }
 
         except Exception as e:
@@ -303,7 +310,7 @@ class DataProvider:
     async def get_stock_universe(self, date: Optional[datetime] = None) -> pd.DataFrame:
         """
         Get filtered universe of stocks for trading.
-        Filters stocks based on price using Alpaca snapshots API and MIN_PRICE config.
+        Filters stocks based on price using Alpaca snapshots API and MIN_PRICE globalConfig.
 
         Args:
             date: Date for universe (defaults to today)
@@ -358,7 +365,7 @@ class DataProvider:
 
             df = pd.DataFrame(universe_data)
             logger.info(
-                "Returning universe of %d stocks after price filtering (min price: $%s)", len(df), config.MIN_PRICE)
+                "Returning universe of %d stocks after price filtering (min price: $%s)", len(df), globalConfig.MIN_PRICE)
             return df
 
         except Exception as e:
@@ -448,9 +455,9 @@ class DataProvider:
 
                             # Apply price and volume filters
                             if current_price is not None and daily_volume is not None:
-                                if (current_price >= config.MIN_PRICE and
-                                    current_price <= config.MAX_PRICE and
-                                        daily_volume >= config.MIN_VOLUME):
+                                if (current_price >= globalConfig.MIN_PRICE and
+                                    current_price <= globalConfig.MAX_PRICE and
+                                        daily_volume >= globalConfig.MIN_VOLUME):
                                     filtered_symbols.append(symbol)
 
                 except Exception as batch_error:
@@ -464,7 +471,7 @@ class DataProvider:
 
             logger.info(
                 "Price and volume filtering: %d/%d symbols passed ($%s - $%s, volume >= %s)",
-                len(filtered_symbols), len(symbols), config.MIN_PRICE, config.MAX_PRICE, f"{config.MIN_VOLUME:,}")
+                len(filtered_symbols), len(symbols), globalConfig.MIN_PRICE, globalConfig.MAX_PRICE, f"{globalConfig.MIN_VOLUME:,}")
             return filtered_symbols
 
         except Exception as e:

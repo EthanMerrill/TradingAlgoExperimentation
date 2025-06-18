@@ -15,7 +15,7 @@ from positions import Position, PositionsManager
 from cloud_storage import cloud_storage
 import time
 from strategy import RSIStrategy
-from config import config  # type: ignore
+from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,9 @@ class TradingEngine:
                     # Calculate stop loss and take profit prices once
                     entry_price = round(current_price, 2)
                     stop_loss_price = round(
-                        entry_price * (1 - config.STOP_LOSS_PCT), 2)
+                        entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
                     take_profit_price = round(
-                        entry_price * (1 + config.TAKE_PROFIT_PCT), 2)
+                        entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
 
                     opportunity = TradingOpportunity(
                         symbol=result.symbol,
@@ -120,11 +120,11 @@ class TradingEngine:
         opportunities = [op for op in opportunities if op.alpha > 0]
         # Filter out opportunities with low win rate
         opportunities = [
-            op for op in opportunities if op.win_rate >= config.MIN_WIN_RATE]
+            op for op in opportunities if op.win_rate >= globalConfig.MIN_WIN_RATE]
         # Filter opportunities with less than 2 trades (needs to be at least _slightly_ repeatable)
         opportunities = [op for op in opportunities if op.num_trades >= 2]
         # Remove symbols that are already in current positions
-        # current_positions = self.refresh_positions()  # Refresh once at the start
+        # current_positions = self.refresh_positions()  # Refresh once at the start in main
         current_symbols = {
             pos.symbol for pos in self._positions_manager.positions}
         opportunities = [
@@ -156,7 +156,7 @@ class TradingEngine:
 
             # Check if we have enough cash to trade
             cash_pct = cash / equity if equity > 0 else 0
-            if cash_pct < config.MIN_CASH_PCT:
+            if cash_pct < globalConfig.MIN_CASH_PCT:
                 logger.info("Insufficient cash percentage: %.2f%%",
                             cash_pct * 100)
                 return []
@@ -164,8 +164,8 @@ class TradingEngine:
             # Calculate how many new positions we can take
             current_position_count = len(current_positions)
             max_new_positions = min(
-                config.MAX_NEW_POSITIONS_PER_DAY,
-                config.MAX_POSITIONS - current_position_count
+                globalConfig.MAX_NEW_POSITIONS_PER_DAY,
+                globalConfig.MAX_POSITIONS - current_position_count
             )
 
             if max_new_positions <= 0:
@@ -178,11 +178,11 @@ class TradingEngine:
             # Calculate position size for each opportunity
             position_allocations = []
             # Reserve minimum cash
-            available_cash = cash * (1 - config.MIN_CASH_PCT)
+            available_cash = cash * (1 - globalConfig.MIN_CASH_PCT)
 
             for opportunity in selected_opportunities:
                 # Equal weight allocation
-                position_value = available_cash * config.POSITION_SIZE_PCT
+                position_value = available_cash * globalConfig.POSITION_SIZE_PCT
                 shares = int(position_value / opportunity.entry_price)
 
                 if shares > 0:
@@ -215,7 +215,7 @@ class TradingEngine:
                             opportunity.stop_loss_price, opportunity.take_profit_price)
                 logger.info("🔍 DRY RUN: Position value: $%.2f",
                             shares * opportunity.entry_price)
-                order_success = True
+                order_success = False
             else:
                 # Check if trading client is available
                 if self.trading_client is None:
@@ -308,16 +308,16 @@ class TradingEngine:
             )
 
             if target_price is not None:
-                logger.info("Calculated target price for %s based on RSI: $%.2f",
-                            position.symbol, target_price)
+                logger.info("Calculated target price for %s based on $%.2f RSI: $%.2f",
+                            position.symbol, position.rsi_upper, target_price)
             else:
                 logger.warning(
                     "Could not calculate RSI target price for %s", position.symbol)
                 # Return default values based on entry price if no stored values
-                default_stop = (position.entry_price * (1 - config.STOP_LOSS_PCT)
+                default_stop = (position.entry_price * (1 - globalConfig.STOP_LOSS_PCT)
                                 if position.stop_loss_price is None
                                 else position.stop_loss_price)
-                default_take = (position.entry_price * (1 + config.TAKE_PROFIT_PCT)
+                default_take = (position.entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)
                                 if position.take_profit_price is None
                                 else position.take_profit_price)
                 return default_stop, default_take
@@ -326,10 +326,10 @@ class TradingEngine:
             current_price = self._get_current_price(position.symbol)
             if current_price is None:
                 # Return default values based on entry price if no stored values
-                default_stop = (position.entry_price * (1 - config.STOP_LOSS_PCT)
+                default_stop = (position.entry_price * (1 - globalConfig.STOP_LOSS_PCT)
                                 if position.stop_loss_price is None
                                 else position.stop_loss_price)
-                default_take = (position.entry_price * (1 + config.TAKE_PROFIT_PCT)
+                default_take = (position.entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)
                                 if position.take_profit_price is None
                                 else position.take_profit_price)
                 return default_stop, default_take
@@ -343,7 +343,7 @@ class TradingEngine:
 
             # Calculate stop loss based on risk management
             stop_loss_price = round(
-                position.entry_price * (1 - config.STOP_LOSS_PCT), 2)
+                position.entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
 
             logger.info("Calculated new stop loss: $%.2f and take profit: $%.2f for %s",
                         stop_loss_price, take_profit_price, position.symbol)
@@ -354,10 +354,10 @@ class TradingEngine:
                 "Error calculating stop loss and take profit for %s: %s",
                 position.symbol, e)
             # Return default values based on entry price if no stored values
-            default_stop = (position.entry_price * (1 - config.STOP_LOSS_PCT)
+            default_stop = (position.entry_price * (1 - globalConfig.STOP_LOSS_PCT)
                             if position.stop_loss_price is None
                             else position.stop_loss_price)
-            default_take = (position.entry_price * (1 + config.TAKE_PROFIT_PCT)
+            default_take = (position.entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)
                             if position.take_profit_price is None
                             else position.take_profit_price)
             return default_stop, default_take
@@ -564,11 +564,17 @@ class TradingEngine:
                 return session_summary
 
             self.identify_purchases(session_summary, backtest_results)
+
+            # save updated positions to cloud storage
+            cloud_storage.save_positions(self._positions_manager.positions)
+
             logger.info("Trading session complete: %s", session_summary)
 
         except Exception as e:
-            error_msg = "Error in trading session: %s" % e
+            error_msg = "Error in trading session (Partial execution to positions): %s" % e
             logger.error(error_msg)
+            # save updated positions to cloud storage
+            cloud_storage.save_positions(self._positions_manager.positions)
             session_summary['errors'].append(error_msg)
 
         return session_summary
@@ -592,30 +598,6 @@ class TradingEngine:
             Updated list of Position objects
         """
         return self._positions_manager.get_and_reconcile_positions()
-
-    def ensure_positions_refreshed(self) -> List[Position]:
-        """
-        Ensure positions are refreshed if they haven't been recently.
-        This is a lightweight check that only refreshes if needed.
-        """
-        # For now, we'll refresh every time, but this could be optimized
-        # to check timestamps and only refresh if stale
-        return self.refresh_positions()
-
-    def get_position_by_symbol(self, symbol: str) -> Optional[Position]:
-        """
-        Get a specific position by symbol from the cached positions list.
-
-        Args:
-            symbol: Symbol to look for
-
-        Returns:
-            Position object if found, None otherwise
-        """
-        for position in self._positions_manager.positions:
-            if position.symbol == symbol:
-                return position
-        return None
 
     def _get_current_rsi(self, symbol: str, period: int) -> Optional[float]:
         """Get current RSI value for a symbol."""
@@ -656,83 +638,3 @@ class TradingEngine:
         except Exception as e:
             logger.error("Error getting current price for %s: %s", symbol, e)
             return None
-
-    def _get_position_metadata_from_csv(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Load position metadata from the most recent positions CSV file.
-
-        Returns:
-            Dictionary mapping symbol to metadata (rsi_period, target_rsi_lower, target_rsi_upper)
-        """
-        try:
-            # Get list of position files
-            position_files = cloud_storage.list_position_files()
-
-            if not position_files:
-                logger.warning("No position files found in cloud storage")
-                return {}
-
-            # Sort files by name (assumes YYYYMMDD format) and get the most recent
-            position_files.sort(reverse=True)
-            most_recent_file = position_files[0]
-
-            logger.info("Loading positions from %s", most_recent_file)
-
-            # Load the CSV data
-            df = cloud_storage.load_position_entries(most_recent_file)
-
-            if df.empty:
-                logger.warning("No data found in %s", most_recent_file)
-                return {}
-
-            # Create metadata dictionary mapping symbol to RSI parameters
-            metadata = {}
-            for _, row in df.iterrows():
-                symbol = row['symbol']
-                metadata[symbol] = {
-                    'rsi_period': int(row.get('rsi_period', 14)),
-                    'target_rsi_lower': int(row.get('target_rsi_lower', 30)),
-                    'target_rsi_upper': int(row.get('target_rsi_upper', 70)),
-                    'stop_loss_price': float(row.get('stop_loss_price', 0.0)),
-                    'take_profit_price': float(row.get('take_profit_price', 0.0))
-                }
-
-            logger.info("Loaded metadata for %d symbols from %s",
-                        len(metadata), most_recent_file)
-            return metadata
-
-        except Exception as e:
-            logger.error("Error loading position metadata from CSV: %s", e)
-            return {}
-
-    def handle_position_closure(self, symbol: str, reason: str = "Order executed") -> None:
-        """
-        Handle position closure when orders are executed.
-
-        Args:
-            symbol: Symbol of the position that was closed
-            reason: Reason for closure (e.g., "Stop loss hit", "Take profit hit")
-        """
-        try:
-            self._positions_manager.close_position(symbol)
-            logger.info("Position closed for %s: %s", symbol, reason)
-        except Exception as e:
-            logger.error(
-                "Error handling position closure for %s: %s", symbol, e)
-
-    def sync_positions_with_broker(self) -> None:
-        """
-        Sync positions manager with actual broker positions.
-        This should be called periodically to ensure positions are in sync.
-        """
-        try:
-            # Refresh positions from broker and cloud storage
-            managed_positions = self.refresh_positions()
-
-            # The refresh_positions method already handles syncing
-            # by comparing Alpaca positions with cloud storage
-            logger.info("Synchronized %d positions with broker",
-                        len(managed_positions))
-
-        except Exception as e:
-            logger.error("Error syncing positions with broker: %s", e)

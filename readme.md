@@ -36,7 +36,8 @@ symbol|rsi_period|rsi_lower|rsi_upper|current_rsi|profit|ROI|Buy_and_hold
 
 - [ ] Clean up the trading engine (limits and stops calculated multiple times)
 - [ ] Add short selling strategies
-- [ ] either use or remove the metadata json file. it may be replaced by the positions csv file.
+- [x] either use or remove the metadata json file. it may be replaced by the positions csv file.
+  - [x] update metadata as a csv file
 
 todo:
 
