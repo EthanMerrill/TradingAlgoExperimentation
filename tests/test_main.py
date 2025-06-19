@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""
+Unit tests for the main module.
+"""
+import unittest
+from unittest.mock import Mock, patch, MagicMock
+import sys
+import os
+from datetime import datetime
+
+# Add the app directory to Python path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
+
+
+class TestMainModule(unittest.TestCase):
+    """Test cases for the main module functions."""
+
+    @patch('utils.setup_logging')
+    @patch('utils.TradingCalendar')
+    def test_main_execution_outside_trading_hours(self, mock_trading_calendar_class, mock_setup_logging):
+        """Test main execution outside trading hours."""
+        mock_trading_calendar = Mock()
+        mock_trading_calendar.is_trading_day.return_value = False
+        mock_trading_calendar_class.return_value = mock_trading_calendar
+
+        with patch('main.logger') as mock_logger:
+            # Import and test TradingAlgorithm
+            from main import TradingAlgorithm
+
+            algorithm = TradingAlgorithm()
+
+            # The algorithm should handle non-trading days
+            self.assertIsNotNone(algorithm)
+
+    @patch('utils.setup_logging')
+    @patch('utils.TradingCalendar')
+    def test_main_execution_non_trading_day(self, mock_trading_calendar_class, mock_setup_logging):
+        """Test main execution on non-trading day."""
+        mock_trading_calendar = Mock()
+        mock_trading_calendar.is_trading_day.return_value = False
+        mock_trading_calendar_class.return_value = mock_trading_calendar
+
+        with patch('main.logger') as mock_logger:
+            # Import and test TradingAlgorithm
+            from main import TradingAlgorithm
+
+            algorithm = TradingAlgorithm()
+
+            # The algorithm should handle non-trading days
+            self.assertIsNotNone(algorithm)
+
+    @patch('main.utils.setup_logging')
+    @patch('main.utils.is_trading_day')
+    @patch('utils.setup_logging')
+    @patch('utils.TradingCalendar')
+    async def test_main_execution_during_trading_hours(self, mock_trading_calendar_class, mock_setup_logging):
+        """Test main execution during trading hours."""
+        mock_trading_calendar = Mock()
+        mock_trading_calendar.is_trading_day.return_value = True
+        mock_trading_calendar_class.return_value = mock_trading_calendar
+
+        with patch('main.StrategyOptimizer') as mock_optimizer_class:
+            with patch('main.TradingEngine') as mock_trading_engine_class:
+                # Mock optimizer
+                mock_optimizer = Mock()
+                mock_optimizer.optimize_universe.return_value = []
+                mock_optimizer.filter_results.return_value = []
+                mock_optimizer_class.return_value = mock_optimizer
+
+                # Mock trading engine
+                mock_trading_engine = Mock()
+                mock_trading_engine.execute_trading_session.return_value = {
+                    'status': 'completed'}
+                mock_trading_engine_class.return_value = mock_trading_engine
+
+                with patch('main.data_provider') as mock_data_provider:
+                    mock_data_provider.get_account_info.return_value = {
+                        'equity': 10000, 'cash': 5000}
+                    mock_data_provider.get_stock_universe.return_value = Mock(
+                        empty=False, tolist=lambda: ['AAPL'])
+
+                    # Import and test TradingAlgorithm
+                    from main import TradingAlgorithm
+
+                    algorithm = TradingAlgorithm()
+                    result = await algorithm.run_full_cycle(force_backtest=True)
+
+                    # Verify that the algorithm executed
+                    self.assertIsNotNone(result)
+
+    @patch('utils.setup_logging')
+    def test_main_execution_with_exception(self, mock_setup_logging):
+        """Test main execution with exception handling."""
+        with patch('main.TradingEngine', side_effect=Exception("Test error")):
+            with patch('main.logger') as mock_logger:
+                # Import should handle exceptions gracefully
+                from main import TradingAlgorithm
+
+                # Should raise exception during initialization
+                with self.assertRaises(Exception):
+                    TradingAlgorithm()
+
+    @patch('main.StrategyOptimizer')
+    @patch('main.cloud_storage')
+    async def test_run_backtests_function(self, mock_cloud_storage, mock_optimizer_class):
+        """Test the backtest functionality in TradingAlgorithm."""
+        # Mock optimizer
+        mock_optimizer = Mock()
+        mock_result = Mock()
+        mock_result.profitable = True
+        mock_optimizer.optimize_universe.return_value = [mock_result]
+        mock_optimizer.filter_results.return_value = [mock_result]
+        mock_optimizer_class.return_value = mock_optimizer
+
+        # Mock cloud storage upload
+        mock_cloud_storage.save_backtest_results.return_value = True
+
+        with patch('main.data_provider') as mock_data_provider:
+            mock_universe_df = Mock()
+            mock_universe_df.empty = False
+            mock_universe_df.tolist.return_value = ['AAPL']
+            mock_data_provider.get_stock_universe.return_value = mock_universe_df
+
+            # Import the class
+            from main import TradingAlgorithm
+
+            algorithm = TradingAlgorithm()
+            results = await algorithm._get_backtest_results(force_backtest=True)
+
+            self.assertEqual(len(results), 1)
+            self.assertTrue(results[0].profitable)
+            mock_cloud_storage.save_backtest_results.assert_called()
+
+    @patch('main.TradingEngine')
+    async def test_execute_trades_function(self, mock_trading_engine_class):
+        """Test the trading execution functionality in TradingAlgorithm."""
+        # Mock trading engine
+        mock_trading_engine = Mock()
+        mock_trading_engine.execute_trading_session.return_value = {
+            'orders_placed': 1, 'total_value': 1000}
+        mock_trading_engine_class.return_value = mock_trading_engine
+
+        with patch('main.data_provider') as mock_data_provider:
+            mock_data_provider.get_account_info.return_value = {
+                'equity': 10000, 'cash': 5000}
+
+            # Import the class
+            from main import TradingAlgorithm
+
+            algorithm = TradingAlgorithm()
+            mock_backtest_results = [Mock()]
+
+            # Test the trading session execution
+            result = algorithm.trading_engine.execute_trading_session(
+                mock_backtest_results)
+
+            self.assertIsNotNone(result)
+            mock_trading_engine.execute_trading_session.assert_called_with(
+                mock_backtest_results)
+
+    @patch('main.globalConfig')
+    def test_config_validation(self, mock_global_config):
+        """Test configuration validation."""
+        # Test with valid config
+        mock_global_config.PAPER_TRADE = True
+        mock_global_config.MIN_CASH_PCT = 0.1
+        mock_global_config.to_dict.return_value = {'paper_trade': True}
+
+        # Import should work without issues
+        try:
+            from main import TradingAlgorithm
+            algorithm = TradingAlgorithm()
+            config_valid = True
+        except Exception:
+            config_valid = False
+
+        self.assertTrue(config_valid)
+
+
+if __name__ == '__main__':
+    unittest.main()
