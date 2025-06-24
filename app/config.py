@@ -62,7 +62,7 @@ class Config:
                 print(f"Info: Optional environment variable {var} not set.")
 
         print(
-            f"Info: Running in '{self.ENVIRONMENT}' environment.")
+            f"Info: Running in '{self.ENVIRONMENT}' environment. Using Alpaca secret: {os.getenv('ALPACA_DEV_PAPER_SECRET', 'Not Set') if self.ENVIRONMENT == 'dev' else os.getenv('ALPACA_QA_PAPER_SECRET', 'Not Set') if self.ENVIRONMENT == 'qa' else os.getenv('ALPACA_LIVE_SECRET', 'Not Set')}")
 
     def load_json_config(self):
         """Load configuration from environment-specific JSON file."""

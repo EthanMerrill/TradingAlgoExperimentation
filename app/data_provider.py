@@ -618,7 +618,7 @@ class DataProvider:
             DataFrame with historical data or None if failed
         """
         try:
-            end_date = datetime.now()
+            end_date = datetime.now() - timedelta(minutes=20)
             start_date = end_date - timedelta(days=days_back)
             result = self.get_single_stock_bars(symbol, start_date, end_date)
             return result if not result.empty else None

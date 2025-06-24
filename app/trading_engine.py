@@ -293,7 +293,7 @@ class TradingEngine:
         """
         try:
             # Get historical data for RSI calculation
-            end_date = datetime.now()
+            end_date = datetime.now() - timedelta(minutes=20)
             # Buffer for calculation
             start_date = end_date - timedelta(days=position.rsi_period * 3)
 
@@ -622,7 +622,7 @@ class TradingEngine:
     def _get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol."""
         try:
-            end_date = datetime.now()
+            end_date = datetime.now() - timedelta(minutes=20)
             # Use a longer lookback period to account for weekends and holidays
             start_date = end_date - timedelta(days=7)
 
