@@ -566,7 +566,11 @@ class TradingEngine:
             self.identify_purchases(session_summary, backtest_results)
 
             # save updated positions to cloud storage
-            cloud_storage.save_positions(self._positions_manager.positions)
+            if not self.dry_run:
+                cloud_storage.save_positions(self._positions_manager.positions)
+            else:
+                logger.info(
+                    "Dry run mode: Skipping positions save to cloud storage")
 
             logger.info("Trading session complete: %s", session_summary)
 
@@ -574,7 +578,11 @@ class TradingEngine:
             error_msg = "Error in trading session (Partial execution to positions): %s" % e
             logger.error(error_msg)
             # save updated positions to cloud storage
-            cloud_storage.save_positions(self._positions_manager.positions)
+            if not self.dry_run:
+                cloud_storage.save_positions(self._positions_manager.positions)
+            else:
+                logger.info(
+                    "Dry run mode: Skipping positions save to cloud storage")
             session_summary['errors'].append(error_msg)
 
         return session_summary
