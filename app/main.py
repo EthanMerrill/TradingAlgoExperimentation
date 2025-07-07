@@ -12,7 +12,7 @@ from typing import List, Dict, Any
 from data_provider import data_provider
 from strategy import StrategyOptimizer
 from trading_engine import TradingEngine
-from cloud_storage import cloud_storage
+from cloud_storage import CloudStorage, cloud_storage
 from positions import PositionsManager
 from utils import setup_logging, TradingCalendar
 from config import globalConfig  # type: ignore

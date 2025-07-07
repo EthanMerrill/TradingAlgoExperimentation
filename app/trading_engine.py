@@ -153,6 +153,7 @@ class TradingEngine:
 
             cash = account_info['cash']
             equity = account_info['equity']
+            logger.info("Cash available: $%.2f, Equity: $%.2f", cash, equity)
 
             # Check if we have enough cash to trade
             cash_pct = cash / equity if equity > 0 else 0
@@ -177,12 +178,10 @@ class TradingEngine:
 
             # Calculate position size for each opportunity
             position_allocations = []
-            # Reserve minimum cash
-            available_cash = cash * (1 - globalConfig.MIN_CASH_PCT)
 
             for opportunity in selected_opportunities:
                 # Equal weight allocation
-                position_value = available_cash * globalConfig.POSITION_SIZE_PCT
+                position_value = equity * globalConfig.POSITION_SIZE_PCT
                 shares = int(position_value / opportunity.entry_price)
 
                 if shares > 0:
