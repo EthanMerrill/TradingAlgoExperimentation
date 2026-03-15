@@ -116,8 +116,8 @@ class TradingAlgorithm:
                     "Skipping backtest due to insufficient cash - will only process existing positions")
 
             if not backtest_results:
-                logger.warning("No backtest results available")
-                return {'status': 'no_backtest_results'}
+                logger.warning(
+                    "No backtest results available - processing existing positions only")
 
             # Step 3: Execute trading session
             logger.info(

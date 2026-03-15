@@ -285,7 +285,9 @@ class RSIStrategy:
         returns = pd.DataFrame(index=data.index)
         price_col = self._get_price_column(data)
         returns['price'] = data[price_col]
-        returns['position'] = signals['position']
+        # Shift position by 1 bar so execution happens at the bar *after* the signal,
+        # eliminating look-ahead bias (signal uses bar-i close; trade fills at bar-i+1).
+        returns['position'] = signals['position'].shift(1).fillna(0)
 
         # Initialize with correct dtypes to avoid FutureWarning
         returns['cash'] = float(initial_cash)
@@ -345,13 +347,20 @@ class RSIStrategy:
         entry_date = None
         price_col = self._get_price_column(data)
 
+        # Track open-position state so duplicate buy-crosses (while already long)
+        # don't overwrite entry_price and corrupt win_rate / num_trades.
+        # Prices use the bar *after* the signal to match _calculate_returns execution.
+        in_position = False
         for i in range(len(signals)):
-            if signals['buy_signal'].iloc[i]:
-                entry_price = data[price_col].iloc[i]
-                entry_date = signals.index[i]
-            elif signals['sell_signal'].iloc[i] and entry_price is not None:
-                exit_price = data[price_col].iloc[i]
-                exit_date = signals.index[i]
+            if signals['buy_signal'].iloc[i] and not in_position:
+                exec_i = min(i + 1, len(data) - 1)
+                entry_price = data[price_col].iloc[exec_i]
+                entry_date = data.index[exec_i]
+                in_position = True
+            elif signals['sell_signal'].iloc[i] and in_position:
+                exec_i = min(i + 1, len(data) - 1)
+                exit_price = data[price_col].iloc[exec_i]
+                exit_date = data.index[exec_i]
 
                 trade_return = (exit_price / entry_price) - 1
                 duration = (exit_date - entry_date).days
@@ -367,6 +376,7 @@ class RSIStrategy:
 
                 entry_price = None
                 entry_date = None
+                in_position = False
 
         if not trades:
             return {'num_trades': 0, 'win_rate': 0, 'avg_duration': 0}, []
