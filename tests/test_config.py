@@ -2,11 +2,11 @@
 """
 Unit tests for the Config class.
 """
-import unittest
-from unittest.mock import Mock, patch, mock_open
-import os
 import json
+import os
 import sys
+import unittest
+from unittest.mock import Mock, mock_open, patch
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))

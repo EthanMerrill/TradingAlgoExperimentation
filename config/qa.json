@@ -22,7 +22,7 @@
     },
     "lower_range": {
       "start": 20,
-      "stop": 41,
+      "stop": 45,
       "step": 5
     },
     "upper_range": {

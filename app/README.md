@@ -83,6 +83,7 @@ python main.py --force-backtest  # Force new backtests
 python main.py --paper-trading   # Enable paper trading
 python main.py --dry-run         # Analysis only, no orders
 python main.py --log-level DEBUG # Set logging level
+python main.py --test-mode       # Run in test mode with limited universe and backtests
 ```
 
 ### Test the Components
@@ -148,11 +149,108 @@ All parameters can be configured via environment variables:
 
 ## Data Storage
 
-The application uses Google Cloud Storage for persistence:
+The application uses Google Cloud Storage for persistence, with environment-prefixed paths:
 
-- **Backtests/**: Strategy optimization results
-- **Positions/**: Historical position snapshots
-- **Metadata/**: Algorithm run metadata and configuration
+- `dev/Backtests`, `qa/Backtests`, `prod/Backtests`
+- `dev/Positions`, `qa/Positions`, `prod/Positions`
+- `dev/Metadata`, `qa/Metadata`, `prod/Metadata`
+- `dev/trades`, `qa/trades`, `prod/trades`
+
+### Write Pattern (New File vs Append)
+
+| Storage Area | File Pattern | Write Behavior | Cadence |
+| ------------ | ------------ | -------------- | ------- |
+| `Backtests/` | `backtest_results_YYYYMMDD_HHMMSS.csv` | New file each save (overwrite only if same exact timestamp is reused) | Usually when a fresh backtest is run; cached files can be reused for up to 24 hours |
+| `Positions/` | `positions_YYYYMMDD_HHMMSS.csv` | New file each save (snapshot) | Saved at the end of each trading session (non-dry-run), so potentially multiple files per day |
+| `Metadata/` | `metadata.csv` | Appended row-by-row (read existing CSV, concat, write back) | One appended row per full-cycle run that reaches metadata save |
+
+Note: Files are not strictly "one per day." Timestamps are second-level, so multiple files can be created in the same day for backtests and positions.
+
+### Backtests (`backtest_results_*.csv`)
+
+Produced from optimized `BacktestResult` records and used later for opportunity selection and trading.
+
+| Column | Description | Used In Later Steps? |
+| ------ | ----------- | -------------------- |
+| `symbol` | Ticker for the strategy result. | Yes. Used to fetch live RSI/price and place potential orders. |
+| `rsi_period` | RSI lookback period used during optimization. | Yes. Used when recalculating live RSI for entries. |
+| `rsi_lower` | RSI buy threshold from the optimized strategy. | Yes. Compared against live RSI for entry checks. |
+| `rsi_upper` | RSI sell threshold from the optimized strategy. | Yes. Stored into positions and later used for exit price logic. |
+| `total_return` | Strategy return over the backtest window. | Yes. Carried into `TradingOpportunity.backtest_return` for ranking/visibility. |
+| `buy_and_hold_return` | Benchmark return over same window. | No direct runtime use after persistence (analytics/reference). |
+| `alpha` | `total_return - buy_and_hold_return`. | Yes. Used for sorting/filtering opportunities and metadata context. |
+| `num_trades` | Number of completed historical trades in the backtest. | Yes. Used to filter low-sample opportunities. |
+| `win_rate` | Fraction of winning trades in the backtest. | Yes. Used to filter opportunities by minimum win-rate rules. |
+| `avg_trade_duration` | Mean trade duration (days). | No direct runtime use after persistence (analytics/reference). |
+| `max_drawdown` | Maximum observed drawdown in backtest equity curve. | No direct runtime use after persistence (analytics/reference). |
+| `sharpe_ratio` | Risk-adjusted return metric. | No direct runtime use after persistence (analytics/reference). |
+| `profitable` | Boolean indicating positive strategy return. | No direct runtime use after persistence (already applied in filtering before/after optimization). |
+| `current_rsi` | RSI at backtest time (snapshot field). | No direct runtime use for entries; live RSI is recalculated during trading. |
+
+### Positions (`positions_*.csv`)
+
+Saved from the in-memory `Position` list as session snapshots. The latest file is loaded and reconciled with broker positions.
+
+| Column | Description | Used In Later Steps? |
+| ------ | ----------- | -------------------- |
+| `symbol` | Open position symbol. | Yes. Primary key for reconciliation, order updates, and filtering duplicate entries. |
+| `shares` | Position size in shares. | Yes. Used when submitting OCO sell/update orders and reconciliation. |
+| `entry_price` | Fill/entry price for the position. | Yes. Used in stop-loss/take-profit calculations and reconciliation. |
+| `current_price` | Last known price for the position snapshot. | Yes. Updated during reconciliation and used in portfolio reporting. |
+| `current_rsi` | RSI captured around entry/update. | Limited. Mostly informational in current flow. |
+| `entry_date` | Position entry timestamp. | Limited. Persisted for tracking/history; not heavily used in live decision logic. |
+| `rsi_period` | RSI period attached to this position's strategy. | Yes. Used to compute target exit pricing logic. |
+| `rsi_lower` | Entry threshold for this position's strategy. | Limited. Mainly historical context after entry. |
+| `rsi_upper` | Exit threshold for this position's strategy. | Yes. Used in RSI-derived target price calculations for exits. |
+| `alpha` | Strategy alpha at time of entry selection. | Limited. Informational/context field in current flow. |
+| `stop_loss_price` | Current stop-loss level for the position. | Yes. Used when placing/updating OCO orders. |
+| `take_profit_price` | Current take-profit level for the position. | Yes. Used when placing/updating OCO orders. |
+| `exit_price` | Realized exit price when a position is closed. | Yes. Used for realized P/L tracking in persisted snapshots. |
+| `realized_return` | Calculated realized return for closed positions: `(exit_price - entry_price) / entry_price`. | Yes. Used for post-trade performance analysis in position history. |
+| `closed` | Position state flag. | Yes. Used to filter active vs closed records when loading latest snapshots. |
+
+### Metadata (`metadata.csv`)
+
+Session-level audit log. This is the only storage artifact that is appended (new row per run).
+
+| Column | Description | Used In Later Steps? |
+| ------ | ----------- | -------------------- |
+| `timestamp` | Run timestamp added at save time (`YYYYMMDD_HHMMSS`). | No direct runtime use; audit/log key. |
+| `start_time` | Run start datetime from orchestrator. | No direct runtime use; observability. |
+| `end_time` | Run end datetime in session metadata. | No direct runtime use; observability. |
+| `config` | Serialized configuration dictionary used for the run. | No direct runtime use; reproducibility/audit. |
+| `portfolio_value` | Account equity captured for the run. | No direct runtime use; performance tracking. |
+| `results_summary` | Serialized run summary dictionary. | No direct runtime use; audit/debug. |
+| `backtest_count` | Number of backtest results used in run. | No direct runtime use; run diagnostics. |
+| `long_market_value` | Account long market value snapshot. | No direct runtime use; diagnostics. |
+| `short_market_value` | Account short market value snapshot. | No direct runtime use; diagnostics. |
+| `dry_run` | Whether the run was in dry-run mode. | No direct runtime use; audit/debug. |
+| `trading_timestamp` | Timestamp from trading session summary. | No direct runtime use; audit/debug. |
+| `trading_opportunities_found` | Count of opportunities identified. | No direct runtime use; diagnostics. |
+| `trading_new_positions` | Count of new positions opened. | No direct runtime use; diagnostics. |
+| `trading_orders_placed` | Count of orders submitted. | No direct runtime use; diagnostics. |
+| `trading_positions_exited` | Count of exited positions (if tracked). | No direct runtime use; diagnostics. |
+| `trading_errors` | Serialized list of session errors. | No direct runtime use; diagnostics. |
+| `trading_dry_run` | Trading-engine dry-run flag. | No direct runtime use; diagnostics. |
+
+Note: Metadata columns can expand over time if additional keys are added to session metadata or trading summary.
+
+### Trades (Runtime Only)
+
+Trade-level history is still consolidated into a DataFrame during optimization, but it is no longer saved to cloud storage.
+
+| Column | Description | Used In Later Steps? |
+| ------ | ----------- | -------------------- |
+| `symbol` | Ticker for the historical trade. | No direct runtime use; analytics/debug. |
+| `rsi_period` | RSI period used by the strategy that produced the trade. | No direct runtime use; analytics/debug. |
+| `rsi_lower` | Strategy buy threshold. | No direct runtime use; analytics/debug. |
+| `rsi_upper` | Strategy sell threshold. | No direct runtime use; analytics/debug. |
+| `entry_date_est` | Entry timestamp converted to US/Eastern display string. | No direct runtime use; analytics/debug. |
+| `entry_price` | Historical entry price. | No direct runtime use; analytics/debug. |
+| `exit_date_est` | Exit timestamp converted to US/Eastern display string. | No direct runtime use; analytics/debug. |
+| `exit_price` | Historical exit price. | No direct runtime use; analytics/debug. |
+| `return` | Trade-level return. | No direct runtime use; analytics/debug. |
+| `duration` | Trade duration in days. | No direct runtime use; analytics/debug. |
 
 ## Logging
 

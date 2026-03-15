@@ -2,11 +2,11 @@
 """
 Unit tests for the main module.
 """
-import unittest
-from unittest.mock import Mock, patch, MagicMock
-import sys
 import os
+import sys
+import unittest
 from datetime import datetime
+from unittest.mock import MagicMock, Mock, patch
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))

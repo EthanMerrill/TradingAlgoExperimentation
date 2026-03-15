@@ -2,10 +2,11 @@
 Configuration module for the trading algorithm.
 Contains all parameters and environment variables.
 """
-import os
 import json
-from datetime import datetime, timedelta, date
-from typing import Dict, Any
+import os
+from datetime import datetime, timedelta
+from typing import Any, Dict
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -86,6 +87,7 @@ class Config:
             self.TAKE_PROFIT_PCT = trading.get('take_profit_pct', 0.15)
             self.MAX_HOLD_DAYS = trading.get('max_hold_days', 30)
             self.MIN_WIN_RATE = trading.get('min_win_rate', 0.7)
+            self.MIN_NUM_TRADES = trading.get('min_num_trades', 3)
 
             # Backtesting parameters
             backtesting = config_data.get('backtesting', {})
@@ -257,4 +259,7 @@ class Config:
 
 
 # Global configuration instance
+globalConfig = None
+
+# Only instantiate after class definition is complete
 globalConfig = Config()

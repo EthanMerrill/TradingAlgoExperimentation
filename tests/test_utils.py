@@ -2,19 +2,19 @@
 """
 Unit tests for the utils module.
 """
-from utils import (
-    setup_logging, is_trading_day, is_market_hours, get_market_hours,
-    calculate_rsi, calculate_portfolio_metrics, round_to_nearest_cent,
-    format_currency, format_percentage, validate_symbol, ProgressIndicator
-)
-import unittest
-from unittest.mock import Mock, patch, MagicMock
-import sys
 import os
-from datetime import datetime, date
-import pandas as pd
-import numpy as np
+import sys
+import unittest
+from datetime import date, datetime
 from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
+
+import numpy as np
+import pandas as pd
+from utils import (ProgressIndicator, calculate_portfolio_metrics,
+                   calculate_rsi, format_currency, format_percentage,
+                   get_market_hours, is_market_hours, is_trading_day,
+                   round_to_nearest_cent, setup_logging, validate_symbol)
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))

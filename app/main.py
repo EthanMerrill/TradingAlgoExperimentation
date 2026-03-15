@@ -2,22 +2,24 @@
 Main application entry point for the trading algorithm.
 Orchestrates the entire trading workflow.
 """
+import argparse
 import asyncio
 import logging
 import sys
 from datetime import datetime, timedelta
-import argparse
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
+import cloud_storage as cloud_storage_module
 from data_provider import data_provider
+from positions import PositionsManager
 from strategy import StrategyOptimizer
 from trading_engine import TradingEngine
-from cloud_storage import CloudStorage, cloud_storage
-from positions import PositionsManager
-from utils import setup_logging, TradingCalendar
+from utils import TradingCalendar, setup_logging
+
 from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
+TEST_MODE_UNIVERSE_LIMIT = 100
 
 
 class TradingAlgorithm:
@@ -28,7 +30,7 @@ class TradingAlgorithm:
         self.trading_engine = TradingEngine()
         self.trading_calendar = TradingCalendar()
         self.positions_manager = PositionsManager(
-            cloud_storage, data_provider
+            cloud_storage_module.cloud_storage, data_provider
         )
         self.session_metadata = {
             'start_time': None,
@@ -38,13 +40,14 @@ class TradingAlgorithm:
             'results_summary': {}
         }
 
-    async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False) -> dict:
+    async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False, test_mode: bool = False) -> dict:
         """
         Run the complete trading algorithm cycle.
 
         Args:
             force_backtest: Force running backtest even if recent results exist
             dry_run: Run in dry run mode without placing actual orders
+            test_mode: Run backtest on a limited stock universe for fast end-to-end validation
 
         Returns:
             Dictionary with session results
@@ -60,6 +63,7 @@ class TradingAlgorithm:
         logger.info("💼 Paper Trading: %s", globalConfig.PAPER_TRADE)
         logger.info("🔄 Force Backtest: %s", force_backtest)
         logger.info("🔍 Dry Run Mode: %s", dry_run)
+        logger.info("🧪 Test Mode: %s", test_mode)
         logger.info("=" * 60)
 
         # Set dry run mode on trading engine
@@ -68,8 +72,17 @@ class TradingAlgorithm:
         try:
             # Check if it's a trading day
             if not self.trading_calendar.is_trading_day():
-                logger.info("Market is closed today - skipping execution")
-                return {'status': 'market_closed'}
+                if force_backtest:
+                    logger.info(
+                        "Market is closed today, but force backtest is enabled - continuing execution")
+                else:
+                    logger.info("Market is closed today - skipping execution")
+                    if (dry_run is False):
+                        return {'status': 'market_closed'}
+                    else:
+                        # In dry run mode, we can still simulate the trading day
+                        logger.info(
+                            "Simulating trading day in dry run mode...")
 
             # Step 1: Check current positions and account status
             logger.info("🔍 Checking account status and current positions...")
@@ -80,7 +93,10 @@ class TradingAlgorithm:
             logger.info("   • Equity: $%.2f", account_info.get('equity', 0))
             logger.info("   • Cash Available: $%.2f",
                         account_info.get('cash', 0))
-            logger.info("   • Current Positions: %d", len(current_positions))
+            logger.info("   • Current Open Positions: %d",
+                        len(current_positions))
+            logger.info("   • In-Memory Position Records (open + closed): %d",
+                        len(self.positions_manager.positions))
             logger.info("─" * 40)
 
             # Check if we have enough cash to potentially trade
@@ -92,7 +108,7 @@ class TradingAlgorithm:
 
             if cash_pct > globalConfig.MIN_CASH_PCT or force_backtest:
                 # Step 2: Get or run backtests
-                backtest_results = await self._get_backtest_results(force_backtest)
+                backtest_results = await self._get_backtest_results(force_backtest, test_mode)
             else:
                 logger.warning(
                     "Insufficient cash available for purchases. Minimum required: %.1f%%", globalConfig.MIN_CASH_PCT * 100)
@@ -110,11 +126,10 @@ class TradingAlgorithm:
                 backtest_results)
 
             # Step 4: Save results and metadata
-            logger.info("💾 Saving session results and metadata...")
-            await self._save_session_results(dry_run, account_info, backtest_results, trading_summary)
-
             self.session_metadata['end_time'] = datetime.now()
             self.session_metadata['results_summary'] = trading_summary
+            logger.info("💾 Saving session results and metadata...")
+            await self._save_session_results(dry_run, account_info, backtest_results, trading_summary)
 
             # Success banner
             session_duration = (
@@ -139,7 +154,7 @@ class TradingAlgorithm:
             logger.error("Error in trading algorithm: %s", e)
             return {'status': 'error', 'error': str(e)}
 
-    async def _get_backtest_results(self, force_backtest: bool) -> List:
+    async def _get_backtest_results(self, force_backtest: bool, test_mode: bool = False) -> List:
         """Get backtest results, either from cache or by running new backtests."""
 
         # Check for recent backtest results
@@ -153,19 +168,28 @@ class TradingAlgorithm:
                 return recent_results
             else:
                 logger.info("❌ No recent cached results found")
+                if test_mode:
+                    logger.info(
+                        "🧪 Test mode enabled - running limited universe since no cache is available")
         else:
             logger.info("🔄 Force backtest enabled - ignoring cached results")
 
         logger.info("Running new backtests...")
 
         # Step 1: Get stock universe
-        universe_df = await data_provider.get_stock_universe()
+        universe_df = data_provider.get_stock_universe()
 
         if universe_df.empty:
             logger.error("Failed to get stock universe")
             return []
 
         symbols = universe_df['symbol'].tolist()
+
+        if test_mode:
+            symbols = symbols[:TEST_MODE_UNIVERSE_LIMIT]
+            logger.info(
+                "🧪 Test mode universe limit applied: first %d symbols", len(symbols))
+
         logger.info("📋 Stock universe loaded: %d symbols", len(symbols))
 
         # Step 2: Set backtest date range
@@ -192,14 +216,15 @@ class TradingAlgorithm:
         # Step 5: Save results to cloud storage
         logger.info("💾 Saving results to cloud storage...")
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        cloud_storage.save_backtest_results(filtered_results, timestamp)
+        cloud_storage_module.cloud_storage.save_backtest_results(
+            filtered_results, timestamp)
 
         return filtered_results
 
     def _load_recent_backtest_results(self) -> List:
         """Load recent backtest results from cloud storage."""
         try:
-            backtest_files = cloud_storage.list_backtest_files()
+            backtest_files = cloud_storage_module.cloud_storage.list_backtest_files()
 
             if not backtest_files:
                 return []
@@ -221,7 +246,7 @@ class TradingAlgorithm:
                     f"{date_part}_{time_part}", '%Y%m%d_%H%M%S')
 
                 if (datetime.now() - file_datetime).total_seconds() < 24 * 3600:
-                    return cloud_storage.load_backtest_results(most_recent)
+                    return cloud_storage_module.cloud_storage.load_backtest_results(most_recent)
             except (IndexError, ValueError):
                 pass
 
@@ -249,7 +274,8 @@ class TradingAlgorithm:
             for key, value in trading_summary.items():
                 self.session_metadata[f'trading_{key}'] = value
 
-            cloud_storage.save_metadata(self.session_metadata, timestamp)
+            cloud_storage_module.cloud_storage.save_metadata(
+                self.session_metadata, timestamp)
 
         except (ValueError, TypeError, KeyError) as e:
             logger.error("Error saving session results: %s", e)
@@ -267,6 +293,8 @@ async def main():
                         help='Set logging level')
     parser.add_argument('--dry-run', action='store_true',
                         help='Run analysis without placing orders')
+    parser.add_argument('--test-mode', action='store_true',
+                        help=f'Run backtest on first {TEST_MODE_UNIVERSE_LIMIT} symbols to validate full flow quickly')
 
     args = parser.parse_args()
 
@@ -281,13 +309,18 @@ async def main():
     logger.info("Trading Algorithm Starting")
     logger.info("Paper Trading: %s", globalConfig.PAPER_TRADE)
     logger.info("Dry Run: %s", args.dry_run)
+    logger.info("Test Mode: %s", args.test_mode)
     logger.info("=" * 50)
 
     try:
         # Initialize and run the trading algorithm
         algorithm = TradingAlgorithm()
 
-        session_result = await algorithm.run_full_cycle(force_backtest=args.force_backtest, dry_run=args.dry_run)
+        session_result = await algorithm.run_full_cycle(
+            force_backtest=args.force_backtest,
+            dry_run=args.dry_run,
+            test_mode=args.test_mode,
+        )
 
         logger.info("=" * 50)
         logger.info("Trading Algorithm Complete")

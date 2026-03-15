@@ -1,5 +1,5 @@
 # Modern Alpaca SDK
-alpaca-py>=0.15.0
+alpaca-py>=0.42.1
 
 # Data manipulation and analysis
 pandas>=2.0.0

@@ -2,15 +2,16 @@
 """
 Unit tests for the data_provider module.
 """
-from data_provider import BarData, DataProvider, TechnicalIndicators
-import unittest
-from unittest.mock import Mock, patch, AsyncMock, MagicMock
-import sys
-import os
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
 import asyncio
+import os
+import sys
+import unittest
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import numpy as np
+import pandas as pd
+from data_provider import BarData, DataProvider, TechnicalIndicators
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))

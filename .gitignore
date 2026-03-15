@@ -1,5 +1,5 @@
 keys.py
-venv
+.venv
 .vscode
 __pycache__
 .pyc
@@ -14,3 +14,4 @@ tests.py
 app/tempCodeRunnerFile.py
 .env
 logs/*
+*/logs

@@ -2,6 +2,10 @@
 
 Some Experimenting with a trading algorithm for US Common Stock.
 
+# Running Locally
+
+
+
 ## Processes Overview:
 
 ### Positions

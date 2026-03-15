@@ -2,19 +2,20 @@
 Strategy backtesting module.
 Replaces the legacy backtrader-based approach with a modern vectorized implementation.
 """
-from datetime import datetime, timedelta
-from data_provider import data_provider, TechnicalIndicators
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Optional
+import asyncio
 import logging
 from dataclasses import dataclass
-import asyncio
-import pytz
-from config import globalConfig  # type: ignore
+# pylint: disable=broad-exception-caught,logging-fstring-interpolation
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
+import pytz
+from data_provider import TechnicalIndicators, data_provider
 from utils import ProgressIndicator
 
+from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,6 @@ class RSIStrategy:
             # RSI formula: RSI = 100 - (100 / (1 + RS))
             # Where RS = Average Gain / Average Loss
             # Solving for RS: RS = (100 - target_rsi) / target_rsi * 100
-            rs_target = (100 / target_rsi) - 1
-
             # We need: new_avg_gain / new_avg_loss = rs_target
             # With Wilder's smoothing: new_avg_gain = (old_avg_gain * (period-1) + new_gain) / period
             # Similar for losses
@@ -320,7 +319,6 @@ class RSIStrategy:
                 trade_count += 1
             # Sell signal
             elif curr_position == 0 and prev_position == 1:
-                old_value = shares * price
                 cash = shares * price
                 shares = 0.0
             returns.at[returns.index[i], 'cash'] = cash
@@ -423,16 +421,17 @@ class RSIStrategy:
 
     # Individual trade logging removed - using consolidated approach instead
 
-    def save_all_trades_to_cloud(self, results: List[BacktestResult]) -> None:
+    def build_consolidated_trades_df(self, results: List[BacktestResult]) -> pd.DataFrame:
         """
-        Save all trades from multiple backtest results to a single CSV file in cloud storage.
+        Build a consolidated trade DataFrame from multiple backtest results.
 
         Args:
             results: List of BacktestResult objects containing trade details
+
+        Returns:
+            Consolidated trades DataFrame. Empty DataFrame if no trades are available.
         """
         try:
-            from cloud_storage import cloud_storage
-
             all_trades = []
 
             # Collect all trades from all results
@@ -455,11 +454,11 @@ class RSIStrategy:
                         all_trades.append(trade_record)
 
             if not all_trades:
-                logger.info("No trades to save")
-                return
+                logger.info("No trades to consolidate")
+                return pd.DataFrame()
 
             logger.info(
-                f"Saving {len(all_trades)} trades from {len(results)} strategies to consolidated CSV")
+                f"Consolidated {len(all_trades)} trades from {len(results)} strategies")
 
             # Convert to DataFrame
             trades_df = pd.DataFrame(all_trades)
@@ -497,11 +496,11 @@ class RSIStrategy:
             # Sort by entry date for chronological order
             trades_df = trades_df.sort_values('entry_date_est')
 
-            # Save consolidated trades to cloud storage
-            cloud_storage.save_consolidated_trades(trades_df)
+            return trades_df
 
         except Exception as e:
-            logger.error(f"Error saving consolidated trade log: {e}")
+            logger.error(f"Error building consolidated trade DataFrame: {e}")
+            return pd.DataFrame()
 
     @staticmethod
     def _get_price_column(data: pd.DataFrame) -> str:
@@ -522,6 +521,7 @@ class StrategyOptimizer:
         self.rsi_periods = list(range(*globalConfig.RSI_PERIOD_RANGE))
         self.rsi_lowers = list(range(*globalConfig.RSI_LOWER_RANGE))
         self.rsi_uppers = list(range(*globalConfig.RSI_UPPER_RANGE))
+        self.last_consolidated_trades_df = pd.DataFrame()
 
     def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[BacktestResult]:
         """
@@ -700,7 +700,7 @@ class StrategyOptimizer:
 
         logger.info("=" * 60)
         logger.info("🎯 BACKTEST OPTIMIZATION COMPLETE!")
-        logger.info(f"📊 Results Summary:")
+        logger.info("📊 Results Summary:")
         logger.info(
             f"   • Total symbols processed: {processed_count}/{total_symbols}")
         logger.info(
@@ -714,23 +714,28 @@ class StrategyOptimizer:
                 f"   • Profitable strategies: {profitable_count}/{successful_count}")
         logger.info("=" * 60)
 
-        # Save all trades to consolidated CSV
+        # Build consolidated trades DataFrame for optional runtime use.
         if results:
-            logger.info("💾 Saving trade details to cloud storage...")
-            self.save_all_trades(results)
+            logger.info(
+                "📊 Building consolidated trades DataFrame for runtime use...")
+            self.last_consolidated_trades_df = self.build_consolidated_trades(
+                results)
 
         return [r for r in results if r is not None]
 
-    def save_all_trades(self, results: List[BacktestResult]) -> None:
+    def build_consolidated_trades(self, results: List[BacktestResult]) -> pd.DataFrame:
         """
-        Save all trades from optimization results to cloud storage.
+        Build consolidated trades DataFrame from optimization results.
 
         Args:
             results: List of BacktestResult objects
+
+        Returns:
+            Consolidated trades DataFrame
         """
         strategy = RSIStrategy(
             14, 30, 70)  # Dummy strategy instance for the method
-        strategy.save_all_trades_to_cloud(results)
+        return strategy.build_consolidated_trades_df(results)
 
     def filter_results(self, results: List[BacktestResult]) -> List[BacktestResult]:
         """
@@ -756,10 +761,3 @@ class StrategyOptimizer:
         filtered.sort(key=lambda x: x.alpha, reverse=True)
 
         return filtered
-
-
-def run_backtest_for_symbol(args):
-    """Helper function for parallel processing."""
-    symbol, start_date, end_date = args
-    optimizer = StrategyOptimizer()
-    return optimizer.optimize_symbol(symbol, start_date, end_date)

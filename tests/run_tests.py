@@ -4,10 +4,10 @@ Comprehensive test runner script for all trading algorithm modules.
 Run this from the project root directory with your virtual environment activated.
 """
 
+import glob
+import os
 import subprocess
 import sys
-import os
-import glob
 from pathlib import Path
 
 

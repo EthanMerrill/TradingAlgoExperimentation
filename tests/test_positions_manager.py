@@ -2,13 +2,14 @@
 """
 Unit tests for the PositionsManager class.
 """
-from positions import Position, PositionsManager
-import unittest
-from unittest.mock import Mock, patch, MagicMock
-import pandas as pd
-from datetime import datetime
-import sys
 import os
+import sys
+import unittest
+from datetime import datetime
+from unittest.mock import MagicMock, Mock, patch
+
+import pandas as pd
+from positions import Position, PositionsManager
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))

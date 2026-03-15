@@ -2,19 +2,24 @@
 Trading execution module.
 Handles order placement, position management, and portfolio updates.
 """
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
 import logging
-from dataclasses import dataclass
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest, StopLossRequest, TakeProfitRequest, GetOrdersRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus, OrderType
-from alpaca.trading.client import TradingClient
-from data_provider import data_provider, TechnicalIndicators
-from strategy import BacktestResult
-from positions import Position, PositionsManager
-from cloud_storage import cloud_storage
 import time
-from strategy import RSIStrategy
+from dataclasses import dataclass
+# pylint: disable=broad-exception-caught
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import (OrderClass, OrderSide, OrderType,
+                                  QueryOrderStatus, TimeInForce)
+from alpaca.trading.requests import (GetOrdersRequest, LimitOrderRequest,
+                                     MarketOrderRequest, StopLossRequest,
+                                     TakeProfitRequest)
+from cloud_storage import cloud_storage
+from data_provider import TechnicalIndicators, data_provider
+from positions import Position, PositionsManager
+from strategy import BacktestResult, RSIStrategy
+
 from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -44,7 +49,6 @@ class TradingEngine:
         self.trading_client: Optional[TradingClient] = data_provider.trading_client
         self._positions_manager: PositionsManager = PositionsManager(
             cloud_storage, data_provider)
-        self._positions_cache: Dict[str, Any] = {}
         self._last_position_update: Optional[datetime] = None
         self.dry_run: bool = False
 
@@ -85,7 +89,7 @@ class TradingEngine:
                     if current_price is None:
                         continue
 
-                    # Calculate stop loss and take profit prices once
+                    # Calculate stop loss and take profit prices once for initial entry
                     entry_price = round(current_price, 2)
                     stop_loss_price = round(
                         entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
@@ -122,11 +126,12 @@ class TradingEngine:
         opportunities = [
             op for op in opportunities if op.win_rate >= globalConfig.MIN_WIN_RATE]
         # Filter opportunities with less than 2 trades (needs to be at least _slightly_ repeatable)
-        opportunities = [op for op in opportunities if op.num_trades >= 2]
+        opportunities = [
+            op for op in opportunities if op.num_trades >= globalConfig.MIN_NUM_TRADES]
         # Remove symbols that are already in current positions
         # current_positions = self.refresh_positions()  # Refresh once at the start in main
         current_symbols = {
-            pos.symbol for pos in self._positions_manager.positions}
+            pos.symbol for pos in self._positions_manager.positions if not pos.closed}
         opportunities = [
             op for op in opportunities if op.symbol not in current_symbols]
 
@@ -144,7 +149,8 @@ class TradingEngine:
         """
         try:
             account_info = data_provider.get_account_info()
-            current_positions = self._positions_manager.positions  # Use cached positions
+            current_positions = [
+                pos for pos in self._positions_manager.positions if not pos.closed]
 
             if not account_info:
                 logger.warning(
@@ -270,7 +276,7 @@ class TradingEngine:
                     stop_loss_price=opportunity.stop_loss_price,
                     take_profit_price=opportunity.take_profit_price,
                     closed=False,
-                    exit_date=datetime.now()
+                    exit_date=None
                 )
 
                 self._positions_manager.open_position(new_position)
@@ -552,9 +558,12 @@ class TradingEngine:
             if not positions:
                 logger.info("No current positions found")
             else:
-                self.update_portfolio_orders(session_summary, positions)
+                # filter for only open positions
+                open_positions = [
+                    pos for pos in positions if not pos.closed]
+                self.update_portfolio_orders(session_summary, open_positions)
                 logger.info(
-                    "Updated existing positions with new stop loss and take profit orders")
+                    "Updated existing (open) positions with new stop loss and take profit orders")
 
             # Identify new buying opportunities
             if not backtest_results:

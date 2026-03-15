@@ -2,13 +2,14 @@
 """
 Integration tests for the complete trading algorithm workflow.
 """
-import unittest
-from unittest.mock import Mock, patch, MagicMock
-import sys
 import os
-import pandas as pd
-import numpy as np
+import sys
+import unittest
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, Mock, patch
+
+import numpy as np
+import pandas as pd
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))

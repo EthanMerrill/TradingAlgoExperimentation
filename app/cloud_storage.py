@@ -2,18 +2,18 @@
 Cloud storage module for persisting data and results.
 Handles Google Cloud Storage operations for backtests and positions.
 """
-import pandas as pd
-import numpy as np
-from datetime import datetime
-from typing import Optional, List, TYPE_CHECKING
-import logging
+import importlib
 import io
-from google.cloud import storage
-from config import globalConfig  # type: ignore
+import logging
+from datetime import datetime
+from typing import TYPE_CHECKING, List, Optional
+
+import numpy as np
+# pylint: disable=broad-exception-caught
+import pandas as pd
 from strategy import BacktestResult
 
-if TYPE_CHECKING:
-    from trading_engine import TradingOpportunity
+from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,8 @@ class CloudStorage:
 
     def __init__(self):
         try:
-            self.client = storage.Client()
+            storage_module = importlib.import_module("google.cloud.storage")
+            self.client = storage_module.Client()
             self.bucket = self.client.bucket(globalConfig.GCS_BUCKET_NAME)
         except Exception as e:
             logger.error("Error initializing cloud storage: %s", e)
@@ -164,9 +165,9 @@ class CloudStorage:
             logger.error("Error loading backtest results: %s", e)
             return []
 
-    def save_positions(self, positions_data, runNumber: Optional[int] = None, timestamp: Optional[str] = None) -> bool:
+    def save_positions(self, positions_data, _run_number: Optional[int] = None, timestamp: Optional[str] = None) -> bool:
         """
-        Save current positions to cloud storage.
+        Save positions to cloud storage.
 
         Args:
             positions_data: DataFrame with position data or List of Position objects
@@ -190,6 +191,17 @@ class CloudStorage:
                     # Convert Position objects to dict format
                     positions_list = []
                     for pos in positions_data:
+                        exit_price = pos.exit_price
+                        if exit_price is None and pos.closed:
+                            exit_price = pos.current_price
+
+                        realized_return = pos.realized_return
+                        if realized_return is None and pos.closed and pos.entry_price:
+                            realized_return = (
+                                (exit_price - pos.entry_price) / pos.entry_price
+                                if exit_price is not None else None
+                            )
+
                         pos_dict = {
                             'symbol': pos.symbol,
                             'shares': pos.quantity,
@@ -203,7 +215,10 @@ class CloudStorage:
                             'alpha': pos.alpha,
                             'stop_loss_price': pos.stop_loss_price,
                             'take_profit_price': pos.take_profit_price,
-                            'closed': False
+                            'closed': pos.closed,
+                            'exit_date': pos.exit_date,
+                            'exit_price': exit_price,
+                            'realized_return': realized_return
                         }
                         positions_list.append(pos_dict)
                     positions_df = pd.DataFrame(positions_list)
@@ -234,38 +249,6 @@ class CloudStorage:
         except Exception as e:
             logger.error("Error saving positions: %s", e)
             return False
-
-    def load_positions(self, filename: str) -> pd.DataFrame:
-        """
-        Load positions from cloud storage.
-
-        Args:
-            filename: Filename in cloud storage
-
-        Returns:
-            DataFrame with position data
-        """
-        if not self.bucket:
-            logger.error("Cloud storage not initialized")
-            return pd.DataFrame()
-
-        try:
-            blob = self.bucket.blob(
-                f"{globalConfig.get_environment_path('Positions')}/{filename}")
-
-            if not blob.exists():
-                logger.error("File %s not found in cloud storage", filename)
-                return pd.DataFrame()
-
-            csv_string = blob.download_as_text()
-            df = pd.read_csv(io.StringIO(csv_string))
-
-            logger.info("Loaded positions from %s", filename)
-            return df
-
-        except Exception as e:
-            logger.error("Error loading positions: %s", e)
-            return pd.DataFrame()
 
     def save_metadata(self, metadata: dict, timestamp: Optional[str] = None) -> bool:
         """
@@ -341,63 +324,6 @@ class CloudStorage:
             logger.error("Error listing backtest files: %s", e)
             return []
 
-    def save_consolidated_trades(self, trades_df: pd.DataFrame, timestamp: Optional[str] = None) -> bool:
-        """
-        Save consolidated trade log from multiple symbols to cloud storage.
-
-        Args:
-            trades_df: DataFrame with all trade details from multiple symbols
-            timestamp: Optional timestamp string for filename
-
-        Returns:
-            True if successful
-        """
-        if not self.bucket:
-            logger.error("Cloud storage not initialized")
-            return False
-
-        try:
-            # Generate filename with environment-specific path
-            if timestamp is None:
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-            filename = f"{globalConfig.get_environment_path('trades')}/consolidated_trades_{timestamp}.csv"
-
-            # Round floats before converting to CSV
-            rounded_df = trades_df.round(2) if isinstance(
-                trades_df, pd.DataFrame) else trades_df
-
-            # Convert DataFrame to CSV string
-            csv_buffer = io.StringIO()
-            rounded_df.to_csv(csv_buffer, index=False)
-            csv_string = csv_buffer.getvalue()
-
-            # Upload to cloud storage
-            blob = self.bucket.blob(filename)
-            blob.upload_from_string(csv_string, content_type='text/csv')
-
-            logger.info("Saved %d consolidated trades to %s",
-                        len(trades_df), filename)
-            return True
-
-        except Exception as e:
-            logger.error("Error saving consolidated trade log: %s", e)
-            return False
-
-    def list_trade_files(self) -> List[str]:
-        """List all trade log files in cloud storage."""
-        if not self.bucket:
-            return []
-
-        try:
-            # Use environment-specific path
-            prefix = f"{globalConfig.get_environment_path('trades')}/"
-            blobs = self.bucket.list_blobs(prefix=prefix)
-            return [blob.name.replace(prefix, '') for blob in blobs if blob.name.endswith('.csv')]
-        except Exception as e:
-            logger.error("Error listing trade files: %s", e)
-            return []
-
     def list_position_files(self) -> List[str]:
         """List all position entry files in cloud storage."""
         if not self.bucket:
@@ -460,9 +386,11 @@ class CloudStorage:
         position_files.sort(reverse=True)
         return position_files[0]
 
-    def get_latest_open_positions_df(self) -> pd.DataFrame:
+    def get_latest_positions_df(self, openPosition=True) -> pd.DataFrame:
         """
         Get the most recent position DataFrame.
+        Args:
+            openPosition: If True, return only open positions; if False, return only closed positions
 
         Returns:
             DataFrame with the latest position entries, or empty DataFrame if no files found
@@ -473,8 +401,10 @@ class CloudStorage:
             return pd.DataFrame()
         positions_df = self.load_position_entries(latest_file)
         # Filter out closed positions
-        if not positions_df.empty and 'closed' in positions_df.columns:
+        if not positions_df.empty and 'closed' in positions_df.columns and openPosition:
             return positions_df[positions_df['closed'] != True]
+        elif not positions_df.empty and 'closed' in positions_df.columns and not openPosition:
+            return positions_df[positions_df['closed'] == True]
         return positions_df
 
 

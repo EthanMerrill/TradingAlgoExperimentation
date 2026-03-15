@@ -2,18 +2,19 @@
 Data provider module for fetching market data from various sources.
 Replaces the legacy networking.py with modern async/await patterns.
 """
-import asyncio
-import time
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
 import logging
+import time
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List, Optional, cast
+
+import numpy as np
+import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
+
 from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -60,97 +61,99 @@ class DataProvider:
                 self.trading_client = None
 
         self._rate_limit_delay: float = globalConfig.API_RATE_LIMIT_DELAY
+        print("DataProvider initialized with rate limit delay of",
+              self._rate_limit_delay)
 
-    async def get_historical_bars(
-        self,
-        symbols: List[str],
-        start_date: datetime,
-        end_date: datetime,
-        timeframe: TimeFrame = TimeFrame(1, TimeFrameUnit.Day)
-    ) -> Dict[str, pd.DataFrame]:
-        """
-        Get historical bar data for multiple symbols using Alpaca's current API.
+    # async def get_historical_bars(
+    #     self,
+    #     symbols: List[str],
+    #     start_date: datetime,
+    #     end_date: datetime,
+    #     timeframe: TimeFrame = TimeFrame(1, TimeFrameUnit.Day)
+    # ) -> Dict[str, pd.DataFrame]:
+    #     """
+    #     Get historical bar data for multiple symbols using Alpaca's current API.
 
-        Args:
-            symbols: List of stock symbols
-            start_date: Start date for data
-            end_date: End date for data
-            timeframe: Data timeframe (Day, Hour, Minute)
+    #     Args:
+    #         symbols: List of stock symbols
+    #         start_date: Start date for data
+    #         end_date: End date for data
+    #         timeframe: Data timeframe (Day, Hour, Minute)
 
-        Returns:
-            Dictionary with symbol as key and DataFrame as value
-        """
-        try:
-            if self.historical_client is None:
-                logger.error("Historical client not available")
-                return {}
+    #     Returns:
+    #         Dictionary with symbol as key and DataFrame as value
+    #     """
+    #     try:
+    #         if self.historical_client is None:
+    #             logger.error("Historical client not available")
+    #             return {}
 
-            request_params = StockBarsRequest(
-                symbol_or_symbols=symbols,
-                timeframe=timeframe,
-                start=start_date,
-                end=end_date
-            )
+    #         request_params = StockBarsRequest(
+    #             symbol_or_symbols=symbols,
+    #             timeframe=timeframe,
+    #             start=start_date,
+    #             end=end_date
+    #         )
 
-            bars = self.historical_client.get_stock_bars(request_params)
+    #         bars = self.historical_client.get_stock_bars(request_params)
 
-            # Convert to DataFrame format
-            result = {}
-            for symbol in symbols:
-                # Handle both actual API response (with .data attribute) and test mocks (direct dict)
-                if isinstance(bars, dict):
-                    # Direct dict response (test mocks)
-                    bars_data = bars
-                else:
-                    # API response with .data attribute
-                    bars_data = getattr(bars, 'data', None) if bars else None
+    #         # Convert to DataFrame format
+    #         result = {}
+    #         for symbol in symbols:
+    #             # Handle both actual API response (with .data attribute) and test mocks (direct dict)
+    #             if isinstance(bars, dict):
+    #                 # Direct dict response (test mocks)
+    #                 bars_data = bars
+    #             else:
+    #                 # API response with .data attribute
+    #                 bars_data = getattr(bars, 'data', None) if bars else None
 
-                if bars_data:
-                    # Handle both dict and object-like access
-                    symbol_bars = None
-                    if hasattr(bars_data, 'get'):
-                        # Dict-like access
-                        symbol_bars = bars_data.get(symbol, None)
-                    elif hasattr(bars_data, symbol):
-                        # Attribute access
-                        symbol_bars = getattr(bars_data, symbol, None)
+    #             if bars_data:
+    #                 # Handle both dict and object-like access
+    #                 symbol_bars = None
+    #                 if hasattr(bars_data, 'get'):
+    #                     # Dict-like access
+    #                     symbol_bars = bars_data.get(symbol, None)
+    #                 elif hasattr(bars_data, symbol):
+    #                     # Attribute access
+    #                     symbol_bars = getattr(bars_data, symbol, None)
 
-                    if symbol_bars:
-                        df_data = []
-                        for bar in symbol_bars:
-                            df_data.append({
-                                'timestamp': bar.timestamp,
-                                'open': bar.open,
-                                'high': bar.high,
-                                'low': bar.low,
-                                'close': bar.close,
-                                'volume': bar.volume
-                            })
+    #                 if symbol_bars:
+    #                     df_data = []
+    #                     for bar in symbol_bars:
+    #                         df_data.append({
+    #                             'timestamp': bar.timestamp,
+    #                             'open': bar.open,
+    #                             'high': bar.high,
+    #                             'low': bar.low,
+    #                             'close': bar.close,
+    #                             'volume': bar.volume
+    #                         })
 
-                        if df_data:
-                            df = pd.DataFrame(df_data)
-                            df['symbol'] = symbol
-                            df.set_index('timestamp', inplace=True)
-                            result[symbol] = df
-                        else:
-                            logger.warning(
-                                "No data found for symbol %s", symbol)
-                            result[symbol] = pd.DataFrame()
-                    else:
-                        logger.warning(
-                            "Symbol %s not found in response", symbol)
-                        result[symbol] = pd.DataFrame()
-                else:
-                    logger.warning("Symbol %s not found in response", symbol)
-                    result[symbol] = pd.DataFrame()
+    #                     if df_data:
+    #                         df = pd.DataFrame(df_data)
+    #                         df['symbol'] = symbol
+    #                         df.set_index('timestamp', inplace=True)
+    #                         result[symbol] = df
+    #                     else:
+    #                         logger.warning(
+    #                             "No data found for symbol %s", symbol)
+    #                         result[symbol] = pd.DataFrame()
+    #                 else:
+    #                     logger.warning(
+    #                         "Symbol %s not found in response", symbol)
+    #                     result[symbol] = pd.DataFrame()
+    #             else:
+    #                 logger.warning("Symbol %s not found in response", symbol)
+    #                 result[symbol] = pd.DataFrame()
 
-            # Rate limiting
-            await asyncio.sleep(self._rate_limit_delay)
-            return result
+    #         # Rate limiting
+    #         await asyncio.sleep(self._rate_limit_delay)
+    #         return result
 
-        except Exception as e:
-            logger.error("Error fetching historical data: %s", e)
-            return {symbol: pd.DataFrame() for symbol in symbols}
+    #     except Exception as e:
+    #         logger.error("Error fetching historical data: %s", e)
+    #         return {symbol: pd.DataFrame() for symbol in symbols}
 
     def get_single_stock_bars(
         self,
@@ -177,7 +180,7 @@ class DataProvider:
         try:
             request_params = StockBarsRequest(
                 symbol_or_symbols=[symbol],
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
+                timeframe=TimeFrame(1, cast(TimeFrameUnit, TimeFrameUnit.Day)),
                 start=start_date,
                 end=end_date
             )
@@ -239,6 +242,7 @@ class DataProvider:
                 return pd.DataFrame()
 
             positions = self.trading_client.get_all_positions()
+            print(f"Fetched {len(positions)} positions from Alpaca")
 
             if not positions:
                 return pd.DataFrame()
@@ -292,7 +296,6 @@ class DataProvider:
             long_market_value = getattr(account, 'long_market_value', 0)
             short_market_value = getattr(account, 'short_market_value', 0)
             buying_power = getattr(account, 'buying_power', 0)
-            equity = getattr(account, 'equity', 0)
 
             return {
                 'cash': float(cash) if cash else 0.0,
@@ -300,14 +303,13 @@ class DataProvider:
                 'long_market_value': float(long_market_value) if long_market_value else 0.0,
                 'short_market_value': float(short_market_value) if short_market_value else 0.0,
                 'buying_power': float(buying_power) if buying_power else 0.0,
-                'equity': float(equity) if equity else 0.0
             }
 
         except Exception as e:
             logger.error("Error fetching account info: %s", e)
             return {}
 
-    async def get_stock_universe(self, date: Optional[datetime] = None) -> pd.DataFrame:
+    def get_stock_universe(self, date: Optional[datetime] = None) -> pd.DataFrame:
         """
         Get filtered universe of stocks for trading.
         Filters stocks based on price using Alpaca snapshots API and MIN_PRICE globalConfig.
@@ -328,7 +330,7 @@ class DataProvider:
 
             # Get all active assets
             assets = self.trading_client.get_all_assets()
-
+            print(f"Total assets fetched: {len(assets)}")
             # Filter for tradable stocks
             tradable_stocks = []
             for asset in assets:
@@ -350,7 +352,7 @@ class DataProvider:
                 "Found %d tradable stocks before price filtering", len(symbols))
 
             # Apply price filtering using snapshots
-            price_filtered_symbols = await self._filter_symbols_by_price(symbols)
+            price_filtered_symbols = self._filter_symbols_by_price(symbols)
 
             # Create universe dataframe with price-filtered symbols
             universe_data = []
@@ -363,6 +365,7 @@ class DataProvider:
                         'tradable': asset.tradable
                     })
 
+            # UNCOMMENT WHEN DONE TESTING TEMP
             df = pd.DataFrame(universe_data)
             logger.info(
                 "Returning universe of %d stocks after price filtering (min price: $%s)", len(df), globalConfig.MIN_PRICE)
@@ -372,7 +375,7 @@ class DataProvider:
             logger.error("Error getting stock universe: %s", e)
             return pd.DataFrame()
 
-    async def _filter_symbols_by_price(self, symbols: List[str]) -> List[str]:
+    def _filter_symbols_by_price(self, symbols: List[str]) -> List[str]:
         """
         Filter symbols by current price using Alpaca snapshots API.
 
@@ -467,7 +470,7 @@ class DataProvider:
                     filtered_symbols.extend(batch)
 
                 # Rate limiting
-                await asyncio.sleep(self._rate_limit_delay)
+                time.sleep(self._rate_limit_delay)
 
             logger.info(
                 "Price and volume filtering: %d/%d symbols passed ($%s - $%s, volume >= %s)",
@@ -606,25 +609,25 @@ class DataProvider:
         finally:
             time.sleep(self._rate_limit_delay)
 
-    def get_historical_data(self, symbol: str, days_back: int = 30) -> Optional[pd.DataFrame]:
-        """
-        Get historical data for a single symbol - wrapper for compatibility with tests.
+    # def get_historical_data(self, symbol: str, days_back: int = 30) -> Optional[pd.DataFrame]:
+    #     """
+    #     Get historical data for a single symbol - wrapper for compatibility with tests.
 
-        Args:
-            symbol: Stock symbol to get data for
-            days_back: Number of days back to fetch data
+    #     Args:
+    #         symbol: Stock symbol to get data for
+    #         days_back: Number of days back to fetch data
 
-        Returns:
-            DataFrame with historical data or None if failed
-        """
-        try:
-            end_date = datetime.now() - timedelta(minutes=20)
-            start_date = end_date - timedelta(days=days_back)
-            result = self.get_single_stock_bars(symbol, start_date, end_date)
-            return result if not result.empty else None
-        except Exception as e:
-            logger.error("Error getting historical data for %s: %s", symbol, e)
-            return None
+    #     Returns:
+    #         DataFrame with historical data or None if failed
+    #     """
+    #     try:
+    #         end_date = datetime.now() - timedelta(minutes=20)
+    #         start_date = end_date - timedelta(days=days_back)
+    #         result = self.get_single_stock_bars(symbol, start_date, end_date)
+    #         return result if not result.empty else None
+    #     except Exception as e:
+    #         logger.error("Error getting historical data for %s: %s", symbol, e)
+    #         return None
 
     def get_current_price(self, symbol: str) -> Optional[float]:
         """
@@ -672,124 +675,124 @@ class DataProvider:
             logger.error("Error getting current price for %s: %s", symbol, e)
             return None
 
-    def get_multiple_stocks_data(self, symbols: List[str], **kwargs) -> Dict[str, pd.DataFrame]:
-        """
-        Get historical data for multiple symbols - wrapper for compatibility with tests.
+    # def get_multiple_stocks_data(self, symbols: List[str], **kwargs) -> Dict[str, pd.DataFrame]:
+    #     """
+    #     Get historical data for multiple symbols - wrapper for compatibility with tests.
 
-        Args:
-            symbols: List of stock symbols
-            **kwargs: Additional parameters (like days_back)
+    #     Args:
+    #         symbols: List of stock symbols
+    #         **kwargs: Additional parameters (like days_back)
 
-        Returns:
-            Dict mapping symbols to their DataFrames
-        """
-        try:
-            if not self.historical_client:
-                logger.error(
-                    "Historical client not initialized - missing API credentials")
-                return {}
+    #     Returns:
+    #         Dict mapping symbols to their DataFrames
+    #     """
+    #     try:
+    #         if not self.historical_client:
+    #             logger.error(
+    #                 "Historical client not initialized - missing API credentials")
+    #             return {}
 
-            # Get days_back from kwargs, default to 30
-            days_back = kwargs.get('days_back', 30)
+    #         # Get days_back from kwargs, default to 30
+    #         days_back = kwargs.get('days_back', 30)
 
-            # Try to get historical data using the same approach as get_historical_bars but synchronously
-            request_params = StockBarsRequest(
-                symbol_or_symbols=symbols,
-                timeframe=TimeFrame(1, TimeFrameUnit.Day),
-                start=datetime.now() - timedelta(days=days_back),
-                end=datetime.now()
-            )
+    #         # Try to get historical data using the same approach as get_historical_bars but synchronously
+    #         request_params = StockBarsRequest(
+    #             symbol_or_symbols=symbols,
+    #             timeframe=TimeFrame(1, TimeFrameUnit.Day),
+    #             start=datetime.now() - timedelta(days=days_back),
+    #             end=datetime.now()
+    #         )
 
-            bars = self.historical_client.get_stock_bars(request_params)
+    #         bars = self.historical_client.get_stock_bars(request_params)
 
-            # Handle both actual API response (with .data attribute) and test mocks (direct dict)
-            if isinstance(bars, dict):
-                # Direct dict response (test mocks)
-                bars_data = bars
-            else:
-                # API response with .data attribute
-                bars_data = getattr(bars, 'data', None) if bars else None
+    #         # Handle both actual API response (with .data attribute) and test mocks (direct dict)
+    #         if isinstance(bars, dict):
+    #             # Direct dict response (test mocks)
+    #             bars_data = bars
+    #         else:
+    #             # API response with .data attribute
+    #             bars_data = getattr(bars, 'data', None) if bars else None
 
-            result = {}
-            for symbol in symbols:
-                if bars_data:
-                    # Handle both dict and object-like access
-                    symbol_bars = None
-                    if hasattr(bars_data, 'get'):
-                        # Dict-like access
-                        symbol_bars = bars_data.get(symbol, None)
-                    elif hasattr(bars_data, symbol):
-                        # Attribute access
-                        symbol_bars = getattr(bars_data, symbol, None)
+    #         result = {}
+    #         for symbol in symbols:
+    #             if bars_data:
+    #                 # Handle both dict and object-like access
+    #                 symbol_bars = None
+    #                 if hasattr(bars_data, 'get'):
+    #                     # Dict-like access
+    #                     symbol_bars = bars_data.get(symbol, None)
+    #                 elif hasattr(bars_data, symbol):
+    #                     # Attribute access
+    #                     symbol_bars = getattr(bars_data, symbol, None)
 
-                    if symbol_bars:
-                        df_data = []
-                        for bar in symbol_bars:
-                            df_data.append({
-                                'timestamp': bar.timestamp,
-                                'open': getattr(bar, 'open', None),
-                                'high': getattr(bar, 'high', None),
-                                'low': getattr(bar, 'low', None),
-                                'close': getattr(bar, 'close', None),
-                                'volume': getattr(bar, 'volume', None)
-                            })
+    #                 if symbol_bars:
+    #                     df_data = []
+    #                     for bar in symbol_bars:
+    #                         df_data.append({
+    #                             'timestamp': bar.timestamp,
+    #                             'open': getattr(bar, 'open', None),
+    #                             'high': getattr(bar, 'high', None),
+    #                             'low': getattr(bar, 'low', None),
+    #                             'close': getattr(bar, 'close', None),
+    #                             'volume': getattr(bar, 'volume', None)
+    #                         })
 
-                        if df_data:
-                            df = pd.DataFrame(df_data)
-                            df['symbol'] = symbol
-                            df.set_index('timestamp', inplace=True)
-                            result[symbol] = df
-                        else:
-                            result[symbol] = pd.DataFrame()
-                    else:
-                        result[symbol] = pd.DataFrame()
-                else:
-                    result[symbol] = pd.DataFrame()
+    #                     if df_data:
+    #                         df = pd.DataFrame(df_data)
+    #                         df['symbol'] = symbol
+    #                         df.set_index('timestamp', inplace=True)
+    #                         result[symbol] = df
+    #                     else:
+    #                         result[symbol] = pd.DataFrame()
+    #                 else:
+    #                     result[symbol] = pd.DataFrame()
+    #             else:
+    #                 result[symbol] = pd.DataFrame()
 
-            return result
+    #         return result
 
-        except Exception as e:
-            logger.error("Error getting multiple stocks data: %s", e)
-            return {}
+    #     except Exception as e:
+    #         logger.error("Error getting multiple stocks data: %s", e)
+    #         return {}
 
-    def get_market_snapshot(self, symbols: List[str]) -> Dict[str, float]:
-        """
-        Get market snapshot for multiple symbols - wrapper for compatibility with tests.
+    # def get_market_snapshot(self, symbols: List[str]) -> Dict[str, float]:
+    #     """
+    #     Get market snapshot for multiple symbols - wrapper for compatibility with tests.
 
-        Args:
-            symbols: List of stock symbols
+    #     Args:
+    #         symbols: List of stock symbols
 
-        Returns:
-            Dict mapping symbols to their prices
-        """
-        try:
-            result = {}
+    #     Returns:
+    #         Dict mapping symbols to their prices
+    #     """
+    #     try:
+    #         result = {}
 
-            # For test compatibility, try the mocked method first
-            if hasattr(self.historical_client, 'get_stock_snapshots'):
-                request = StockSnapshotRequest(symbol_or_symbols=symbols)
-                try:
-                    snapshots = getattr(
-                        self.historical_client, 'get_stock_snapshots')(request)
-                    if isinstance(snapshots, dict):
-                        for symbol in symbols:
-                            if symbol in snapshots:
-                                snapshot_data = snapshots[symbol]
-                                if hasattr(snapshot_data, 'latest_trade') and hasattr(snapshot_data.latest_trade, 'price'):
-                                    result[symbol] = snapshot_data.latest_trade.price
-                        return result
-                except (AttributeError, TypeError):
-                    pass  # Fall through to normal method
+    #         # For test compatibility, try the mocked method first
+    #         if hasattr(self.historical_client, 'get_stock_snapshots'):
+    #             request = StockSnapshotRequest(symbol_or_symbols=symbols)
+    #             try:
+    #                 snapshots = getattr(
+    #                     self.historical_client, 'get_stock_snapshots')(request)
+    #                 if isinstance(snapshots, dict):
+    #                     for symbol in symbols:
+    #                         if symbol in snapshots:
+    #                             snapshot_data = snapshots[symbol]
+    #                             if hasattr(snapshot_data, 'latest_trade') and hasattr(snapshot_data.latest_trade, 'price'):
+    #                                 result[symbol] = snapshot_data.latest_trade.price
+    #                     return result
+    #             except (AttributeError, TypeError):
+    #                 pass  # Fall through to normal method
 
-            # Fallback to individual snapshot calls
-            for symbol in symbols:
-                snapshot = self.get_current_snapshot(symbol)
-                if snapshot:
-                    result[symbol] = snapshot
-            return result
-        except Exception as e:
-            logger.error("Error getting market snapshot: %s", e)
-            return {}
+    #         # Fallback to individual snapshot calls
+    #         for symbol in symbols:
+    #             snapshot = self.get_current_snapshot(symbol)
+    #             if snapshot:
+    #                 result[symbol] = snapshot
+    #         return result
+    #     except Exception as e:
+    #         logger.error("Error getting market snapshot: %s", e)
+    #         return {}
 
 
 class TechnicalIndicators:

@@ -1,16 +1,17 @@
 """
 Utility functions and helper classes for the trading algorithm.
 """
+import importlib
 import logging
 import sys
-from datetime import datetime, timedelta
-import pandas as pd
-import numpy as np
-from typing import Optional
-import pytz
-import holidays
-from pathlib import Path
 import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+import pytz
 
 
 def setup_logging(level: str = 'INFO') -> None:
@@ -61,7 +62,11 @@ def is_trading_day(date: Optional[datetime] = None) -> bool:
         return False
 
     # Check if it's a US market holiday
-    us_holidays = holidays.country_holidays('US', years=date.year)
+    try:
+        holidays_module = importlib.import_module('holidays')
+        us_holidays = holidays_module.country_holidays('US', years=date.year)
+    except (ImportError, AttributeError):
+        us_holidays = set()
 
     # Additional market-specific holidays
     market_holidays = [
@@ -344,18 +349,6 @@ def format_currency(amount: float) -> str:
 def format_percentage(value: float) -> str:
     """Format a decimal as percentage."""
     return f"{value:.2%}"
-
-
-def calculate_business_days(start_date: datetime, end_date: datetime) -> int:
-    """Calculate number of business days between two dates."""
-    return pd.bdate_range(start_date, end_date).size
-
-
-def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
-    """Safely divide two numbers, returning default if division by zero."""
-    if denominator == 0:
-        return default
-    return numerator / denominator
 
 
 class ProgressIndicator:
