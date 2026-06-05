@@ -356,13 +356,13 @@ class PositionsManager:
                 )
                 self.positions.append(position)
 
-            open_positions = [pos for pos in self.positions if not pos.closed]
-            closed_positions_count = len(self.positions) - len(open_positions)
-            logger.info(
-                "Reconciliation complete: open_positions=%d, closed_positions=%d, total_in_memory=%d",
-                len(open_positions), closed_positions_count, len(self.positions)
-            )
-            return open_positions
+        open_positions = [pos for pos in self.positions if not pos.closed]
+        closed_positions_count = len(self.positions) - len(open_positions)
+        logger.info(
+            "Reconciliation complete: open_positions=%d, closed_positions=%d, total_in_memory=%d",
+            len(open_positions), closed_positions_count, len(self.positions)
+        )
+        return open_positions
 
     def close_position(self, symbol: str):
         """

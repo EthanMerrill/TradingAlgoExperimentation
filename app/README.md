@@ -110,7 +110,7 @@ python test_example.py
 - **Entry Signal**: RSI crosses below the optimized lower threshold
 - **Exit Signals**:
   - RSI crosses above the optimized upper threshold
-  - Maximum holding period reached
+  - Maximum holding period reachedrr
   - Stop-loss triggered (configurable % loss)
   - Take-profit triggered (configurable % gain)
 

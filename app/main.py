@@ -88,6 +88,14 @@ class TradingAlgorithm:
             logger.info("🔍 Checking account status and current positions...")
             account_info = data_provider.get_account_info()
             current_positions = self.positions_manager.get_and_reconcile_positions()
+            if current_positions is None:
+                logger.warning(
+                    "Positions manager returned None during reconciliation; defaulting to empty positions list")
+                current_positions = []
+            if self.positions_manager.positions is None:
+                logger.warning(
+                    "Positions manager in-memory positions is None; defaulting to empty list")
+                self.positions_manager.positions = []
 
             logger.info("💰 Account Summary:")
             logger.info("   • Equity: $%.2f", account_info.get('equity', 0))

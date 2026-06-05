@@ -258,21 +258,39 @@ class RSIStrategy:
         # Track position state
         position = 0
         entry_date = None
+        entry_price = None
+        price_col = self._get_price_column(data)
+        stop_loss_pct = globalConfig.STOP_LOSS_PCT
 
         for i in range(len(signals)):
             if signals['buy_signal'].iloc[i] and position == 0:
                 position = 1
                 entry_date = signals.index[i]
+                # Trades execute on the next bar in _calculate_returns; store that
+                # execution price here so stop-loss checks use the same fill basis.
+                exec_i = min(i + 1, len(data) - 1)
+                entry_price = data[price_col].iloc[exec_i]
             elif signals['sell_signal'].iloc[i] and position == 1:
                 position = 0
                 entry_date = None
+                entry_price = None
             elif position == 1 and entry_date is not None:
+                # Trigger stop-loss exit when price falls below configured threshold.
+                if entry_price is not None and data[price_col].iloc[i] <= entry_price * (1 - stop_loss_pct):
+                    signals.at[signals.index[i], 'sell_signal'] = True
+                    position = 0
+                    entry_date = None
+                    entry_price = None
+                    signals.at[signals.index[i], 'position'] = position
+                    continue
+
                 # Check max hold period
                 days_held = (signals.index[i] - entry_date).days
                 if days_held >= self.max_hold_days:
                     signals.at[signals.index[i], 'sell_signal'] = True
                     position = 0
                     entry_date = None
+                    entry_price = None
 
             signals.at[signals.index[i], 'position'] = position
 
