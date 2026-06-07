@@ -5,8 +5,7 @@ Unit tests for the main module.
 import os
 import sys
 import unittest
-from datetime import datetime
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
@@ -17,13 +16,13 @@ class TestMainModule(unittest.TestCase):
 
     @patch('utils.setup_logging')
     @patch('utils.TradingCalendar')
-    def test_main_execution_outside_trading_hours(self, mock_trading_calendar_class, mock_setup_logging):
+    def test_main_execution_outside_trading_hours(self, mock_trading_calendar_class, _mock_setup_logging):
         """Test main execution outside trading hours."""
         mock_trading_calendar = Mock()
         mock_trading_calendar.is_trading_day.return_value = False
         mock_trading_calendar_class.return_value = mock_trading_calendar
 
-        with patch('main.logger') as mock_logger:
+        with patch('main.logger'):
             # Import and test TradingAlgorithm
             from main import TradingAlgorithm
 
@@ -34,13 +33,13 @@ class TestMainModule(unittest.TestCase):
 
     @patch('utils.setup_logging')
     @patch('utils.TradingCalendar')
-    def test_main_execution_non_trading_day(self, mock_trading_calendar_class, mock_setup_logging):
+    def test_main_execution_non_trading_day(self, mock_trading_calendar_class, _mock_setup_logging):
         """Test main execution on non-trading day."""
         mock_trading_calendar = Mock()
         mock_trading_calendar.is_trading_day.return_value = False
         mock_trading_calendar_class.return_value = mock_trading_calendar
 
-        with patch('main.logger') as mock_logger:
+        with patch('main.logger'):
             # Import and test TradingAlgorithm
             from main import TradingAlgorithm
 
@@ -53,7 +52,7 @@ class TestMainModule(unittest.TestCase):
     @patch('main.utils.is_trading_day')
     @patch('utils.setup_logging')
     @patch('utils.TradingCalendar')
-    async def test_main_execution_during_trading_hours(self, mock_trading_calendar_class, mock_setup_logging):
+    async def test_main_execution_during_trading_hours(self, mock_trading_calendar_class, _mock_setup_logging):
         """Test main execution during trading hours."""
         mock_trading_calendar = Mock()
         mock_trading_calendar.is_trading_day.return_value = True
@@ -89,10 +88,10 @@ class TestMainModule(unittest.TestCase):
                     self.assertIsNotNone(result)
 
     @patch('utils.setup_logging')
-    def test_main_execution_with_exception(self, mock_setup_logging):
+    def test_main_execution_with_exception(self, _mock_setup_logging):
         """Test main execution with exception handling."""
         with patch('main.TradingEngine', side_effect=Exception("Test error")):
-            with patch('main.logger') as mock_logger:
+            with patch('main.logger'):
                 # Import should handle exceptions gracefully
                 from main import TradingAlgorithm
 
@@ -168,10 +167,9 @@ class TestMainModule(unittest.TestCase):
 
         # Import should work without issues
         try:
-            from main import TradingAlgorithm
-            algorithm = TradingAlgorithm()
+            from main import TradingAlgorithm  # pylint: disable=unused-import
             config_valid = True
-        except Exception:
+        except Exception:  # pylint: disable=broad-exception-caught
             config_valid = False
 
         self.assertTrue(config_valid)

@@ -4,14 +4,12 @@ Comprehensive test runner script for all trading algorithm modules.
 Run this from the project root directory with your virtual environment activated.
 """
 
-import glob
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 
-def run_tests():
+def run_tests():  # pylint: disable=too-many-branches,too-many-statements
     """Run all unit tests for the trading algorithm."""
 
     # Check if we're in a virtual environment
@@ -20,7 +18,7 @@ def run_tests():
         print("Make sure to activate your venv first: source venv/bin/activate")
         response = input("Continue anyway? (y/n): ")
         if response.lower() != 'y':
-            return
+            return False
 
     # Get the tests directory
     tests_dir = Path(__file__).parent
@@ -30,7 +28,7 @@ def run_tests():
 
     if not test_files:
         print("No test files found!")
-        return
+        return False
 
     print("🧪 Running Trading Algorithm Unit Tests")
     print("=" * 60)
@@ -120,7 +118,7 @@ def run_single_test(test_name):
     try:
         result = subprocess.run([
             sys.executable, str(test_file)
-        ], cwd=tests_dir)
+        ], check=False, cwd=tests_dir)
 
         return result.returncode == 0
 
@@ -132,10 +130,8 @@ def run_single_test(test_name):
 if __name__ == '__main__':
     if len(sys.argv) > 1:
         # Run specific test
-        test_name = sys.argv[1]
-        success = run_single_test(test_name)
-        sys.exit(0 if success else 1)
+        test_to_run = sys.argv[1]
+        sys.exit(0 if run_single_test(test_to_run) else 1)
     else:
         # Run all tests
-        success = run_tests()
-        sys.exit(0 if success else 1)
+        sys.exit(0 if run_tests() else 1)

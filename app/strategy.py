@@ -6,7 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 # pylint: disable=broad-exception-caught,logging-fstring-interpolation
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -195,70 +195,104 @@ class RSIStrategy:
             rsi = TechnicalIndicators.calculate_rsi(
                 data, self.rsi_period, price_col)
 
-            # Get current RSI (last value)
-            current_rsi = rsi.iloc[-1] if not rsi.empty else None
-
-            # Generate signals
-            signals = self._generate_signals(data, rsi)
-
-            # Calculate returns
-            returns = self._calculate_returns(data, signals, initial_cash)
-            # Calculate buy and hold return
-            price_col = self._get_price_column(data)
-            buy_and_hold_return = (
-                data[price_col].iloc[-1] / data[price_col].iloc[0]) - 1
-
-            # Calculate metrics
-            total_return = returns['portfolio_value'].iloc[-1] / \
-                initial_cash - 1
-            alpha = total_return - buy_and_hold_return
-
-            trades_summary, trade_details = self._analyze_trades(signals, data)
-
-            return BacktestResult(
-                symbol=symbol,
-                rsi_period=self.rsi_period,
-                rsi_lower=self.rsi_lower,
-                rsi_upper=self.rsi_upper,
-                total_return=total_return,
-                buy_and_hold_return=buy_and_hold_return,
-                alpha=alpha,
-                num_trades=trades_summary['num_trades'],
-                win_rate=trades_summary['win_rate'],
-                avg_trade_duration=trades_summary['avg_duration'],
-                max_drawdown=self._calculate_max_drawdown(
-                    returns['portfolio_value']),
-                sharpe_ratio=self._calculate_sharpe_ratio(
-                    returns['daily_returns']),
-                profitable=total_return > 0,
-                current_rsi=current_rsi,
-                trade_details=trade_details
-            )
+            return self._run_backtest_core(data, symbol, rsi, initial_cash)
 
         except Exception as e:
-            logger.error(f"Error in backtest: {e}")
+            logger.error("Error in backtest: %s", e)
             return self._create_null_result("ERROR")
 
+    def backtest_with_rsi(self, data: pd.DataFrame, symbol: str, rsi: pd.Series, initial_cash: float = 10000) -> BacktestResult:
+        """
+        Run backtest using a precomputed RSI series (avoids redundant recalculation).
+
+        Args:
+            data: DataFrame with OHLCV data
+            symbol: Stock symbol (required — caller must provide it)
+            rsi: Precomputed RSI series matching the strategy's rsi_period
+            initial_cash: Starting cash amount
+
+        Returns:
+            BacktestResult object with performance metrics
+        """
+        try:
+            if len(data) < self.rsi_period + 10:
+                return self._create_null_result(symbol)
+            return self._run_backtest_core(data, symbol, rsi, initial_cash)
+        except Exception as e:
+            logger.error("Error in backtest_with_rsi: %s", e)
+            return self._create_null_result("ERROR")
+
+    def _run_backtest_core(self, data: pd.DataFrame, symbol: str, rsi: pd.Series, initial_cash: float) -> BacktestResult:
+        """Core backtest logic shared by backtest() and backtest_with_rsi()."""
+        # Get current RSI (last value)
+        current_rsi = rsi.iloc[-1] if not rsi.empty else None
+
+        # Generate signals
+        signals = self._generate_signals(data, rsi)
+
+        # Calculate returns
+        returns = self._calculate_returns(data, signals, initial_cash)
+        # Calculate buy and hold return
+        price_col = self._get_price_column(data)
+        buy_and_hold_return = (
+            data[price_col].iloc[-1] / data[price_col].iloc[0]) - 1
+
+        # Calculate metrics
+        total_return = returns['portfolio_value'].iloc[-1] / \
+            initial_cash - 1
+        alpha = total_return - buy_and_hold_return
+
+        trades_summary, trade_details = self._analyze_trades(signals, data)
+
+        return BacktestResult(
+            symbol=symbol,
+            rsi_period=self.rsi_period,
+            rsi_lower=self.rsi_lower,
+            rsi_upper=self.rsi_upper,
+            total_return=total_return,
+            buy_and_hold_return=buy_and_hold_return,
+            alpha=alpha,
+            num_trades=trades_summary['num_trades'],
+            win_rate=trades_summary['win_rate'],
+            avg_trade_duration=trades_summary['avg_duration'],
+            max_drawdown=self._calculate_max_drawdown(
+                returns['portfolio_value']),
+            sharpe_ratio=self._calculate_sharpe_ratio(
+                returns['daily_returns']),
+            profitable=total_return > 0,
+            current_rsi=current_rsi,
+            trade_details=trade_details
+        )
+
     def _generate_signals(self, data: pd.DataFrame, rsi: pd.Series) -> pd.DataFrame:
-        """Generate buy/sell signals based on RSI."""
+        """Generate buy/sell signals based on RSI.
+
+        Exit priority (highest to lowest): RSI cross > stop-loss > take-profit > max-hold-days.
+        This mirrors live bracket-order OCO logic where stop-loss and take-profit compete.
+        """
         signals = pd.DataFrame(index=data.index)
         signals['rsi'] = rsi
         signals['position'] = 0
         signals['buy_signal'] = False
         signals['sell_signal'] = False
+        signals['sell_reason'] = None
 
         # Buy when RSI crosses below lower threshold
         signals['buy_signal'] = (rsi < self.rsi_lower) & (
             rsi.shift(1) >= self.rsi_lower)
 
-        # Sell when RSI crosses above upper threshold or max hold period reached
+        # Sell when RSI crosses above upper threshold (pre-computed; loop may add more)
         signals['sell_signal'] = (rsi > self.rsi_upper) & (
             rsi.shift(1) <= self.rsi_upper)
+
+        # Mark pre-computed RSI-cross sells with their reason
+        signals.loc[signals['sell_signal'], 'sell_reason'] = 'rsi_cross'
 
         # Track position state
         position = 0
         entry_date = None
         entry_price = None
+        take_profit_price = None
         price_col = self._get_price_column(data)
         stop_loss_pct = globalConfig.STOP_LOSS_PCT
 
@@ -267,20 +301,52 @@ class RSIStrategy:
                 position = 1
                 entry_date = signals.index[i]
                 # Trades execute on the next bar in _calculate_returns; store that
-                # execution price here so stop-loss checks use the same fill basis.
+                # execution price here so stop-loss / take-profit checks use the same fill basis.
                 exec_i = min(i + 1, len(data) - 1)
                 entry_price = data[price_col].iloc[exec_i]
+                # Compute RSI-implied take-profit price using data available at entry.
+                # This matches the live engine's initial take-profit calculation,
+                # replacing the fixed-percentage approach for backtest/live parity.
+                # Guard: skip if insufficient history (mirrors signal-generation guard).
+                if exec_i >= self.rsi_period:
+                    take_profit_price = RSIStrategy.calculate_price_for_target_rsi(
+                        data.iloc[:exec_i + 1], self.rsi_upper, self.rsi_period
+                    )
+                else:
+                    take_profit_price = None
             elif signals['sell_signal'].iloc[i] and position == 1:
                 position = 0
                 entry_date = None
                 entry_price = None
+                take_profit_price = None
             elif position == 1 and entry_date is not None:
                 # Trigger stop-loss exit when price falls below configured threshold.
                 if entry_price is not None and data[price_col].iloc[i] <= entry_price * (1 - stop_loss_pct):
                     signals.at[signals.index[i], 'sell_signal'] = True
+                    signals.at[signals.index[i], 'sell_reason'] = 'stop_loss'
                     position = 0
                     entry_date = None
                     entry_price = None
+                    take_profit_price = None
+                    signals.at[signals.index[i], 'position'] = position
+                    continue
+
+                # Check RSI-implied take-profit price target.
+                # Uses the same calculate_price_for_target_rsi() as the live engine
+                # for backtest/live parity. Falls back to fixed percentage if None.
+                effective_take_profit = take_profit_price
+                if effective_take_profit is None:
+                    effective_take_profit = entry_price * \
+                        (1 + globalConfig.TAKE_PROFIT_PCT)
+                if entry_price is not None and data[price_col].iloc[i] >= effective_take_profit:
+                    signals.at[signals.index[i], 'sell_signal'] = True
+                    signals.at[signals.index[i], 'sell_reason'] = (
+                        'take_profit' if take_profit_price is not None else 'take_profit_fallback'
+                    )
+                    position = 0
+                    entry_date = None
+                    entry_price = None
+                    take_profit_price = None
                     signals.at[signals.index[i], 'position'] = position
                     continue
 
@@ -288,9 +354,12 @@ class RSIStrategy:
                 days_held = (signals.index[i] - entry_date).days
                 if days_held >= self.max_hold_days:
                     signals.at[signals.index[i], 'sell_signal'] = True
+                    signals.at[signals.index[i],
+                               'sell_reason'] = 'max_hold_days'
                     position = 0
                     entry_date = None
                     entry_price = None
+                    take_profit_price = None
 
             signals.at[signals.index[i], 'position'] = position
 
@@ -380,6 +449,11 @@ class RSIStrategy:
                 exit_price = data[price_col].iloc[exec_i]
                 exit_date = data.index[exec_i]
 
+                # Read exit reason from signals (set during _generate_signals)
+                exit_reason = signals['sell_reason'].iloc[i]
+                if exit_reason is None or (hasattr(exit_reason, '__len__') and len(exit_reason) == 0):
+                    exit_reason = 'unknown'
+
                 trade_return = (exit_price / entry_price) - 1
                 duration = (exit_date - entry_date).days
 
@@ -389,7 +463,8 @@ class RSIStrategy:
                     'entry_price': entry_price,
                     'exit_price': exit_price,
                     'return': trade_return,
-                    'duration': duration
+                    'duration': duration,
+                    'exit_reason': exit_reason
                 })
 
                 entry_price = None
@@ -447,8 +522,6 @@ class RSIStrategy:
             current_rsi=None
         )
 
-    # Individual trade logging removed - using consolidated approach instead
-
     def build_consolidated_trades_df(self, results: List[BacktestResult]) -> pd.DataFrame:
         """
         Build a consolidated trade DataFrame from multiple backtest results.
@@ -477,7 +550,8 @@ class RSIStrategy:
                             'exit_date': trade['exit_date'],
                             'exit_price': trade['exit_price'],
                             'return': trade['return'],
-                            'duration': trade['duration']
+                            'duration': trade['duration'],
+                            'exit_reason': trade.get('exit_reason', 'unknown')
                         }
                         all_trades.append(trade_record)
 
@@ -517,7 +591,7 @@ class RSIStrategy:
             final_columns = [
                 'symbol', 'rsi_period', 'rsi_lower', 'rsi_upper',
                 'entry_date_est', 'entry_price', 'exit_date_est', 'exit_price',
-                'return', 'duration'
+                'return', 'duration', 'exit_reason'
             ]
             trades_df = trades_df[final_columns]
 
@@ -564,60 +638,195 @@ class StrategyOptimizer:
             Best BacktestResult or None if optimization fails
         """
         try:
+            # Shift start_date back to warm up RSI calculation.
+            # RSI needs rsi_period + 1 bars; the optimizer tests periods up to
+            # max(self.rsi_periods).  Multiply by 2 to convert trading days to
+            # calendar days (covers weekends + holidays with margin).
+            max_rsi_period = max(self.rsi_periods) if self.rsi_periods else 14
+            warmup_days = max_rsi_period * 2
+            warmup_start = start_date - timedelta(days=warmup_days)
+
             # Get historical data
             data = data_provider.get_single_stock_bars(
-                symbol, start_date, end_date)
+                symbol, warmup_start, end_date)
 
             if data.empty or len(data) < 50:
                 logger.debug(
                     f"⚠️  {symbol}: Insufficient data ({len(data)} rows)")
                 return None
 
-            # Calculate total parameter combinations
-            total_combinations = 0
-            for rsi_period in self.rsi_periods:
-                for rsi_lower in self.rsi_lowers:
-                    for rsi_upper in self.rsi_uppers:
-                        if rsi_lower < rsi_upper:  # Valid combination
-                            total_combinations += 1
+# --- Tier 1: Precompute RSI for every unique period once ---
+            # RSI depends only on rsi_period, not lower/upper, so this eliminates
+            # ~96% of redundant RSI calculations (e.g., 28 recomputations → 1 per period).
+            price_col = RSIStrategy._get_price_column(data)
+            rsi_cache: Dict[int, pd.Series] = {}
+            for period in self.rsi_periods:
+                rsi_cache[period] = TechnicalIndicators.calculate_rsi(
+                    data, period, price_col
+                )
 
-            logger.debug(
-                f"🔍 {symbol}: Testing {total_combinations} parameter combinations...")
-
-            best_result = None
+            best_result: Optional[BacktestResult] = None
             best_score = -float('inf')
             tested_combinations = 0
+            tested_set: set = set()  # dedup between stages
 
-            # Grid search optimization
-            for rsi_period in self.rsi_periods:
-                for rsi_lower in self.rsi_lowers:
-                    for rsi_upper in self.rsi_uppers:
-                        if rsi_lower >= rsi_upper:
-                            continue
+            # Determine whether two-stage optimization is worthwhile.
+            # Requires at least 3 values in both lower and upper ranges.
+            fine_step_lower = (
+                self.rsi_lowers[1] - self.rsi_lowers[0]
+                if len(self.rsi_lowers) >= 2 else 1
+            )
+            fine_step_upper = (
+                self.rsi_uppers[1] - self.rsi_uppers[0]
+                if len(self.rsi_uppers) >= 2 else 1
+            )
+            use_two_stage = (
+                len(self.rsi_lowers) >= 4
+                and len(self.rsi_uppers) >= 4
+                and fine_step_lower > 0
+                and fine_step_upper > 0
+            )
 
-                        tested_combinations += 1
-                        strategy = RSIStrategy(
-                            rsi_period, rsi_lower, rsi_upper)
-                        result = strategy.backtest(
-                            data, symbol, globalConfig.BACKTEST_INIT_CASH)
+            if use_two_stage:
+                # --- Tier 2: Stage 1 — Coarse grid (double step) ---
+                coarse_step_lower = fine_step_lower * 2
+                coarse_step_upper = fine_step_upper * 2
+                coarse_lowers = list(range(
+                    self.rsi_lowers[0], self.rsi_lowers[-1] +
+                    1, coarse_step_lower
+                ))
+                coarse_uppers = list(range(
+                    self.rsi_uppers[0], self.rsi_uppers[-1] +
+                    1, coarse_step_upper
+                ))
 
-                        # Score based on alpha (risk-adjusted return vs buy-and-hold)
-                        score = result.alpha
+                coarse_count = len(coarse_lowers) * \
+                    len(coarse_uppers) * len(self.rsi_periods)
+                logger.debug(
+                    "🔍 %s: Stage 1/2 — coarse grid (%d lowers × %d uppers × %d periods = %d combos)",
+                    symbol, len(coarse_lowers), len(coarse_uppers),
+                    len(self.rsi_periods), coarse_count
+                )
 
-                        if score > best_score and result.profitable:
-                            best_score = score
-                            best_result = result
-                            logger.debug(f"🎯 {symbol}: New best strategy found - "
-                                         f"RSI({rsi_period}, {rsi_lower}, {rsi_upper}) "
-                                         f"Alpha: {score:.2%}")
+                coarse_candidates: List[Tuple[float, int, int, int]] = []
+
+                for rsi_period in self.rsi_periods:
+                    rsi = rsi_cache[rsi_period]
+                    for rsi_lower in coarse_lowers:
+                        for rsi_upper in coarse_uppers:
+                            if rsi_lower >= rsi_upper:
+                                continue
+                            tested_combinations += 1
+                            tested_set.add((rsi_period, rsi_lower, rsi_upper))
+
+                            strategy = RSIStrategy(
+                                rsi_period, rsi_lower, rsi_upper)
+                            result = strategy.backtest_with_rsi(
+                                data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
+                            score = result.alpha
+
+                            if result.profitable:
+                                coarse_candidates.append(
+                                    (score, rsi_period, rsi_lower, rsi_upper))
+
+                            if score > best_score and result.profitable:
+                                best_score = score
+                                best_result = result
+
+                # Keep top-3 for fine refinement
+                coarse_candidates.sort(key=lambda x: x[0], reverse=True)
+                top_candidates = coarse_candidates[:3]
+
+                # --- Tier 2: Stage 2 — Fine grid around top candidates ---
+                if top_candidates:
+                    fine_count = 0
+                    for _, c_period, c_lower, c_upper in top_candidates:
+                        fine_lowers = [
+                            x for x in range(
+                                c_lower - fine_step_lower,
+                                c_lower + fine_step_lower + 1,
+                                fine_step_lower
+                            )
+                            if x >= self.rsi_lowers[0] and x < self.rsi_uppers[-1]
+                        ]
+                        fine_uppers = [
+                            x for x in range(
+                                c_upper - fine_step_upper,
+                                c_upper + fine_step_upper + 1,
+                                fine_step_upper
+                            )
+                            if x > self.rsi_lowers[0] and x <= self.rsi_uppers[-1]
+                        ]
+
+                        rsi = rsi_cache[c_period]
+                        for rsi_lower in fine_lowers:
+                            for rsi_upper in fine_uppers:
+                                if rsi_lower >= rsi_upper:
+                                    continue
+                                key = (c_period, rsi_lower, rsi_upper)
+                                if key in tested_set:
+                                    continue
+                                tested_set.add(key)
+                                tested_combinations += 1
+                                fine_count += 1
+
+                                strategy = RSIStrategy(
+                                    c_period, rsi_lower, rsi_upper)
+                                result = strategy.backtest_with_rsi(
+                                    data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
+                                score = result.alpha
+
+                                if score > best_score and result.profitable:
+                                    best_score = score
+                                    best_result = result
+                                    logger.debug(
+                                        "🎯 %s: New best — RSI(%d, %d, %d) Alpha: %.2f%%",
+                                        symbol, c_period, rsi_lower, rsi_upper, score * 100
+                                    )
+
+                    logger.debug(
+                        "🔍 %s: Stage 2/2 — %d fine combos tested around top-3 candidates",
+                        symbol, fine_count
+                    )
+            else:
+                # Fallback: single-stage fine grid with cached RSI (Tier 1 only).
+                # Used when parameter ranges are too narrow for two-stage to help.
+                fine_count = 0
+                for rsi_period in self.rsi_periods:
+                    rsi = rsi_cache[rsi_period]
+                    for rsi_lower in self.rsi_lowers:
+                        for rsi_upper in self.rsi_uppers:
+                            if rsi_lower >= rsi_upper:
+                                continue
+                            tested_combinations += 1
+
+                            strategy = RSIStrategy(
+                                rsi_period, rsi_lower, rsi_upper)
+                            result = strategy.backtest_with_rsi(
+                                data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
+                            score = result.alpha
+
+                            if score > best_score and result.profitable:
+                                best_score = score
+                                best_result = result
+                                logger.debug(
+                                    "🎯 %s: New best — RSI(%d, %d, %d) Alpha: %.2f%%",
+                                    symbol, rsi_period, rsi_lower, rsi_upper, score * 100
+                                )
 
             if best_result:
-                logger.debug(f"✅ {symbol}: Optimization complete - "
-                             f"Best: RSI({best_result.rsi_period}, {best_result.rsi_lower}, {best_result.rsi_upper}) "
-                             f"Alpha: {best_result.alpha:.2%}, Trades: {best_result.num_trades}")
+                logger.debug(
+                    "✅ %s: Optimization complete — "
+                    "Best: RSI(%d, %d, %d) Alpha: %.2f%%, Trades: %d (tested %d combos)",
+                    symbol, best_result.rsi_period, best_result.rsi_lower,
+                    best_result.rsi_upper, best_result.alpha * 100,
+                    best_result.num_trades, tested_combinations
+                )
             else:
                 logger.debug(
-                    f"❌ {symbol}: No profitable strategies found from {tested_combinations} combinations")
+                    "❌ %s: No profitable strategies found from %d combinations",
+                    symbol, tested_combinations
+                )
 
             return best_result
 

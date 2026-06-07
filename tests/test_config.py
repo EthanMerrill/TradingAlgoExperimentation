@@ -2,11 +2,10 @@
 """
 Unit tests for the Config class.
 """
-import json
 import os
 import sys
 import unittest
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import mock_open, patch
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
@@ -28,11 +27,15 @@ class TestConfig(unittest.TestCase):
                 del os.environ[var]
 
     @patch('config.load_dotenv')
-    @patch.dict(os.environ, {'ENVIRONMENT': 'dev', 'ALPACA_DEV_PAPER_KEY': 'test_key', 'ALPACA_DEV_PAPER_SECRET': 'test_secret'})
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'dev',
+        'ALPACA_DEV_PAPER_KEY': 'test_key',
+        'ALPACA_DEV_PAPER_SECRET': 'test_secret',
+    })
     @patch('builtins.open', mock_open(read_data='{"BACKTEST_START_DAYS": 365}'))
-    def test_config_init_dev_environment(self, mock_dotenv):
+    def test_config_init_dev_environment(self, _mock_dotenv):
         """Test Config initialization in dev environment."""
-        from app.config import Config
+        from config import Config
 
         test_config = Config()
 
@@ -42,9 +45,9 @@ class TestConfig(unittest.TestCase):
     @patch.dict(os.environ, {'ENVIRONMENT': 'invalid'})
     @patch('builtins.open', mock_open(read_data='{"BACKTEST_START_DAYS": 365}'))
     @patch('builtins.print')
-    def test_config_invalid_environment(self, mock_print, mock_dotenv):
+    def test_config_invalid_environment(self, mock_print, _mock_dotenv):
         """Test Config with invalid environment setting."""
-        from app.config import Config
+        from config import Config
 
         test_config = Config()
 
@@ -55,9 +58,9 @@ class TestConfig(unittest.TestCase):
     @patch('config.load_dotenv')
     @patch.dict(os.environ, {})
     @patch('builtins.open', mock_open(read_data='{"BACKTEST_START_DAYS": 365}'))
-    def test_config_missing_required_vars(self, mock_dotenv):
+    def test_config_missing_required_vars(self, _mock_dotenv):
         """Test Config with missing required environment variables."""
-        from app.config import Config
+        from config import Config
 
         # Note: Config doesn't raise ValueError for missing vars, just logs warnings
         test_config = Config()
@@ -66,55 +69,75 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(test_config.ENVIRONMENT, 'dev')
 
     @patch('config.load_dotenv')
-    @patch.dict(os.environ, {'ENVIRONMENT': 'qa', 'ALPACA_QA_PAPER_KEY': 'qa_key', 'ALPACA_QA_PAPER_SECRET': 'qa_secret'})
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'qa',
+        'ALPACA_QA_PAPER_KEY': 'qa_key',
+        'ALPACA_QA_PAPER_SECRET': 'qa_secret',
+    })
     @patch('builtins.open', mock_open(read_data='{"BACKTEST_START_DAYS": 180}'))
-    def test_config_qa_environment(self, mock_dotenv):
+    def test_config_qa_environment(self, _mock_dotenv):
         """Test Config initialization in QA environment."""
-        from app.config import Config
+        from config import Config
 
         test_config = Config()
 
         self.assertEqual(test_config.ENVIRONMENT, 'qa')
 
     @patch('config.load_dotenv')
-    @patch.dict(os.environ, {'ENVIRONMENT': 'prod', 'ALPACA_LIVE_KEY': 'live_key', 'ALPACA_LIVE_SECRET': 'live_secret'})
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'prod',
+        'ALPACA_LIVE_KEY': 'live_key',
+        'ALPACA_LIVE_SECRET': 'live_secret',
+    })
     @patch('builtins.open', mock_open(read_data='{"BACKTEST_START_DAYS": 730}'))
-    def test_config_prod_environment(self, mock_dotenv):
+    def test_config_prod_environment(self, _mock_dotenv):
         """Test Config initialization in prod environment."""
-        from app.config import Config
+        from config import Config
 
         test_config = Config()
 
         self.assertEqual(test_config.ENVIRONMENT, 'prod')
 
     @patch('config.load_dotenv')
-    @patch.dict(os.environ, {'ENVIRONMENT': 'dev', 'ALPACA_DEV_PAPER_KEY': 'test_key', 'ALPACA_DEV_PAPER_SECRET': 'test_secret'})
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'dev',
+        'ALPACA_DEV_PAPER_KEY': 'test_key',
+        'ALPACA_DEV_PAPER_SECRET': 'test_secret',
+    })
     @patch('builtins.open', side_effect=FileNotFoundError())
-    def test_config_missing_json_file(self, mock_open_file, mock_dotenv):
+    def test_config_missing_json_file(self, _mock_open_file, _mock_dotenv):
         """Test Config with missing JSON configuration file."""
-        from app.config import Config
+        from config import Config
 
         # Config doesn't raise FileNotFoundError, it uses defaults
         test_config = Config()
         self.assertEqual(test_config.ENVIRONMENT, 'dev')
 
     @patch('config.load_dotenv')
-    @patch.dict(os.environ, {'ENVIRONMENT': 'dev', 'ALPACA_DEV_PAPER_KEY': 'test_key', 'ALPACA_DEV_PAPER_SECRET': 'test_secret'})
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'dev',
+        'ALPACA_DEV_PAPER_KEY': 'test_key',
+        'ALPACA_DEV_PAPER_SECRET': 'test_secret',
+    })
     @patch('builtins.open', mock_open(read_data='invalid json'))
-    def test_config_invalid_json(self, mock_dotenv):
+    def test_config_invalid_json(self, _mock_dotenv):
         """Test Config with invalid JSON configuration."""
-        from app.config import Config
+        from config import Config
 
         # Config doesn't raise JSONDecodeError, it uses defaults
         test_config = Config()
         self.assertEqual(test_config.ENVIRONMENT, 'dev')
 
     @patch('config.load_dotenv')
-    @patch.dict(os.environ, {'ENVIRONMENT': 'dev', 'ALPACA_DEV_PAPER_KEY': 'test_key', 'ALPACA_DEV_PAPER_SECRET': 'test_secret'})
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'dev',
+        'ALPACA_DEV_PAPER_KEY': 'test_key',
+        'ALPACA_DEV_PAPER_SECRET': 'test_secret',
+    })
     @patch('builtins.open', mock_open(read_data='{"BACKTEST_START_DAYS": 365, "MAX_PORTFOLIO_VALUE": 100000}'))
-    def test_get_alpaca_config_dev(self, mock_dotenv):
+    def test_get_alpaca_config_dev(self, _mock_dotenv):
         """Test getting Alpaca configuration for dev environment."""
-        from app.config import Config
+        from config import Config
 
         test_config = Config()
         alpaca_config = test_config.get_alpaca_config()
@@ -133,9 +156,9 @@ class TestConfig(unittest.TestCase):
         'ALPACA_QA_PAPER_SECRET': 'qa_secret'
     })
     @patch('builtins.open', mock_open(read_data='{"trading": {"paper_trade": false}}'))
-    def test_get_alpaca_config_prod(self, mock_dotenv):
+    def test_get_alpaca_config_prod(self, _mock_dotenv):
         """Test getting Alpaca configuration for prod environment with live trading."""
-        from app.config import Config
+        from config import Config
 
         test_config = Config()
         alpaca_config = test_config.get_alpaca_config()
@@ -154,9 +177,9 @@ class TestConfig(unittest.TestCase):
         'ALPACA_QA_PAPER_SECRET': 'qa_paper_secret'
     })
     @patch('builtins.open', mock_open(read_data='{"trading": {"paper_trade": true}}'))
-    def test_get_alpaca_config_prod_paper(self, mock_dotenv):
+    def test_get_alpaca_config_prod_paper(self, _mock_dotenv):
         """Test getting Alpaca configuration for prod environment with paper trading."""
-        from app.config import Config
+        from config import Config
 
         test_config = Config()
         alpaca_config = test_config.get_alpaca_config()

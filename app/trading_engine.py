@@ -75,26 +75,41 @@ class TradingEngine:
 
         for result in backtest_results:
             try:
-                # Get current RSI for the symbol
-                current_rsi = self._get_current_rsi(
+                # Get current and previous RSI for cross-detection (backtest parity).
+                # The backtest requires RSI to cross below rsi_lower (i.e., was above,
+                # now below), not just be below it.
+                current_rsi, previous_rsi = self._get_rsi_with_previous(
                     result.symbol, result.rsi_period)
                 if current_rsi is None:
                     continue
 
-                # Check if current RSI indicates a buy signal
-                if current_rsi < result.rsi_lower:
+                # Cross-below check: current RSI must be below rsi_lower AND
+                # previous RSI must have been at or above rsi_lower.
+                # Falls back to level check if previous RSI is unavailable.
+                is_cross_below = current_rsi < result.rsi_lower and (
+                    previous_rsi is None or previous_rsi >= result.rsi_lower
+                )
+                if previous_rsi is None:
+                    logger.debug(
+                        "Previous RSI unavailable for %s; using level check as fallback", result.symbol)
+
+                if is_cross_below:
                     # Get current price
                     current_price = self._get_current_price(result.symbol)
 
                     if current_price is None:
                         continue
 
-                    # Calculate stop loss and take profit prices once for initial entry
+                    # Calculate stop loss and take profit prices once for initial entry.
                     entry_price = round(current_price, 2)
                     stop_loss_price = round(
                         entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
-                    take_profit_price = round(
-                        entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
+
+                    # Compute RSI-implied take-profit price for backtest/live parity.
+                    # Uses the same calculate_price_for_target_rsi() as the backtest.
+                    take_profit_price = self._compute_rsi_take_profit(
+                        result.symbol, result.rsi_upper, result.rsi_period, entry_price
+                    )
 
                     opportunity = TradingOpportunity(
                         symbol=result.symbol,
@@ -471,17 +486,84 @@ class TradingEngine:
             logger.error(error_msg)
             return False
 
+    def place_market_sell_order(self, symbol: str, shares: int, reason: str = "manual") -> bool:
+        """
+        Place a simple market sell order (used for max-hold-day forced exits).
+
+        Args:
+            symbol: Stock symbol to sell
+            shares: Number of shares to sell
+            reason: Human-readable reason for the exit (for logging)
+
+        Returns:
+            True if order was placed successfully
+        """
+        try:
+            if self.dry_run:
+                logger.info(
+                    "🔍 DRY RUN: Would place market sell for %d shares of %s (reason: %s)",
+                    shares, symbol, reason)
+                return True
+
+            if self.trading_client is None:
+                logger.error(
+                    "Trading client not available — cannot place sell order for %s", symbol)
+                return False
+
+            order_request = MarketOrderRequest(
+                symbol=symbol,
+                qty=shares,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY
+            )
+            order = self.trading_client.submit_order(order_request)
+            order_id = getattr(order, 'id', 'Unknown')
+            logger.info("Market sell order placed for %d shares of %s (reason: %s) — order %s",
+                        shares, symbol, reason, order_id)
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Error placing market sell order for %s: %s", symbol, e)
+            return False
+
     def update_portfolio_orders(self, session_summary: Dict[str, Any], current_positions: List[Position]) -> Dict[str, Any]:
         """
         Update existing positions with today's stop loss and take profit orders.
+        Enforces max hold days — positions held beyond MAX_HOLD_DAYS are force-closed.
         Args:
             session_summary: Dictionary to store session summary
             current_positions: List of current positions
         Returns:
             Updated session summary with orders placed
         """
-        # Place Limit orders for existing positions based on current price and RSI Parameters
+        # First pass: force-close positions that have exceeded max hold days.
+        # This matches the backtest's max-hold-day exit for backtest/live parity.
+        now = datetime.now()
+        positions_to_close = []
         for position in current_positions:
+            days_held = (now - position.entry_date).days
+            if days_held >= globalConfig.MAX_HOLD_DAYS:
+                logger.info(
+                    "⏰ Position %s held for %d days (max: %d) — force closing",
+                    position.symbol, days_held, globalConfig.MAX_HOLD_DAYS)
+                if self.place_market_sell_order(
+                    position.symbol, int(
+                        abs(position.quantity)), "max_hold_days"
+                ):
+                    position.exit_reason = "max_hold_days"
+                    self._positions_manager.close_position(position.symbol)
+                    session_summary['positions_exited'] += 1
+                    positions_to_close.append(position.symbol)
+                else:
+                    logger.error(
+                        "Failed to force-close expired position: %s", position.symbol)
+
+        # Second pass: update remaining open positions with new OCO orders.
+        active_positions = [
+            p for p in current_positions if p.symbol not in positions_to_close
+        ]
+        for position in active_positions:
             # Calculate today's stop loss and take profit based on current price
             position.stop_loss_price, position.take_profit_price = self.calculate_todays_stop_loss_and_take_profit(
                 position)
@@ -635,6 +717,34 @@ class TradingEngine:
             logger.error("Error getting RSI for %s: %s", symbol, e)
             return None
 
+    def _get_rsi_with_previous(self, symbol: str, period: int) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Get current and previous RSI values for cross-detection.
+
+        Returns:
+            Tuple of (current_rsi, previous_rsi). Either may be None if unavailable.
+        """
+        try:
+            end_date = datetime.now() - timedelta(minutes=20)
+            start_date = end_date - timedelta(days=period * 3)
+
+            data = data_provider.get_single_stock_bars(
+                symbol, start_date, end_date)
+
+            if data.empty or len(data) < period + 1:
+                return None, None
+
+            rsi = TechnicalIndicators.calculate_rsi(data, period)
+            if rsi.empty or len(rsi) < 2:
+                return None, None
+
+            return float(rsi.iloc[-1]), float(rsi.iloc[-2])
+
+        except Exception as e:
+            logger.error(
+                "Error getting RSI with previous for %s: %s", symbol, e)
+            return None, None
+
     def _get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol."""
         try:
@@ -654,3 +764,61 @@ class TradingEngine:
         except Exception as e:
             logger.error("Error getting current price for %s: %s", symbol, e)
             return None
+
+    def _compute_rsi_take_profit(self, symbol: str, rsi_upper: int, rsi_period: int, entry_price: float) -> float:
+        """
+        Compute RSI-implied take-profit price for backtest/live parity.
+
+        Uses the same calculate_price_for_target_rsi() as the backtest's
+        _generate_signals(). Falls back to the fixed TAKE_PROFIT_PCT percentage
+        if the RSI calculation cannot produce a valid target.
+
+        Args:
+            symbol: Stock symbol
+            rsi_upper: Target RSI upper threshold
+            rsi_period: RSI calculation period
+            entry_price: Current entry price (used as fallback basis)
+
+        Returns:
+            Take-profit price (rounded to 2 decimal places)
+        """
+        try:
+            end_date = datetime.now() - timedelta(minutes=20)
+            # Buffer for RSI calculation — need at least rsi_period + 1 bars
+            start_date = end_date - timedelta(days=rsi_period * 3)
+
+            data = data_provider.get_single_stock_bars(
+                symbol, start_date, end_date)
+
+            if data.empty or len(data) < rsi_period + 1:
+                logger.warning(
+                    "Insufficient data for RSI take-profit calculation for %s. "
+                    "Falling back to fixed %.1f%% take-profit.",
+                    symbol, globalConfig.TAKE_PROFIT_PCT * 100
+                )
+                return round(entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
+
+            target_price = RSIStrategy.calculate_price_for_target_rsi(
+                data, rsi_upper, rsi_period
+            )
+
+            if target_price is None or target_price <= entry_price:
+                logger.info(
+                    "RSI-implied take-profit for %s (target RSI=%d) is at or below entry. "
+                    "Falling back to fixed %.1f%% take-profit.",
+                    symbol, rsi_upper, globalConfig.TAKE_PROFIT_PCT * 100
+                )
+                return round(entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
+
+            logger.info(
+                "RSI-implied take-profit for %s: $%.2f (RSI target: %d, entry: $%.2f)",
+                symbol, target_price, rsi_upper, entry_price
+            )
+            return round(target_price, 2)
+
+        except Exception as e:
+            logger.error(
+                "Error computing RSI take-profit for %s: %s. Falling back to fixed percentage.",
+                symbol, e
+            )
+            return round(entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)

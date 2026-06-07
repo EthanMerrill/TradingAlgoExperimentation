@@ -5,8 +5,8 @@ Integration tests for the complete trading algorithm workflow.
 import os
 import sys
 import unittest
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, Mock, patch
+from datetime import datetime
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pandas as pd
@@ -30,7 +30,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
         }
 
     @patch('sys.modules')
-    def test_module_imports(self, mock_modules):
+    def test_module_imports(self, _mock_modules):
         """Test that all modules can be imported without errors."""
         required_modules = [
             'config',
@@ -46,7 +46,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
             try:
                 # This would normally import the module
                 # In a real test, we'd check if the module loads properly
-                self.assertTrue(True)  # Placeholder for actual import test
+                pass  # Placeholder for actual import test
             except ImportError as e:
                 self.fail(f"Failed to import {module_name}: {e}")
 
@@ -54,7 +54,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
         """Test the complete data flow from data provider to trading engine."""
         # Mock the entire data flow
         with patch('data_provider.DataProvider') as mock_data_provider_class:
-            with patch('strategy.StrategyBacktester') as mock_backtester_class:
+            with patch('strategy.RSIStrategy') as mock_backtester_class:
                 with patch('trading_engine.TradingEngine') as mock_engine_class:
 
                     # Mock data provider
@@ -127,7 +127,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
                         # This would normally run the main algorithm
                         # In a real test, we'd verify error handling
                         pass
-                    except Exception as e:
+                    except Exception as e:  # pylint: disable=broad-exception-caught
                         # Errors should be logged but not crash the system
                         self.assertIsInstance(e, Exception)
 
@@ -140,13 +140,13 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
                 (14, 30, 70), (21, 25, 75)]},
         ]
 
-        for globalConfig in valid_configs:
-            with self.subTest(config=config):
+        for global_config in valid_configs:
+            with self.subTest(global_config=global_config):
                 # Configuration should be valid
-                self.assertIsInstance(config['SYMBOLS'], list)
-                self.assertIsInstance(config['RSI_CONFIGS'], list)
-                self.assertTrue(len(config['SYMBOLS']) > 0)
-                self.assertTrue(len(config['RSI_CONFIGS']) > 0)
+                self.assertIsInstance(global_config['SYMBOLS'], list)
+                self.assertIsInstance(global_config['RSI_CONFIGS'], list)
+                self.assertTrue(len(global_config['SYMBOLS']) > 0)
+                self.assertTrue(len(global_config['RSI_CONFIGS']) > 0)
 
     def test_risk_management_integration(self):
         """Test risk management features."""
@@ -275,7 +275,7 @@ class TestTradingAlgorithmPerformance(unittest.TestCase):
         symbols = ['AAPL', 'TSLA', 'GOOGL', 'MSFT', 'AMZN']
         rsi_configs = [(14, 30, 70), (21, 25, 75), (28, 20, 80)]
 
-        with patch('strategy.StrategyBacktester') as mock_backtester_class:
+        with patch('strategy.RSIStrategy') as mock_backtester_class:
             mock_backtester = Mock()
             mock_results = [Mock(profitable=True)
                             for _ in range(len(symbols) * len(rsi_configs))]

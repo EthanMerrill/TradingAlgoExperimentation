@@ -25,8 +25,7 @@ test:
 	fi
 
 run:
-	source venv/bin/activate
-	python app/main.py
+	.venv/bin/python app/main.py
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +

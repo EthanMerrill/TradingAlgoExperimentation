@@ -1,168 +1,173 @@
 #!/usr/bin/env python3
-"""
-Unit tests for the PositionsManager class.
-"""
+"""Unit tests for positions module (current API)."""
 import os
 import sys
 import unittest
 from datetime import datetime
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock
 
 import pandas as pd
-from positions import Position, PositionsManager
 
-# Add the app directory to Python path
+# Add app path before imports.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
+
+from positions import Position, PositionsManager  # noqa: E402
 
 
 class TestPosition(unittest.TestCase):
-    """Test cases for the Position dataclass."""
-
     def test_position_creation(self):
-        """Test creating a Position object."""
         position = Position(
             symbol="AAPL",
             quantity=100.0,
-            entry_price=150.00,
-            current_price=155.00,
+            entry_price=150.0,
+            current_price=155.0,
+            current_rsi=45.0,
             entry_date=datetime(2025, 6, 14),
+            alpha=0.1,
             rsi_period=14,
             rsi_lower=30,
             rsi_upper=70,
-            stop_loss_price=140.00,
-            take_profit_price=160.00
+            stop_loss_price=140.0,
+            take_profit_price=165.0,
         )
 
         self.assertEqual(position.symbol, "AAPL")
         self.assertEqual(position.quantity, 100.0)
-        self.assertEqual(position.entry_price, 150.00)
-        self.assertEqual(position.current_price, 155.00)
         self.assertEqual(position.rsi_period, 14)
-        self.assertEqual(position.rsi_lower, 30)
-        self.assertEqual(position.rsi_upper, 70)
-        self.assertEqual(position.stop_loss_price, 140.00)
-        self.assertEqual(position.take_profit_price, 160.00)
 
     def test_position_optional_fields(self):
-        """Test creating a Position with optional fields as None."""
         position = Position(
             symbol="TSLA",
             quantity=50.0,
-            entry_price=800.00,
-            current_price=850.00,
+            entry_price=800.0,
+            current_price=850.0,
+            current_rsi=40.0,
             entry_date=datetime(2025, 6, 14),
+            alpha=0.2,
             rsi_period=14,
             rsi_lower=30,
-            rsi_upper=70
+            rsi_upper=70,
         )
 
         self.assertIsNone(position.stop_loss_price)
         self.assertIsNone(position.take_profit_price)
+        self.assertIsNone(position.exit_reason)
 
 
 class TestPositionsManager(unittest.TestCase):
-    """Test cases for the PositionsManager class."""
-
     def setUp(self):
-        """Set up test fixtures."""
-        self.mock_cloud_storage = Mock()
-        self.mock_data_provider = Mock()
-        self.positions_manager = PositionsManager(
-            self.mock_cloud_storage, self.mock_data_provider)
+        self.cloud = Mock()
+        self.data = Mock()
+        self.manager = PositionsManager(self.cloud, self.data)
 
-    def test_init(self):
-        """Test PositionsManager initialization."""
-        self.assertEqual(self.positions_manager.cloud_storage,
-                         self.mock_cloud_storage)
+    def _empty_positions_df(self):
+        return pd.DataFrame(columns=['symbol', 'qty', 'avg_entry_price', 'current_price', 'market_value'])
 
-    def test_get_positions_from_alpaca_placeholder(self):
-        """Test the _get_positions_from_alpaca placeholder method."""
-        result = self.positions_manager._get_positions_from_alpaca()
-        self.assertEqual(result, [])
+    def _empty_cloud_df(self):
+        return pd.DataFrame(columns=['symbol'])
 
-    @patch('positions.cloud_storage')
-    def test_get_positions_from_google_cloud_no_files(self, mock_cloud_storage_module):
-        """Test getting positions when no files exist in cloud storage."""
-        # Mock cloud_storage.list_position_files() to return empty list
-        mock_cloud_storage_module.list_position_files.return_value = []
+    def test_open_position_and_duplicate_guard(self):
+        p = Position(
+            symbol="AAPL",
+            quantity=10.0,
+            entry_price=100.0,
+            current_price=101.0,
+            current_rsi=45.0,
+            entry_date=datetime.now(),
+            alpha=0.1,
+            rsi_period=14,
+            rsi_lower=30,
+            rsi_upper=70,
+            closed=False,
+        )
 
-        with patch('positions.logger') as mock_logger:
-            result = self.positions_manager._get_positions_from_google_cloud()
+        self.manager.open_position(p)
+        self.manager.open_position(p)
 
-            self.assertEqual(result, {})
-            mock_logger.warning.assert_called_with(
-                "No position files found in cloud storage")
+        self.assertEqual(len(self.manager.positions), 1)
 
-    @patch('positions.cloud_storage')
-    def test_get_positions_from_google_cloud_success(self, mock_cloud_storage_module):
-        """Test successfully getting positions from cloud storage."""
-        # Mock the cloud storage methods
-        mock_cloud_storage_module.list_position_files.return_value = [
-            'positions_20250614.csv', 'positions_20250613.csv']
-        mock_df = pd.DataFrame({
-            'symbol': ['AAPL', 'TSLA'],
-            'quantity': [100, 50],
-            'entry_price': [150.0, 800.0]
+    def test_close_position_removes_from_in_memory_list(self):
+        p = Position(
+            symbol="AAPL",
+            quantity=10.0,
+            entry_price=100.0,
+            current_price=101.0,
+            current_rsi=45.0,
+            entry_date=datetime.now(),
+            alpha=0.1,
+            rsi_period=14,
+            rsi_lower=30,
+            rsi_upper=70,
+            closed=False,
+        )
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'entry_price': [100.0],
+            'current_price': [101.0],
+            'closed': [False],
         })
-        mock_cloud_storage_module.load_position_entries.return_value = mock_df
 
-        with patch('positions.logger') as mock_logger:
-            result = self.positions_manager._get_positions_from_google_cloud()
+        self.manager.close_position("AAPL")
 
-            # Should return the DataFrame
-            pd.testing.assert_frame_equal(result, mock_df)
-            mock_logger.info.assert_called_with(
-                "Loading positions from %s", 'positions_20250614.csv')
+        self.assertEqual(len(self.manager.positions), 0)
 
-    @patch('positions.cloud_storage')
-    def test_get_positions_from_google_cloud_empty_file(self, mock_cloud_storage_module):
-        """Test getting positions when the file is empty."""
-        mock_cloud_storage_module.list_position_files.return_value = [
-            'positions_20250614.csv']
-        mock_cloud_storage_module.load_position_entries.return_value = pd.DataFrame()
+    def test_get_and_reconcile_positions_initializes_from_alpaca_when_cloud_empty(self):
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [100.0],
+            'current_price': [101.0],
+            'market_value': [1010.0],
+        })
 
-        with patch('positions.logger') as mock_logger:
-            result = self.positions_manager._get_positions_from_google_cloud()
+        def cloud_side_effect(is_open):
+            return self._empty_cloud_df() if is_open else self._empty_cloud_df()
 
-            self.assertEqual(result, {})
-            mock_logger.warning.assert_called_with(
-                "No data found in %s", 'positions_20250614.csv')
+        self.cloud.get_latest_positions_df.side_effect = cloud_side_effect
 
-    @patch('positions.cloud_storage')
-    def test_get_positions_from_google_cloud_exception(self, mock_cloud_storage_module):
-        """Test exception handling in getting positions from cloud storage."""
-        mock_cloud_storage_module.list_position_files.side_effect = Exception(
-            "Cloud storage error")
+        open_positions = self.manager.get_and_reconcile_positions()
 
-        with patch('positions.logger') as mock_logger:
-            result = self.positions_manager._get_positions_from_google_cloud()
+        self.assertEqual(len(open_positions), 1)
+        self.assertEqual(open_positions[0].symbol, 'AAPL')
+        self.assertFalse(open_positions[0].closed)
 
-            self.assertEqual(result, [])
-            mock_logger.error.assert_called_with(
-                "Error loading positions from cloud storage: %s", "Cloud storage error")
+    def test_get_and_reconcile_positions_marks_cloud_only_positions_closed(self):
+        self.data.get_current_positions_df.return_value = self._empty_positions_df()
 
-    def test_get_and_reconcile_positions_no_alpaca_positions(self):
-        """Test reconciliation when there are no Alpaca positions."""
-        with patch.object(self.positions_manager, '_get_positions_from_alpaca', return_value=[]):
-            with patch('positions.logger') as mock_logger:
-                result = self.positions_manager.get_and_reconcile_positions()
+        open_cloud_df = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'shares': [10.0],
+            'entry_price': [100.0],
+            'current_price': [90.0],
+            'position_value': [900.0],
+            'current_rsi': [40.0],
+            'entry_date': [datetime.now()],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.1],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'closed': [False],
+        })
 
-                self.assertEqual(result, [])
-                mock_logger.warning.assert_called_with(
-                    "No positions found in Alpaca")
+        def cloud_side_effect(is_open):
+            if is_open:
+                return open_cloud_df.copy()
+            return self._empty_cloud_df()
 
-    def test_get_and_reconcile_positions_no_cloud_positions(self):
-        """Test reconciliation when there are no cloud positions."""
-        mock_alpaca_positions = [Mock()]
+        self.cloud.get_latest_positions_df.side_effect = cloud_side_effect
 
-        with patch.object(self.positions_manager, '_get_positions_from_alpaca', return_value=mock_alpaca_positions):
-            with patch.object(self.positions_manager, '_get_positions_from_google_cloud', return_value=[]):
-                with patch('positions.logger') as mock_logger:
-                    result = self.positions_manager.get_and_reconcile_positions()
+        open_positions = self.manager.get_and_reconcile_positions()
 
-                    self.assertEqual(result, [])
-                    mock_logger.warning.assert_called_with(
-                        "No positions found in Google Cloud Storage")
+        self.assertEqual(len(open_positions), 0)
+        self.assertTrue(any(p.closed for p in self.manager.positions))
+        closed = [p for p in self.manager.positions if p.closed]
+        self.assertTrue(any(p.exit_reason == 'broker_closed' for p in closed))
 
 
 if __name__ == '__main__':

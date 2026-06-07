@@ -29,6 +29,7 @@ class Position:
     exit_date: Optional[datetime] = None
     exit_price: Optional[float] = None
     realized_return: Optional[float] = None
+    exit_reason: Optional[str] = None
     closed: bool = False
 
 
@@ -91,6 +92,7 @@ class PositionsManager:
                     'exit_date': pd.NaT,
                     'exit_price': np.nan,
                     'realized_return': np.nan,
+                    'exit_reason': None,
                     'closed': False,
                 })
             else:
@@ -171,6 +173,7 @@ class PositionsManager:
                         'exit_date': pd.NaT,
                         'exit_price': np.nan,
                         'realized_return': np.nan,
+                        'exit_reason': None,
                         'closed': False,
                     })
                 cloud_positions = pd.concat(
@@ -222,6 +225,8 @@ class PositionsManager:
 
                     cloud_positions.loc[cloud_positions['symbol']
                                         == symbol, 'closed'] = True
+                    cloud_positions.loc[cloud_positions['symbol']
+                                        == symbol, 'exit_reason'] = 'broker_closed'
                     cloud_positions['closed'] = cloud_positions['closed'].astype(
                         bool)
 
@@ -280,6 +285,8 @@ class PositionsManager:
                         row['exit_price']) else None,
                     realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
                         row['realized_return']) else None,
+                    exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
+                        row['exit_reason']) and row['exit_reason'] is not None else None,
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=row['exit_date'] if 'exit_date' in row else None
                 )
@@ -316,6 +323,8 @@ class PositionsManager:
                         row['exit_price']) else None,
                     realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
                         row['realized_return']) else None,
+                    exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
+                        row['exit_reason']) and row['exit_reason'] is not None else None,
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=row['exit_date'] if 'exit_date' in row else None
                 )
@@ -350,6 +359,8 @@ class PositionsManager:
                         row['exit_price']) else None,
                     realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
                         row['realized_return']) else None,
+                    exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
+                        row['exit_reason']) and row['exit_reason'] is not None else None,
                     closed=True,
                     exit_date=row['exit_date'] if 'exit_date' in row else datetime.now(
                     )

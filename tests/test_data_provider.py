@@ -2,19 +2,18 @@
 """
 Unit tests for the data_provider module.
 """
-import asyncio
 import os
 import sys
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
-import numpy as np
 import pandas as pd
-from data_provider import BarData, DataProvider, TechnicalIndicators
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
+
+from data_provider import BarData, DataProvider, TechnicalIndicators  # noqa: E402
 
 
 class TestBarData(unittest.TestCase):
@@ -22,7 +21,7 @@ class TestBarData(unittest.TestCase):
 
     def test_bar_data_creation(self):
         """Test creating a BarData object."""
-        bar = BarData(
+        bar_data = BarData(
             symbol="AAPL",
             timestamp=datetime(2025, 6, 14, 10, 30, 0),
             open=150.00,
@@ -32,12 +31,12 @@ class TestBarData(unittest.TestCase):
             volume=1000000
         )
 
-        self.assertEqual(bar.symbol, "AAPL")
-        self.assertEqual(bar.open, 150.00)
-        self.assertEqual(bar.high, 152.50)
-        self.assertEqual(bar.low, 149.50)
-        self.assertEqual(bar.close, 151.00)
-        self.assertEqual(bar.volume, 1000000)
+        self.assertEqual(bar_data.symbol, "AAPL")
+        self.assertEqual(bar_data.open, 150.00)
+        self.assertEqual(bar_data.high, 152.50)
+        self.assertEqual(bar_data.low, 149.50)
+        self.assertEqual(bar_data.close, 151.00)
+        self.assertEqual(bar_data.volume, 1000000)
 
 
 class TestDataProvider(unittest.TestCase):
@@ -51,7 +50,7 @@ class TestDataProvider(unittest.TestCase):
             'base_url': 'https://paper-api.alpaca.markets'
         }
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_data_provider_init_with_credentials(self, mock_config):
         """Test DataProvider initialization with valid credentials."""
         mock_config.get_alpaca_config.return_value = self.mock_config
@@ -66,7 +65,7 @@ class TestDataProvider(unittest.TestCase):
             mock_historical.assert_called_once()
             mock_trading.assert_called_once()
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_data_provider_init_without_credentials(self, mock_config):
         """Test DataProvider initialization without credentials."""
         mock_config.get_alpaca_config.return_value = {
@@ -79,7 +78,7 @@ class TestDataProvider(unittest.TestCase):
             self.assertIsNone(data_provider.trading_client)
             mock_logger.warning.assert_called()
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_get_historical_data_success(self, mock_config):
         """Test successful historical data retrieval."""
         mock_config.get_alpaca_config.return_value = self.mock_config
@@ -102,13 +101,16 @@ class TestDataProvider(unittest.TestCase):
 
             data_provider = DataProvider()
 
-            result = data_provider.get_historical_data('AAPL', days_back=30)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+            result = data_provider.get_single_stock_bars(
+                'AAPL', start_date, end_date)
 
             self.assertIsInstance(result, pd.DataFrame)
             self.assertEqual(len(result), 1)
             self.assertEqual(result.iloc[0]['close'], 151.0)
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_get_historical_data_no_client(self, mock_config):
         """Test historical data retrieval when client is None."""
         mock_config.get_alpaca_config.return_value = {
@@ -116,11 +118,14 @@ class TestDataProvider(unittest.TestCase):
 
         data_provider = DataProvider()
 
-        result = data_provider.get_historical_data('AAPL', days_back=30)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=30)
+        result = data_provider.get_single_stock_bars(
+            'AAPL', start_date, end_date)
 
-        self.assertIsNone(result)
+        self.assertTrue(result.empty)
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_get_historical_data_exception(self, mock_config):
         """Test historical data retrieval with exception."""
         mock_config.get_alpaca_config.return_value = self.mock_config
@@ -133,13 +138,15 @@ class TestDataProvider(unittest.TestCase):
             with patch('data_provider.logger') as mock_logger:
                 data_provider = DataProvider()
 
-                result = data_provider.get_historical_data(
-                    'AAPL', days_back=30)
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=30)
+                result = data_provider.get_single_stock_bars(
+                    'AAPL', start_date, end_date)
 
-                self.assertIsNone(result)
+                self.assertTrue(result.empty)
                 mock_logger.error.assert_called()
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_get_multiple_stocks_data(self, mock_config):
         """Test getting data for multiple stocks."""
         mock_config.get_alpaca_config.return_value = self.mock_config
@@ -153,28 +160,30 @@ class TestDataProvider(unittest.TestCase):
         mock_bar_tsla.timestamp = datetime(2025, 6, 14, 10, 30, 0)
         mock_bar_tsla.close = 250.0
 
-        mock_response = {
-            'AAPL': [mock_bar_aapl],
-            'TSLA': [mock_bar_tsla]
-        }
-
         with patch('data_provider.StockHistoricalDataClient') as mock_client_class:
             mock_client = Mock()
-            mock_client.get_stock_bars.return_value = mock_response
+            # Return different responses per call
+            mock_client.get_stock_bars.side_effect = [
+                {'AAPL': [mock_bar_aapl]},
+                {'TSLA': [mock_bar_tsla]},
+            ]
             mock_client_class.return_value = mock_client
 
             data_provider = DataProvider()
 
-            result = data_provider.get_multiple_stocks_data(
-                ['AAPL', 'TSLA'], days_back=30)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+            result_aapl = data_provider.get_single_stock_bars(
+                'AAPL', start_date, end_date)
+            result_tsla = data_provider.get_single_stock_bars(
+                'TSLA', start_date, end_date)
 
-            self.assertIsInstance(result, dict)
-            self.assertIn('AAPL', result)
-            self.assertIn('TSLA', result)
-            self.assertIsInstance(result['AAPL'], pd.DataFrame)
-            self.assertIsInstance(result['TSLA'], pd.DataFrame)
+            self.assertIsInstance(result_aapl, pd.DataFrame)
+            self.assertIsInstance(result_tsla, pd.DataFrame)
+            self.assertEqual(result_aapl.iloc[0]['close'], 151.0)
+            self.assertEqual(result_tsla.iloc[0]['close'], 250.0)
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_get_current_price(self, mock_config):
         """Test getting current price for a symbol."""
         mock_config.get_alpaca_config.return_value = self.mock_config
@@ -195,7 +204,7 @@ class TestDataProvider(unittest.TestCase):
 
             self.assertEqual(result, 151.50)
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_get_current_price_no_data(self, mock_config):
         """Test getting current price when no data is available."""
         mock_config.get_alpaca_config.return_value = self.mock_config
@@ -211,34 +220,25 @@ class TestDataProvider(unittest.TestCase):
 
             self.assertIsNone(result)
 
-    @patch('data_provider.config')
+    @patch('data_provider.globalConfig')
     def test_get_market_snapshot(self, mock_config):
-        """Test getting market snapshot."""
+        """Test getting current snapshot for symbols."""
         mock_config.get_alpaca_config.return_value = self.mock_config
-
-        # Mock multiple snapshots
-        mock_snapshot_aapl = Mock()
-        mock_snapshot_aapl.latest_trade.price = 151.50
-        mock_snapshot_tsla = Mock()
-        mock_snapshot_tsla.latest_trade.price = 250.75
-
-        mock_response = {
-            'AAPL': mock_snapshot_aapl,
-            'TSLA': mock_snapshot_tsla
-        }
 
         with patch('data_provider.StockHistoricalDataClient') as mock_client_class:
             mock_client = Mock()
-            mock_client.get_stock_snapshots.return_value = mock_response
+            # get_current_snapshot calls get_stock_snapshot (singular), returns dict
+            mock_client.get_stock_snapshot.return_value = {
+                'AAPL': {'latest_trade': {'price': 151.50, 'size': 100}}}
             mock_client_class.return_value = mock_client
 
             data_provider = DataProvider()
 
-            result = data_provider.get_market_snapshot(['AAPL', 'TSLA'])
+            result = data_provider.get_current_snapshot('AAPL')
 
             self.assertIsInstance(result, dict)
-            self.assertEqual(result['AAPL'], 151.50)
-            self.assertEqual(result['TSLA'], 250.75)
+            self.assertIn('price', result)
+            self.assertEqual(result['price'], 151.50)
 
 
 class TestTechnicalIndicators(unittest.TestCase):
