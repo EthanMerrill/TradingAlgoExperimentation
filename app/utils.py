@@ -14,6 +14,28 @@ import pandas as pd
 import pytz
 
 
+def parse_dt(value, default=None):
+    """Parse a value to datetime, handling strings from CSV loads.
+
+    pd.read_csv without parse_dates returns dates as strings.  This helper
+    ensures that any string date is converted to a proper datetime so that
+    arithmetic like ``now - entry_date`` works without a TypeError.
+    """
+    if value is None:
+        return default
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime()
+    try:
+        return pd.to_datetime(value).to_pydatetime()
+    except (ValueError, TypeError):
+        logging.getLogger(__name__).warning(
+            "Could not parse date value: %s, using default", value
+        )
+        return default
+
+
 def setup_logging(level: str = 'INFO') -> None:
     """
     Set up logging configuration.

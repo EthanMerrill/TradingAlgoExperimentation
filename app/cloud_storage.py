@@ -362,7 +362,14 @@ class CloudStorage:
                 return pd.DataFrame()
 
             csv_string = blob.download_as_text()
-            df = pd.read_csv(io.StringIO(csv_string))
+            # Parse date columns when present; fall back gracefully for legacy
+            # files that don't have entry_date / exit_date columns yet.
+            date_cols = ['entry_date', 'exit_date']
+            try:
+                df = pd.read_csv(io.StringIO(csv_string),
+                                 parse_dates=date_cols)
+            except ValueError:
+                df = pd.read_csv(io.StringIO(csv_string))
 
             logger.info("Loaded position entries from %s", filename)
             return df

@@ -20,6 +20,7 @@ from utils import (  # noqa: E402
     format_currency,
     format_percentage,
     is_trading_day,
+    parse_dt,
     setup_logging,
 )
 
@@ -178,6 +179,58 @@ class TestProgressIndicator(unittest.TestCase):
         progress.finish("Done")
         mock_write.assert_called()
         mock_flush.assert_called()
+
+
+class TestParseDt(unittest.TestCase):
+    """Tests for parse_dt — ensures datetime subtraction never fails on CSV strings."""
+
+    def test_parse_dt_datetime_passthrough(self):
+        """datetime objects should pass through unchanged."""
+        dt = datetime(2025, 6, 14, 10, 30)
+        result = parse_dt(dt)
+        self.assertEqual(result, dt)
+        self.assertIsInstance(result, datetime)
+
+    def test_parse_dt_pandas_timestamp(self):
+        """pd.Timestamp should be converted to datetime."""
+        ts = pd.Timestamp("2025-06-14 10:30:00")
+        result = parse_dt(ts)
+        self.assertIsInstance(result, datetime)
+        self.assertEqual(result, datetime(2025, 6, 14, 10, 30))
+
+    def test_parse_dt_string(self):
+        """String from CSV should be converted to datetime."""
+        result = parse_dt("2025-06-14")
+        self.assertIsInstance(result, datetime)
+        self.assertEqual(result, datetime(2025, 6, 14))
+
+    def test_parse_dt_string_with_time(self):
+        """String with time portion should parse correctly."""
+        result = parse_dt("2025-06-14 10:30:00")
+        self.assertIsInstance(result, datetime)
+        self.assertEqual(result, datetime(2025, 6, 14, 10, 30))
+
+    def test_parse_dt_none_returns_default(self):
+        """None should return the default value."""
+        self.assertIsNone(parse_dt(None))
+        self.assertEqual(parse_dt(None, default="fallback"), "fallback")
+
+    def test_parse_dt_invalid_string_returns_default(self):
+        """Invalid date string should return default and not raise."""
+        result = parse_dt("not-a-date", default=None)
+        self.assertIsNone(result)
+
+    def test_parse_dt_string_allows_subtraction(self):
+        """Regression: verify that a parsed string date can be subtracted from datetime."""
+        now = datetime(2025, 6, 14, 12, 0)
+        entry_date = parse_dt("2025-06-07")
+        days_held = (now - entry_date).days
+        self.assertEqual(days_held, 7)
+
+    def test_parse_dt_float_timestamp(self):
+        """Unix-style float timestamps should parse correctly."""
+        result = parse_dt(1718312400.0)  # 2024-06-14 midnight UTC
+        self.assertIsInstance(result, datetime)
 
 
 if __name__ == '__main__':

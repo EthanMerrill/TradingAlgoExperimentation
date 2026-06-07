@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytz
 from data_provider import TechnicalIndicators, data_provider
-from utils import ProgressIndicator
+from utils import PerformanceMetrics, ProgressIndicator
 
 from config import globalConfig  # type: ignore
 
@@ -36,20 +36,23 @@ class BacktestResult:
     max_drawdown: float
     sharpe_ratio: float
     profitable: bool
+    calmar_ratio: float = 0.0
     # Current RSI value at time of backtest
     current_rsi: Optional[float] = None
     # Add trade details to the result
     trade_details: Optional[List[Dict]] = None
+    direction: str = "long"
 
 
 class RSIStrategy:
     """Vectorized RSI trading strategy."""
 
-    def __init__(self, rsi_period: int, rsi_lower: int, rsi_upper: int, max_hold_days: Optional[int] = None):
+    def __init__(self, rsi_period: int, rsi_lower: int, rsi_upper: int, max_hold_days: Optional[int] = None, direction: str = "long"):
         self.rsi_period = rsi_period
         self.rsi_lower = rsi_lower
         self.rsi_upper = rsi_upper
         self.max_hold_days = max_hold_days or globalConfig.MAX_HOLD_DAYS
+        self.direction = direction  # "long" or "short"
 
     @staticmethod
     def calculate_price_for_target_rsi(data: pd.DataFrame, target_rsi: float, rsi_period: int = 14) -> Optional[float]:
@@ -259,9 +262,12 @@ class RSIStrategy:
                 returns['portfolio_value']),
             sharpe_ratio=self._calculate_sharpe_ratio(
                 returns['daily_returns']),
+            calmar_ratio=PerformanceMetrics.calculate_calmar_ratio(
+                returns['daily_returns'], returns['portfolio_value']),
             profitable=total_return > 0,
             current_rsi=current_rsi,
-            trade_details=trade_details
+            trade_details=trade_details,
+            direction=self.direction
         )
 
     def _generate_signals(self, data: pd.DataFrame, rsi: pd.Series) -> pd.DataFrame:
@@ -269,6 +275,10 @@ class RSIStrategy:
 
         Exit priority (highest to lowest): RSI cross > stop-loss > take-profit > max-hold-days.
         This mirrors live bracket-order OCO logic where stop-loss and take-profit compete.
+
+        For short direction: entry = RSI cross-above rsi_upper, cover = price below
+        rsi-implied target (rsi_lower) or RSI cross-below rsi_lower or stop-loss or max hold.
+        Position values: 1 = long, -1 = short, 0 = flat.
         """
         signals = pd.DataFrame(index=data.index)
         signals['rsi'] = rsi
@@ -277,13 +287,20 @@ class RSIStrategy:
         signals['sell_signal'] = False
         signals['sell_reason'] = None
 
-        # Buy when RSI crosses below lower threshold
-        signals['buy_signal'] = (rsi < self.rsi_lower) & (
-            rsi.shift(1) >= self.rsi_lower)
-
-        # Sell when RSI crosses above upper threshold (pre-computed; loop may add more)
-        signals['sell_signal'] = (rsi > self.rsi_upper) & (
-            rsi.shift(1) <= self.rsi_upper)
+        if self.direction == "long":
+            # Buy when RSI crosses below lower threshold
+            signals['buy_signal'] = (rsi < self.rsi_lower) & (
+                rsi.shift(1) >= self.rsi_lower)
+            # Sell when RSI crosses above upper threshold
+            signals['sell_signal'] = (rsi > self.rsi_upper) & (
+                rsi.shift(1) <= self.rsi_upper)
+        else:  # short
+            # Short-sell when RSI crosses ABOVE upper threshold
+            signals['buy_signal'] = (rsi > self.rsi_upper) & (
+                rsi.shift(1) <= self.rsi_upper)
+            # Cover when RSI crosses BELOW lower threshold
+            signals['sell_signal'] = (rsi < self.rsi_lower) & (
+                rsi.shift(1) >= self.rsi_lower)
 
         # Mark pre-computed RSI-cross sells with their reason
         signals.loc[signals['sell_signal'], 'sell_reason'] = 'rsi_cross'
@@ -292,81 +309,93 @@ class RSIStrategy:
         position = 0
         entry_date = None
         entry_price = None
-        take_profit_price = None
+        target_exit_price = None  # RSI-implied take-profit / cover price
         price_col = self._get_price_column(data)
         stop_loss_pct = globalConfig.STOP_LOSS_PCT
 
         for i in range(len(signals)):
             if signals['buy_signal'].iloc[i] and position == 0:
-                position = 1
+                position = 1 if self.direction == "long" else -1
                 entry_date = signals.index[i]
-                # Trades execute on the next bar in _calculate_returns; store that
-                # execution price here so stop-loss / take-profit checks use the same fill basis.
                 exec_i = min(i + 1, len(data) - 1)
                 entry_price = data[price_col].iloc[exec_i]
-                # Compute RSI-implied take-profit price using data available at entry.
-                # This matches the live engine's initial take-profit calculation,
-                # replacing the fixed-percentage approach for backtest/live parity.
-                # Guard: skip if insufficient history (mirrors signal-generation guard).
+                # Compute RSI-implied exit price using data available at entry.
                 if exec_i >= self.rsi_period:
-                    take_profit_price = RSIStrategy.calculate_price_for_target_rsi(
-                        data.iloc[:exec_i + 1], self.rsi_upper, self.rsi_period
+                    target_rsi_exit = self.rsi_upper if self.direction == "long" else self.rsi_lower
+                    target_exit_price = RSIStrategy.calculate_price_for_target_rsi(
+                        data.iloc[:exec_i +
+                                  1], target_rsi_exit, self.rsi_period
                     )
                 else:
-                    take_profit_price = None
-            elif signals['sell_signal'].iloc[i] and position == 1:
+                    target_exit_price = None
+            elif signals['sell_signal'].iloc[i] and position != 0:
                 position = 0
                 entry_date = None
                 entry_price = None
-                take_profit_price = None
-            elif position == 1 and entry_date is not None:
-                # Trigger stop-loss exit when price falls below configured threshold.
-                if entry_price is not None and data[price_col].iloc[i] <= entry_price * (1 - stop_loss_pct):
+                target_exit_price = None
+            elif position != 0 and entry_date is not None:
+                should_exit, reason = self._check_exit_conditions(
+                    data, signals, i, entry_price, target_exit_price, entry_date, price_col
+                )
+                if should_exit:
                     signals.at[signals.index[i], 'sell_signal'] = True
-                    signals.at[signals.index[i], 'sell_reason'] = 'stop_loss'
+                    signals.at[signals.index[i], 'sell_reason'] = reason
                     position = 0
                     entry_date = None
                     entry_price = None
-                    take_profit_price = None
+                    target_exit_price = None
                     signals.at[signals.index[i], 'position'] = position
                     continue
-
-                # Check RSI-implied take-profit price target.
-                # Uses the same calculate_price_for_target_rsi() as the live engine
-                # for backtest/live parity. Falls back to fixed percentage if None.
-                effective_take_profit = take_profit_price
-                if effective_take_profit is None:
-                    effective_take_profit = entry_price * \
-                        (1 + globalConfig.TAKE_PROFIT_PCT)
-                if entry_price is not None and data[price_col].iloc[i] >= effective_take_profit:
-                    signals.at[signals.index[i], 'sell_signal'] = True
-                    signals.at[signals.index[i], 'sell_reason'] = (
-                        'take_profit' if take_profit_price is not None else 'take_profit_fallback'
-                    )
-                    position = 0
-                    entry_date = None
-                    entry_price = None
-                    take_profit_price = None
-                    signals.at[signals.index[i], 'position'] = position
-                    continue
-
-                # Check max hold period
-                days_held = (signals.index[i] - entry_date).days
-                if days_held >= self.max_hold_days:
-                    signals.at[signals.index[i], 'sell_signal'] = True
-                    signals.at[signals.index[i],
-                               'sell_reason'] = 'max_hold_days'
-                    position = 0
-                    entry_date = None
-                    entry_price = None
-                    take_profit_price = None
 
             signals.at[signals.index[i], 'position'] = position
 
         return signals
 
+    def _check_exit_conditions(self, data: pd.DataFrame, signals: pd.DataFrame, i: int,
+                               entry_price: Optional[float], target_exit_price: Optional[float],
+                               entry_date: pd.Timestamp, price_col: str) -> Tuple[bool, Optional[str]]:
+        """Check all exit conditions for an open position. Returns (should_exit, reason)."""
+        current_price = data[price_col].iloc[i]
+        stop_loss_pct = globalConfig.STOP_LOSS_PCT
+        days_held = (signals.index[i] - entry_date).days
+
+        if self.direction == "long":
+            # Stop-loss: price falls below entry * (1 - stop_loss_pct)
+            if entry_price is not None and current_price <= entry_price * (1 - stop_loss_pct):
+                return True, 'stop_loss'
+            # Take-profit: price rises above target
+            effective_target = target_exit_price
+            if effective_target is None:
+                effective_target = entry_price * \
+                    (1 + globalConfig.TAKE_PROFIT_PCT) if entry_price else None
+            if entry_price is not None and effective_target is not None and current_price >= effective_target:
+                reason = 'take_profit' if target_exit_price is not None else 'take_profit_fallback'
+                return True, reason
+        else:  # short
+            # Stop-loss: price rises above entry * (1 + stop_loss_pct)
+            if entry_price is not None and current_price >= entry_price * (1 + stop_loss_pct):
+                return True, 'stop_loss'
+            # Cover: price falls below RSI-implied target (rsi_lower)
+            effective_target = target_exit_price
+            if effective_target is None:
+                effective_target = entry_price * \
+                    (1 - globalConfig.TAKE_PROFIT_PCT) if entry_price else None
+            if entry_price is not None and effective_target is not None and current_price <= effective_target:
+                reason = 'take_profit' if target_exit_price is not None else 'take_profit_fallback'
+                return True, reason
+
+        # Max hold days (common to both directions)
+        if days_held >= self.max_hold_days:
+            return True, 'max_hold_days'
+
+        return False, None
+
     def _calculate_returns(self, data: pd.DataFrame, signals: pd.DataFrame, initial_cash: float) -> pd.DataFrame:
-        """Calculate portfolio returns based on signals."""
+        """Calculate portfolio returns based on signals.
+
+        For longs (position=1): buy shares with cash, portfolio = cash + shares * price.
+        For shorts (position=-1): sell borrowed shares for cash, portfolio = cash - shares * price.
+        """
         logger.debug(
             f"Calculating returns with initial cash: {initial_cash}, RSI({self.rsi_period}, {self.rsi_lower}, {self.rsi_upper})")
         returns = pd.DataFrame(index=data.index)
@@ -401,19 +430,30 @@ class RSIStrategy:
             curr_position = returns['position'].iloc[i]
             price = returns['price'].iloc[i]
 
-            # Buy signal
             if curr_position == 1 and prev_position == 0:
+                # Enter long: use cash to buy shares
                 shares = cash / price
                 cash = 0.0
                 trade_count += 1
-            # Sell signal
             elif curr_position == 0 and prev_position == 1:
+                # Exit long: sell shares for cash
                 cash = shares * price
                 shares = 0.0
+            elif curr_position == -1 and prev_position == 0:
+                # Enter short: sell borrowed shares, receive cash
+                shares = cash / price
+                cash = cash + shares * price
+                trade_count += 1
+            elif curr_position == 0 and prev_position == -1:
+                # Cover short: buy back shares with cash
+                cash = cash - shares * price
+                shares = 0.0
+            # portfolio_value = cash + (position * shares * price)
+            # position is 1 for long (adds), -1 for short (subtracts)
             returns.at[returns.index[i], 'cash'] = cash
             returns.at[returns.index[i], 'shares'] = shares
             returns.at[returns.index[i],
-                       'portfolio_value'] = cash + (shares * price)
+                       'portfolio_value'] = cash + (curr_position * shares * price)
 
         # Calculate daily returns
         returns['daily_returns'] = returns['portfolio_value'].pct_change().fillna(0)
@@ -434,7 +474,7 @@ class RSIStrategy:
         entry_date = None
         price_col = self._get_price_column(data)
 
-        # Track open-position state so duplicate buy-crosses (while already long)
+        # Track open-position state so duplicate crosses (while already in position)
         # don't overwrite entry_price and corrupt win_rate / num_trades.
         # Prices use the bar *after* the signal to match _calculate_returns execution.
         in_position = False
@@ -454,7 +494,12 @@ class RSIStrategy:
                 if exit_reason is None or (hasattr(exit_reason, '__len__') and len(exit_reason) == 0):
                     exit_reason = 'unknown'
 
-                trade_return = (exit_price / entry_price) - 1
+                # Return calculation depends on direction
+                if self.direction == "long":
+                    trade_return = (exit_price / entry_price) - 1
+                else:  # short: profit when price drops
+                    trade_return = (entry_price / exit_price) - 1
+
                 duration = (exit_date - entry_date).days
 
                 trades.append({
@@ -464,7 +509,8 @@ class RSIStrategy:
                     'exit_price': exit_price,
                     'return': trade_return,
                     'duration': duration,
-                    'exit_reason': exit_reason
+                    'exit_reason': exit_reason,
+                    'direction': self.direction
                 })
 
                 entry_price = None
@@ -518,8 +564,10 @@ class RSIStrategy:
             avg_trade_duration=0.0,
             max_drawdown=0.0,
             sharpe_ratio=0.0,
+            calmar_ratio=0.0,
             profitable=False,
-            current_rsi=None
+            current_rsi=None,
+            direction=self.direction
         )
 
     def build_consolidated_trades_df(self, results: List[BacktestResult]) -> pd.DataFrame:
@@ -551,7 +599,8 @@ class RSIStrategy:
                             'exit_price': trade['exit_price'],
                             'return': trade['return'],
                             'duration': trade['duration'],
-                            'exit_reason': trade.get('exit_reason', 'unknown')
+                            'exit_reason': trade.get('exit_reason', 'unknown'),
+                            'direction': trade.get('direction', result.direction)
                         }
                         all_trades.append(trade_record)
 
@@ -589,7 +638,7 @@ class RSIStrategy:
 
             # Reorder columns for better readability
             final_columns = [
-                'symbol', 'rsi_period', 'rsi_lower', 'rsi_upper',
+                'symbol', 'rsi_period', 'rsi_lower', 'rsi_upper', 'direction',
                 'entry_date_est', 'entry_price', 'exit_date_est', 'exit_price',
                 'return', 'duration', 'exit_reason'
             ]
@@ -625,7 +674,18 @@ class StrategyOptimizer:
         self.rsi_uppers = list(range(*globalConfig.RSI_UPPER_RANGE))
         self.last_consolidated_trades_df = pd.DataFrame()
 
-    def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime) -> Optional[BacktestResult]:
+    @staticmethod
+    def _composite_score(result: BacktestResult) -> float:
+        """Compute composite score from alpha (%), Sharpe, and Calmar ratios.
+
+        Each component is scaled to contribute roughly equally:
+          - alpha_pct = alpha * 100  (e.g., 0.05 → 5.0)
+          - sharpe_ratio              (typically 0–3)
+          - calmar_ratio             (typically 0–5)
+        """
+        return (result.alpha * 100) + result.sharpe_ratio + result.calmar_ratio
+
+    def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime, direction: str = "long") -> Optional[BacktestResult]:
         """
         Optimize RSI parameters for a single symbol.
 
@@ -633,6 +693,7 @@ class StrategyOptimizer:
             symbol: Stock symbol
             start_date: Backtest start date
             end_date: Backtest end date
+            direction: "long" or "short"
 
         Returns:
             Best BacktestResult or None if optimization fails
@@ -720,10 +781,11 @@ class StrategyOptimizer:
                             tested_set.add((rsi_period, rsi_lower, rsi_upper))
 
                             strategy = RSIStrategy(
-                                rsi_period, rsi_lower, rsi_upper)
+                                rsi_period, rsi_lower, rsi_upper,
+                                direction=direction)
                             result = strategy.backtest_with_rsi(
                                 data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
-                            score = result.alpha
+                            score = StrategyOptimizer._composite_score(result)
 
                             if result.profitable:
                                 coarse_candidates.append(
@@ -771,17 +833,19 @@ class StrategyOptimizer:
                                 fine_count += 1
 
                                 strategy = RSIStrategy(
-                                    c_period, rsi_lower, rsi_upper)
+                                    c_period, rsi_lower, rsi_upper,
+                                    direction=direction)
                                 result = strategy.backtest_with_rsi(
                                     data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
-                                score = result.alpha
+                                score = StrategyOptimizer._composite_score(
+                                    result)
 
                                 if score > best_score and result.profitable:
                                     best_score = score
                                     best_result = result
                                     logger.debug(
-                                        "🎯 %s: New best — RSI(%d, %d, %d) Alpha: %.2f%%",
-                                        symbol, c_period, rsi_lower, rsi_upper, score * 100
+                                        "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
+                                        symbol, c_period, rsi_lower, rsi_upper, score
                                     )
 
                     logger.debug(
@@ -801,25 +865,31 @@ class StrategyOptimizer:
                             tested_combinations += 1
 
                             strategy = RSIStrategy(
-                                rsi_period, rsi_lower, rsi_upper)
+                                rsi_period, rsi_lower, rsi_upper,
+                                direction=direction)
                             result = strategy.backtest_with_rsi(
                                 data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
-                            score = result.alpha
+                            score = StrategyOptimizer._composite_score(result)
 
                             if score > best_score and result.profitable:
                                 best_score = score
                                 best_result = result
                                 logger.debug(
-                                    "🎯 %s: New best — RSI(%d, %d, %d) Alpha: %.2f%%",
-                                    symbol, rsi_period, rsi_lower, rsi_upper, score * 100
+                                    "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
+                                    symbol, rsi_period, rsi_lower, rsi_upper, score
                                 )
 
             if best_result:
+                best_composite = StrategyOptimizer._composite_score(
+                    best_result)
                 logger.debug(
                     "✅ %s: Optimization complete — "
-                    "Best: RSI(%d, %d, %d) Alpha: %.2f%%, Trades: %d (tested %d combos)",
+                    "Best: RSI(%d, %d, %d) Score: %.2f "
+                    "(α=%.2f%%, Sharpe=%.2f, Calmar=%.2f), Trades: %d (tested %d combos)",
                     symbol, best_result.rsi_period, best_result.rsi_lower,
-                    best_result.rsi_upper, best_result.alpha * 100,
+                    best_result.rsi_upper, best_composite,
+                    best_result.alpha * 100, best_result.sharpe_ratio,
+                    best_result.calmar_ratio,
                     best_result.num_trades, tested_combinations
                 )
             else:
@@ -861,6 +931,8 @@ class StrategyOptimizer:
             f"📅 Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         logger.info(
             f"⚙️  RSI Parameters - Periods: {self.rsi_periods}, Lower: {self.rsi_lowers}, Upper: {self.rsi_uppers}")
+        logger.info(
+            f"📉 Short selling: {'ENABLED' if globalConfig.ENABLE_SHORT_SELLING else 'DISABLED'}")
         logger.info("=" * 60)
 
         # Initialize progress indicator
@@ -887,9 +959,20 @@ class StrategyOptimizer:
                     self.optimize_symbol,
                     symbol,
                     start_date,
-                    end_date
+                    end_date,
+                    "long"
                 )
                 tasks.append(task)
+                if globalConfig.ENABLE_SHORT_SELLING:
+                    short_task = loop.run_in_executor(
+                        None,
+                        self.optimize_symbol,
+                        symbol,
+                        start_date,
+                        end_date,
+                        "short"
+                    )
+                    tasks.append(short_task)
 
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 

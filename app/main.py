@@ -19,7 +19,7 @@ from utils import TradingCalendar, setup_logging
 from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
-TEST_MODE_UNIVERSE_LIMIT = 100
+TEST_MODE_UNIVERSE_LIMIT = 50
 
 
 class TradingAlgorithm:
