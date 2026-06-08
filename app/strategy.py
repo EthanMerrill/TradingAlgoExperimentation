@@ -39,6 +39,7 @@ class BacktestResult:
     sharpe_ratio: float
     profitable: bool
     calmar_ratio: float = 0.0
+    composite_score: float = 0.0
     # Current RSI value at time of backtest
     current_rsi: Optional[float] = None
     # Add trade details to the result
@@ -249,6 +250,11 @@ class RSIStrategy:
 
         trades_summary, trade_details = self._analyze_trades(signals, data)
 
+        # Precompute risk metrics once to avoid redundant calculations
+        sharpe = self._calculate_sharpe_ratio(returns['daily_returns'])
+        calmar = PerformanceMetrics.calculate_calmar_ratio(
+            returns['daily_returns'], returns['portfolio_value'])
+
         return BacktestResult(
             symbol=symbol,
             rsi_period=self.rsi_period,
@@ -262,10 +268,10 @@ class RSIStrategy:
             avg_trade_duration=trades_summary['avg_duration'],
             max_drawdown=self._calculate_max_drawdown(
                 returns['portfolio_value']),
-            sharpe_ratio=self._calculate_sharpe_ratio(
-                returns['daily_returns']),
-            calmar_ratio=PerformanceMetrics.calculate_calmar_ratio(
-                returns['daily_returns'], returns['portfolio_value']),
+            sharpe_ratio=sharpe,
+            calmar_ratio=calmar,
+            composite_score=StrategyOptimizer._composite_score_from_parts(
+                alpha, sharpe, calmar),
             profitable=total_return > 0,
             current_rsi=current_rsi,
             trade_details=trade_details,
@@ -567,6 +573,7 @@ class RSIStrategy:
             max_drawdown=0.0,
             sharpe_ratio=0.0,
             calmar_ratio=0.0,
+            composite_score=0.0,
             profitable=False,
             current_rsi=None,
             direction=self.direction
@@ -685,7 +692,17 @@ class StrategyOptimizer:
           - sharpe_ratio              (typically 0–3)
           - calmar_ratio             (typically 0–5)
         """
-        return (result.alpha * 100) + result.sharpe_ratio + result.calmar_ratio
+        return StrategyOptimizer._composite_score_from_parts(
+            result.alpha, result.sharpe_ratio, result.calmar_ratio
+        )
+
+    @staticmethod
+    def _composite_score_from_parts(alpha: float, sharpe: float, calmar: float) -> float:
+        """Compute composite score from raw component values.
+
+        Useful when a BacktestResult hasn't been built yet (e.g., in _run_backtest_core).
+        """
+        return (alpha * 100) + sharpe + calmar
 
     @staticmethod
     def _test_single_combo(

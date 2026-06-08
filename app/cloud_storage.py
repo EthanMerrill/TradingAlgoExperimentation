@@ -83,6 +83,9 @@ class CloudStorage:
                     'avg_trade_duration': result.avg_trade_duration,
                     'max_drawdown': result.max_drawdown,
                     'sharpe_ratio': result.sharpe_ratio,
+                    'calmar_ratio': result.calmar_ratio,
+                    'composite_score': result.composite_score,
+                    'direction': result.direction,
                     'profitable': result.profitable,
                     'current_rsi': result.current_rsi
                 }
@@ -151,6 +154,9 @@ class CloudStorage:
                     avg_trade_duration=float(row['avg_trade_duration']),
                     max_drawdown=float(row['max_drawdown']),
                     sharpe_ratio=float(row['sharpe_ratio']),
+                    calmar_ratio=float(row.get('calmar_ratio', 0)),
+                    composite_score=float(row.get('composite_score', 0)),
+                    direction=str(row.get('direction', 'long')),
                     profitable=bool(row['profitable']),
                     current_rsi=float(row['current_rsi']) if 'current_rsi' in row and pd.notna(
                         row['current_rsi']) else None

@@ -40,6 +40,7 @@ class TradingOpportunity:
     stop_loss_price: float
     take_profit_price: float
     num_trades: int = 0  # Number of trades in backtest for this symbol
+    composite_score: float = 0.0  # Composite score (alpha% + sharpe + calmar)
     direction: str = "long"  # "long" or "short"
 
 
@@ -124,7 +125,8 @@ class TradingEngine:
                         entry_price=entry_price,
                         stop_loss_price=stop_loss_price,
                         take_profit_price=take_profit_price,
-                        num_trades=result.num_trades
+                        num_trades=result.num_trades,
+                        composite_score=round(result.composite_score, 2)
                     )
 
                     opportunities.append(opportunity)
@@ -220,6 +222,7 @@ class TradingEngine:
                         stop_loss_price=stop_loss_price,
                         take_profit_price=take_profit_price,
                         num_trades=result.num_trades,
+                        composite_score=round(result.composite_score, 2),
                         direction="short"
                     )
 

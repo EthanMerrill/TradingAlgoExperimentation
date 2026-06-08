@@ -58,6 +58,8 @@ class TestTradingEngine(unittest.TestCase):
         r.alpha = alpha
         r.win_rate = win_rate
         r.num_trades = num_trades
+        r.composite_score = 5.0
+        r.direction = "long"
         return r
 
     def _position(self, symbol="AAPL", days_ago=1):

@@ -138,6 +138,7 @@ class PositionsManager:
                     rsi_lower = 30
                     rsi_upper = 70
                     alpha = 0.0
+                    composite_score = 0.0
 
                     if optimizer is not None:
                         try:
@@ -152,6 +153,7 @@ class PositionsManager:
                                 rsi_lower = int(backtest_result.rsi_lower)
                                 rsi_upper = int(backtest_result.rsi_upper)
                                 alpha = float(backtest_result.alpha)
+                                composite_score = float(backtest_result.composite_score)
                         except (ValueError, TypeError, KeyError, RuntimeError) as e:
                             logger.warning(
                                 "Backtest enrichment failed for Alpaca-only symbol %s: %s", symbol, e)
@@ -170,6 +172,7 @@ class PositionsManager:
                         'rsi_lower': rsi_lower,
                         'rsi_upper': rsi_upper,
                         'alpha': alpha,
+                        'composite_score': composite_score,
                         'stop_loss_price': (entry_price * (1 - globalConfig.STOP_LOSS_PCT)) if entry_price > 0 else np.nan,
                         'take_profit_price': (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)) if entry_price > 0 else np.nan,
                         'exit_date': pd.NaT,
