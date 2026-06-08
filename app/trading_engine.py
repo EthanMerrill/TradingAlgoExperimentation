@@ -374,6 +374,10 @@ class TradingEngine:
                 return []
 
             selected_opportunities = opportunities[:max_new_positions]
+
+            if not selected_opportunities:
+                return []
+
             position_allocations = []
 
             # Distribute remaining short capacity evenly

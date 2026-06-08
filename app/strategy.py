@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 # pylint: disable=broad-exception-caught,logging-fstring-interpolation
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
@@ -319,7 +319,6 @@ class RSIStrategy:
         entry_price = None
         target_exit_price = None  # RSI-implied take-profit / cover price
         price_col = self._get_price_column(data)
-        stop_loss_pct = globalConfig.STOP_LOSS_PCT
 
         for i in range(len(signals)):
             if signals['buy_signal'].iloc[i] and position == 0:
@@ -847,6 +846,10 @@ class StrategyOptimizer:
                     )
                     for rsi_period, rsi_lower, rsi_upper, rsi_series in coarse_combos
                 )
+                assert isinstance(
+                    parallel_results, list), "Parallel() returned non-list for coarse grid"
+                parallel_results = cast(
+                    List[Tuple[BacktestResult, int, int, int]], parallel_results)
 
                 for result, rp, rl, ru in parallel_results:
                     score = StrategyOptimizer._composite_score(result)
@@ -905,6 +908,10 @@ class StrategyOptimizer:
                             )
                             for rsi_period, rsi_lower, rsi_upper, rsi_series in fine_combos
                         )
+                        assert isinstance(
+                            fine_results, list), "Parallel() returned non-list for fine grid"
+                        fine_results = cast(
+                            List[Tuple[BacktestResult, int, int, int]], fine_results)
 
                         for result, rp, rl, ru in fine_results:
                             score = StrategyOptimizer._composite_score(result)
@@ -948,6 +955,10 @@ class StrategyOptimizer:
                         )
                         for rsi_period, rsi_lower, rsi_upper, rsi_series in fallback_combos
                     )
+                    assert isinstance(
+                        fallback_results, list), "Parallel() returned non-list for fallback grid"
+                    fallback_results = cast(
+                        List[Tuple[BacktestResult, int, int, int]], fallback_results)
 
                     for result, rp, rl, ru in fallback_results:
                         score = StrategyOptimizer._composite_score(result)

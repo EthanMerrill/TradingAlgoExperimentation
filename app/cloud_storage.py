@@ -237,9 +237,12 @@ class CloudStorage:
 
             filename = f"{globalConfig.get_environment_path('Positions')}/positions_{timestamp}.csv"
 
-            # Round floats before uploading
+            # Round floats before uploading (skip datetime/timedelta columns)
             if isinstance(positions_df, pd.DataFrame):
-                rounded_df = positions_df.round(2)
+                numeric_cols = positions_df.select_dtypes(
+                    include='number').columns
+                rounded_df = positions_df.copy()
+                rounded_df[numeric_cols] = rounded_df[numeric_cols].round(2)
             else:
                 rounded_df = positions_df
 

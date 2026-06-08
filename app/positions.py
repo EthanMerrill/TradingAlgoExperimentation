@@ -153,7 +153,8 @@ class PositionsManager:
                                 rsi_lower = int(backtest_result.rsi_lower)
                                 rsi_upper = int(backtest_result.rsi_upper)
                                 alpha = float(backtest_result.alpha)
-                                composite_score = float(backtest_result.composite_score)
+                                composite_score = float(
+                                    backtest_result.composite_score)
                         except (ValueError, TypeError, KeyError, RuntimeError) as e:
                             logger.warning(
                                 "Backtest enrichment failed for Alpaca-only symbol %s: %s", symbol, e)
@@ -271,7 +272,7 @@ class PositionsManager:
                     current_price=float(
                         row['current_price']) if 'current_price' in row else 0,
                     entry_date=parse_dt(
-                        row['entry_date']) if 'entry_date' in row else datetime.now(),
+                        row['entry_date'], default=datetime.now()),
                     current_rsi=float(row['current_rsi']
                                       ) if 'current_rsi' in row else 0.0,
                     rsi_period=int(row['rsi_period']
@@ -294,7 +295,7 @@ class PositionsManager:
                         row['exit_reason']) and row['exit_reason'] is not None else None,
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=parse_dt(
-                        row['exit_date']) if 'exit_date' in row else None,
+                        row['exit_date'], default=None),
                     side=str(row['side']) if 'side' in row and pd.notna(
                         row['side']) else "long"
                 )
@@ -312,7 +313,7 @@ class PositionsManager:
                     current_price=float(
                         row['current_price']) if 'current_price' in row else 0,
                     entry_date=parse_dt(
-                        row['entry_date']) if 'entry_date' in row else datetime.now(),
+                        row['entry_date'], default=datetime.now()),
                     current_rsi=float(row['current_rsi']
                                       ) if 'current_rsi' in row else 0.0,
                     rsi_period=int(row['rsi_period']
@@ -335,7 +336,7 @@ class PositionsManager:
                         row['exit_reason']) and row['exit_reason'] is not None else None,
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=parse_dt(
-                        row['exit_date']) if 'exit_date' in row else None,
+                        row['exit_date'], default=None),
                     side=str(row['side']) if 'side' in row and pd.notna(
                         row['side']) else "long"
                 )
@@ -351,7 +352,7 @@ class PositionsManager:
                     current_price=float(
                         row['current_price']) if 'current_price' in row else 0,
                     entry_date=parse_dt(
-                        row['entry_date']) if 'entry_date' in row else datetime.now(),
+                        row['entry_date'], default=datetime.now()),
                     current_rsi=float(row['current_rsi']
                                       ) if 'current_rsi' in row else 0.0,
                     rsi_period=int(row['rsi_period']
@@ -374,7 +375,7 @@ class PositionsManager:
                         row['exit_reason']) and row['exit_reason'] is not None else None,
                     closed=True,
                     exit_date=parse_dt(
-                        row['exit_date']) if 'exit_date' in row else datetime.now(),
+                        row['exit_date'], default=datetime.now()),
                     side=str(row['side']) if 'side' in row and pd.notna(
                         row['side']) else "long"
                 )

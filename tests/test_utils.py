@@ -224,6 +224,8 @@ class TestParseDt(unittest.TestCase):
         """Regression: verify that a parsed string date can be subtracted from datetime."""
         now = datetime(2025, 6, 14, 12, 0)
         entry_date = parse_dt("2025-06-07")
+        self.assertIsNotNone(entry_date)
+        assert entry_date is not None  # narrow type for type checker
         days_held = (now - entry_date).days
         self.assertEqual(days_held, 7)
 

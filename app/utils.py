@@ -7,11 +7,19 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypeVar, overload
 
 import numpy as np
 import pandas as pd
 import pytz
+
+_T = TypeVar('_T')
+
+
+@overload
+def parse_dt(value, default: None = None) -> datetime | None: ...
+@overload
+def parse_dt(value, default: _T) -> datetime | _T: ...
 
 
 def parse_dt(value, default=None):
