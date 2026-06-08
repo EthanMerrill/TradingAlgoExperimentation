@@ -4,6 +4,7 @@ Replaces the legacy backtrader-based approach with a modern vectorized implement
 """
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 # pylint: disable=broad-exception-caught,logging-fstring-interpolation
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytz
 from data_provider import TechnicalIndicators, data_provider
+from joblib import Parallel, delayed
 from utils import PerformanceMetrics, ProgressIndicator
 
 from config import globalConfig  # type: ignore
@@ -685,6 +687,34 @@ class StrategyOptimizer:
         """
         return (result.alpha * 100) + result.sharpe_ratio + result.calmar_ratio
 
+    @staticmethod
+    def _test_single_combo(
+        data: pd.DataFrame,
+        symbol: str,
+        rsi_series: pd.Series,
+        rsi_period: int,
+        rsi_lower: int,
+        rsi_upper: int,
+        direction: str,
+        initial_cash: float,
+    ) -> Tuple[BacktestResult, int, int, int]:
+        """Run a single backtest for one parameter combination.
+
+        Extracted as a static method so it's trivially shareable across
+        threads/processes — no mutable instance state, all inputs are
+        read-only primitives or numpy/pandas objects.
+
+        Returns:
+            Tuple of (BacktestResult, rsi_period, rsi_lower, rsi_upper)
+        """
+        strategy = RSIStrategy(
+            rsi_period, rsi_lower, rsi_upper, direction=direction
+        )
+        result = strategy.backtest_with_rsi(
+            data, symbol, rsi_series, initial_cash
+        )
+        return result, rsi_period, rsi_lower, rsi_upper
+
     def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime, direction: str = "long") -> Optional[BacktestResult]:
         """
         Optimize RSI parameters for a single symbol.
@@ -730,6 +760,7 @@ class StrategyOptimizer:
             best_score = -float('inf')
             tested_combinations = 0
             tested_set: set = set()  # dedup between stages
+            n_jobs = globalConfig.N_JOBS
 
             # Determine whether two-stage optimization is worthwhile.
             # Requires at least 3 values in both lower and upper ranges.
@@ -771,37 +802,51 @@ class StrategyOptimizer:
 
                 coarse_candidates: List[Tuple[float, int, int, int]] = []
 
+                # Build flat list of combos for parallel dispatch
+                coarse_combos: List[Tuple[int, int, int, pd.Series]] = []
                 for rsi_period in self.rsi_periods:
                     rsi = rsi_cache[rsi_period]
                     for rsi_lower in coarse_lowers:
                         for rsi_upper in coarse_uppers:
                             if rsi_lower >= rsi_upper:
                                 continue
-                            tested_combinations += 1
                             tested_set.add((rsi_period, rsi_lower, rsi_upper))
+                            coarse_combos.append(
+                                (rsi_period, rsi_lower, rsi_upper, rsi))
 
-                            strategy = RSIStrategy(
-                                rsi_period, rsi_lower, rsi_upper,
-                                direction=direction)
-                            result = strategy.backtest_with_rsi(
-                                data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
-                            score = StrategyOptimizer._composite_score(result)
+                coarse_count = len(coarse_combos)
+                tested_combinations = coarse_count
+                logger.debug(
+                    "🔍 %s: Stage 1/2 — coarse grid (%d lowers × %d uppers × %d periods = %d combos)",
+                    symbol, len(coarse_lowers), len(coarse_uppers),
+                    len(self.rsi_periods), coarse_count
+                )
 
-                            if result.profitable:
-                                coarse_candidates.append(
-                                    (score, rsi_period, rsi_lower, rsi_upper))
+                # Run coarse grid in parallel
+                parallel_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
+                    delayed(StrategyOptimizer._test_single_combo)(
+                        data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
+                        direction, globalConfig.BACKTEST_INIT_CASH
+                    )
+                    for rsi_period, rsi_lower, rsi_upper, rsi_series in coarse_combos
+                )
 
-                            if score > best_score and result.profitable:
-                                best_score = score
-                                best_result = result
+                for result, rp, rl, ru in parallel_results:
+                    score = StrategyOptimizer._composite_score(result)
+                    if result.profitable:
+                        coarse_candidates.append((score, rp, rl, ru))
+                    if score > best_score and result.profitable:
+                        best_score = score
+                        best_result = result
 
                 # Keep top-3 for fine refinement
                 coarse_candidates.sort(key=lambda x: x[0], reverse=True)
                 top_candidates = coarse_candidates[:3]
 
-                # --- Tier 2: Stage 2 — Fine grid around top candidates ---
-                if top_candidates:
-                    fine_count = 0
+                # --- Tier 2: Stage 2 — Fine grid around top candidates (parallel) ---
+                if coarse_candidates:
+
+                    fine_combos: List[Tuple[int, int, int, pd.Series]] = []
                     for _, c_period, c_lower, c_upper in top_candidates:
                         fine_lowers = [
                             x for x in range(
@@ -829,55 +874,73 @@ class StrategyOptimizer:
                                 if key in tested_set:
                                     continue
                                 tested_set.add(key)
-                                tested_combinations += 1
-                                fine_count += 1
+                                fine_combos.append(
+                                    (c_period, rsi_lower, rsi_upper, rsi))
 
-                                strategy = RSIStrategy(
-                                    c_period, rsi_lower, rsi_upper,
-                                    direction=direction)
-                                result = strategy.backtest_with_rsi(
-                                    data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
-                                score = StrategyOptimizer._composite_score(
-                                    result)
+                    if fine_combos:
+                        fine_count = len(fine_combos)
+                        tested_combinations += fine_count
 
-                                if score > best_score and result.profitable:
-                                    best_score = score
-                                    best_result = result
-                                    logger.debug(
-                                        "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
-                                        symbol, c_period, rsi_lower, rsi_upper, score
-                                    )
+                        fine_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
+                            delayed(StrategyOptimizer._test_single_combo)(
+                                data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
+                                direction, globalConfig.BACKTEST_INIT_CASH
+                            )
+                            for rsi_period, rsi_lower, rsi_upper, rsi_series in fine_combos
+                        )
 
-                    logger.debug(
-                        "🔍 %s: Stage 2/2 — %d fine combos tested around top-3 candidates",
-                        symbol, fine_count
-                    )
+                        for result, rp, rl, ru in fine_results:
+                            score = StrategyOptimizer._composite_score(result)
+                            if score > best_score and result.profitable:
+                                best_score = score
+                                best_result = result
+                                logger.debug(
+                                    "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
+                                    symbol, rp, rl, ru, score
+                                )
+
+                        logger.debug(
+                            "🔍 %s: Stage 2/2 — %d fine combos tested around top-3 candidates",
+                            symbol, fine_count
+                        )
+                    else:
+                        logger.debug(
+                            "🔍 %s: Stage 2/2 — no new fine combos to test",
+                            symbol
+                        )
             else:
                 # Fallback: single-stage fine grid with cached RSI (Tier 1 only).
                 # Used when parameter ranges are too narrow for two-stage to help.
-                fine_count = 0
+                fallback_combos: List[Tuple[int, int, int, pd.Series]] = []
                 for rsi_period in self.rsi_periods:
                     rsi = rsi_cache[rsi_period]
                     for rsi_lower in self.rsi_lowers:
                         for rsi_upper in self.rsi_uppers:
                             if rsi_lower >= rsi_upper:
                                 continue
-                            tested_combinations += 1
+                            fallback_combos.append(
+                                (rsi_period, rsi_lower, rsi_upper, rsi))
 
-                            strategy = RSIStrategy(
-                                rsi_period, rsi_lower, rsi_upper,
-                                direction=direction)
-                            result = strategy.backtest_with_rsi(
-                                data, symbol, rsi, globalConfig.BACKTEST_INIT_CASH)
-                            score = StrategyOptimizer._composite_score(result)
+                tested_combinations = len(fallback_combos)
 
-                            if score > best_score and result.profitable:
-                                best_score = score
-                                best_result = result
-                                logger.debug(
-                                    "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
-                                    symbol, rsi_period, rsi_lower, rsi_upper, score
-                                )
+                if fallback_combos:
+                    fallback_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
+                        delayed(StrategyOptimizer._test_single_combo)(
+                            data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
+                            direction, globalConfig.BACKTEST_INIT_CASH
+                        )
+                        for rsi_period, rsi_lower, rsi_upper, rsi_series in fallback_combos
+                    )
+
+                    for result, rp, rl, ru in fallback_results:
+                        score = StrategyOptimizer._composite_score(result)
+                        if score > best_score and result.profitable:
+                            best_score = score
+                            best_result = result
+                            logger.debug(
+                                "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
+                                symbol, rp, rl, ru, score
+                            )
 
             if best_result:
                 best_composite = StrategyOptimizer._composite_score(
@@ -941,8 +1004,17 @@ class StrategyOptimizer:
         # Use ThreadPoolExecutor for I/O bound operations
         loop = asyncio.get_event_loop()
 
-        # Process symbols in batches to avoid overwhelming the API
-        batch_size = 10
+        # Process symbols in batches to avoid overwhelming the API.
+        # When grid-level parallelism is active (n_jobs != 1), process
+        # symbols one at a time since each symbol already saturates cores.
+        effective_workers = (
+            os.cpu_count() or 4
+        ) if globalConfig.N_JOBS == -1 else globalConfig.N_JOBS
+        batch_size = 1 if effective_workers > 1 else 10
+        logger.info(
+            "⚡ Parallelism: %d joblib workers per symbol, batch_size=%d",
+            effective_workers, batch_size
+        )
         total_batches = (total_symbols + batch_size - 1) // batch_size
 
         for batch_num, i in enumerate(range(0, len(symbols), batch_size), 1):
@@ -976,17 +1048,26 @@ class StrategyOptimizer:
 
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
+            # Group results per symbol to count progress correctly.
+            # Each symbol may have 1 (long-only) or 2 (long+short) tasks.
+            results_per_symbol = len(tasks) // len(batch)
             batch_successful = 0
-            for result in batch_results:
+            for sym_idx, symbol in enumerate(batch):
                 processed_count += 1
                 progress.update(1, f"Batch {batch_num}/{total_batches}")
 
-                if isinstance(result, BacktestResult):
-                    results.append(result)
-                    successful_count += 1
-                    batch_successful += 1
-                elif result is not None:
-                    logger.error(f"Error in batch processing: {result}")
+                # Collect all task results for this symbol
+                sym_start = sym_idx * results_per_symbol
+                sym_end = sym_start + results_per_symbol
+                sym_results = batch_results[sym_start:sym_end]
+
+                for result in sym_results:
+                    if isinstance(result, BacktestResult):
+                        results.append(result)
+                        successful_count += 1
+                        batch_successful += 1
+                    elif result is not None:
+                        logger.error(f"Error in batch processing: {result}")
 
             # Calculate progress and time estimates
             batch_time = time.time() - batch_start_time
