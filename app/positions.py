@@ -84,7 +84,7 @@ class PositionsManager:
                     'current_price': pd.to_numeric(alpaca_positions.get('current_price', 0), errors='coerce').fillna(0.0),
                     'position_value': pd.to_numeric(alpaca_positions.get('market_value', 0), errors='coerce').fillna(0.0),
                     'current_rsi': 0.0,
-                    'entry_date': datetime.now(),
+                    'entry_date': np.datetime64(datetime.now(), 's'),
                     'rsi_period': 14,
                     'rsi_lower': 30,
                     'rsi_upper': 70,
@@ -133,6 +133,31 @@ class PositionsManager:
                     alpaca_row = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol].iloc[0]
 
+                    # Determine side from Alpaca position data if available
+                    position_side = "long"
+                    if 'side' in alpaca_positions.columns:
+                        raw_side = alpaca_row.get('side', 'long')
+                        position_side = "short" if raw_side in (
+                            'short', 'Short') else "long"
+
+                    # Try to find the entry order from Alpaca order history
+                    # to determine the real entry date and price, avoiding
+                    # look-ahead bias in backtest enrichment.
+                    entry_date = datetime.now()
+                    entry_price = float(alpaca_row.get(
+                        'avg_entry_price', 0) or 0)
+                    order_info = self.data_provider.get_entry_order_for_symbol(
+                        symbol, side=position_side)
+
+                    if order_info is not None:
+                        order_submitted_at, order_price = order_info
+                        logger.info(
+                            "Found order history for Alpaca-only %s: submitted_at=%s, price=%.2f",
+                            symbol, order_submitted_at, order_price
+                        )
+                        entry_date = order_submitted_at
+                        entry_price = order_price
+
                     current_rsi = 0.0
                     rsi_period = 14
                     rsi_lower = 30
@@ -142,25 +167,53 @@ class PositionsManager:
 
                     if optimizer is not None:
                         try:
-                            end_date = datetime.now() - timedelta(minutes=20)
                             start_date = globalConfig.BACKTEST_START_DATE
-                            backtest_result = optimizer.optimize_symbol(
-                                symbol, start_date, end_date)
-                            if backtest_result is not None:
-                                current_rsi = float(
-                                    backtest_result.current_rsi) if backtest_result.current_rsi is not None else 0.0
-                                rsi_period = int(backtest_result.rsi_period)
-                                rsi_lower = int(backtest_result.rsi_lower)
-                                rsi_upper = int(backtest_result.rsi_upper)
-                                alpha = float(backtest_result.alpha)
-                                composite_score = float(
-                                    backtest_result.composite_score)
+
+                            # If we have a real entry date from order history,
+                            # end the backtest the day before submission to
+                            # eliminate look-ahead bias.
+                            if order_info is not None:
+                                entry_submitted = order_info[0]
+                                end_date = entry_submitted - timedelta(days=1)
+                                logger.info(
+                                    "%s: Running constrained backtest [%s to %s] based on order submitted_at",
+                                    symbol, start_date.date() if hasattr(start_date, 'date') else start_date,
+                                    end_date.date() if hasattr(end_date, 'date') else end_date
+                                )
+                            else:
+                                end_date = datetime.now() - timedelta(minutes=20)
+                                logger.info(
+                                    "%s: No order history found. Running full-range backtest [%s to %s]",
+                                    symbol,
+                                    start_date.date() if hasattr(start_date, 'date') else start_date,
+                                    end_date.date() if hasattr(end_date, 'date') else end_date
+                                )
+
+                            # Skip backtest if the entry is so old that
+                            # the backtest window would be empty or negative.
+                            if end_date <= start_date:
+                                logger.warning(
+                                    "%s: Entry date %s is too old for backtest window (start=%s). "
+                                    "Using default RSI parameters.",
+                                    symbol, entry_date, start_date
+                                )
+                            else:
+                                backtest_result = optimizer.optimize_symbol(
+                                    symbol, start_date, end_date, direction=position_side
+                                )
+                                if backtest_result is not None:
+                                    current_rsi = float(
+                                        backtest_result.current_rsi) if backtest_result.current_rsi is not None else 0.0
+                                    rsi_period = int(backtest_result.rsi_period)
+                                    rsi_lower = int(backtest_result.rsi_lower)
+                                    rsi_upper = int(backtest_result.rsi_upper)
+                                    alpha = float(backtest_result.alpha)
+                                    composite_score = float(
+                                        backtest_result.composite_score)
                         except (ValueError, TypeError, KeyError, RuntimeError) as e:
                             logger.warning(
                                 "Backtest enrichment failed for Alpaca-only symbol %s: %s", symbol, e)
 
-                    entry_price = float(alpaca_row.get(
-                        'avg_entry_price', 0) or 0)
                     new_rows.append({
                         'symbol': symbol,
                         'shares': float(alpaca_row.get('qty', 0) or 0),
@@ -168,7 +221,7 @@ class PositionsManager:
                         'current_price': float(alpaca_row.get('current_price', 0) or 0),
                         'position_value': float(alpaca_row.get('market_value', 0) or 0),
                         'current_rsi': current_rsi,
-                        'entry_date': datetime.now(),
+                        'entry_date': np.datetime64(entry_date, 's'),
                         'rsi_period': rsi_period,
                         'rsi_lower': rsi_lower,
                         'rsi_upper': rsi_upper,
@@ -213,7 +266,7 @@ class PositionsManager:
                     if 'exit_date' not in cloud_positions.columns:
                         cloud_positions['exit_date'] = pd.NaT
                     cloud_positions.loc[symbol_mask,
-                                        'exit_date'] = datetime.now()
+                                        'exit_date'] = np.datetime64(datetime.now(), 's')
 
                     if 'entry_price' in cloud_positions.columns:
                         if 'realized_return' not in cloud_positions.columns:
@@ -255,8 +308,24 @@ class PositionsManager:
                         alpaca_positions['symbol'] == symbol, 'qty'].values[0]
                     cloud_positions.at[index, 'position_value'] = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol, 'market_value'].values[0]
-                    cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
-                        alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
+                    # Only overwrite entry_price if this symbol existed in the
+                    # original cloud snapshot. For Alpaca-only symbols we want
+                    # to preserve entry_price discovered via order history.
+                    try:
+                        if 'cloud_symbols' in locals() and symbol in cloud_symbols:
+                            cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
+                                alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
+                    except Exception:
+                        # If anything goes wrong, skip overwriting entry_price.
+                        pass
+                    # Ensure any datetime-like columns remain compatible when
+                    # overwriting values coming from Alpaca.
+                    if 'entry_date' in cloud_positions.columns:
+                        try:
+                            cloud_positions.at[index, 'entry_date'] = np.datetime64(parse_dt(cloud_positions.at[index, 'entry_date']), 's')
+                        except Exception:
+                            # Fall back to leaving the existing value if parsing fails
+                            pass
         # Convert cloud positions DataFrame to a list of Position objects
         self.positions = []
         if not cloud_positions.empty:

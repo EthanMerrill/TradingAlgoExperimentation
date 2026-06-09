@@ -281,6 +281,116 @@ class DataProvider:
             logger.error("Error fetching current positions: %s", e)
             return pd.DataFrame()
 
+    def get_filled_orders_for_symbol(self, symbol: str, limit: int = 50) -> pd.DataFrame:
+        """
+        Get filled orders for a specific symbol from Alpaca order history.
+
+        Args:
+            symbol: Stock symbol to query
+            limit: Maximum number of orders to return (default 50)
+
+        Returns:
+            DataFrame with columns: symbol, side, filled_qty, filled_avg_price,
+            submitted_at, filled_at, order_type, status
+        """
+        try:
+            if self.trading_client is None:
+                logger.error("Trading client not available")
+                return pd.DataFrame()
+
+            orders = self.trading_client.get_orders(
+                status='filled',
+                symbols=[symbol],
+                limit=limit,
+                direction='desc'
+            )
+
+            if not orders:
+                logger.debug("No filled orders found for %s", symbol)
+                return pd.DataFrame()
+
+            order_data = []
+            for order in orders:
+                order_data.append({
+                    'symbol': getattr(order, 'symbol', symbol),
+                    'side': getattr(order, 'side', None),
+                    'filled_qty': float(getattr(order, 'filled_qty', 0) or 0),
+                    'filled_avg_price': float(getattr(order, 'filled_avg_price', 0) or 0),
+                    'submitted_at': getattr(order, 'submitted_at', None),
+                    'filled_at': getattr(order, 'filled_at', None),
+                    'order_type': getattr(order, 'type', None),
+                    'status': getattr(order, 'status', None),
+                })
+
+            df = pd.DataFrame(order_data)
+            return df
+
+        except Exception as e:
+            logger.error("Error fetching filled orders for %s: %s", symbol, e)
+            return pd.DataFrame()
+
+    def get_entry_order_for_symbol(self, symbol: str, side: str = "long") -> Optional[tuple]:
+        """
+        Find the entry order for a position from Alpaca order history.
+
+        For long positions, finds the most recent filled buy order.
+        For short positions, finds the most recent filled sell order.
+
+        Args:
+            symbol: Stock symbol to query
+            side: "long" or "short"
+
+        Returns:
+            Tuple of (submitted_at datetime, filled_avg_price float) for the entry order,
+            or None if no matching order is found.
+        """
+        try:
+            orders_df = self.get_filled_orders_for_symbol(symbol, limit=50)
+            if orders_df.empty:
+                logger.debug("No order history for %s", symbol)
+                return None
+
+            # Filter by side: buy for long entries, sell for short entries
+            target_side = 'buy' if side == 'long' else 'sell'
+            filtered = orders_df[orders_df['side'] == target_side]
+
+            # Further filter to only orders with real filled quantity
+            filtered = filtered[filtered['filled_qty'] > 0]
+
+            if filtered.empty:
+                logger.debug(
+                    "No %s orders found for %s", target_side, symbol)
+                return None
+
+            # Most recent order by submitted_at (list is already desc from API)
+            latest = filtered.iloc[0]
+
+            submitted_at = latest['submitted_at']
+            filled_avg_price = latest['filled_avg_price']
+
+            if submitted_at is None or filled_avg_price is None or filled_avg_price <= 0:
+                logger.debug(
+                    "Entry order for %s has incomplete data (submitted=%s, price=%s)",
+                    symbol, submitted_at, filled_avg_price
+                )
+                return None
+
+            # Ensure submitted_at is a datetime
+            if not isinstance(submitted_at, datetime):
+                submitted_at = datetime.fromisoformat(str(submitted_at))
+
+            logger.info(
+                "Found entry order for %s (side=%s): submitted_at=%s, price=%.2f, qty=%.2f",
+                symbol, side, submitted_at, filled_avg_price,
+                latest['filled_qty']
+            )
+            return (submitted_at, filled_avg_price)
+
+        except Exception as e:
+            logger.error(
+                "Error finding entry order for %s: %s", symbol, e)
+            return None
+
     def get_account_info(self) -> Dict[str, Any]:
         """Get account information including cash and equity."""
         try:

@@ -241,6 +241,193 @@ class TestDataProvider(unittest.TestCase):
             self.assertEqual(result['price'], 151.50)
 
 
+class TestDataProviderOrderHistory(unittest.TestCase):
+    """Test cases for the DataProvider order history methods."""
+
+    def setUp(self):
+        self.mock_config = {
+            'api_key': 'test_key',
+            'secret_key': 'test_secret',
+            'base_url': 'https://paper-api.alpaca.markets'
+        }
+
+    def _make_mock_order(self, symbol, side, filled_qty, filled_avg_price,
+                         submitted_at, filled_at=None, order_type='market', status='filled'):
+        """Helper to create a mock Alpaca order object."""
+        order = Mock()
+        order.symbol = symbol
+        order.side = side
+        order.filled_qty = str(filled_qty)
+        order.filled_avg_price = str(filled_avg_price)
+        order.submitted_at = submitted_at
+        order.filled_at = filled_at or submitted_at
+        order.type = order_type
+        order.status = status
+        return order
+
+    @patch('data_provider.globalConfig')
+    def test_get_filled_orders_for_symbol_success(self, mock_config):
+        """Test successfully retrieving filled orders for a symbol."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        with patch('data_provider.TradingClient') as mock_trading_class:
+            mock_trading = Mock()
+            now = datetime.now()
+            mock_trading.get_orders.return_value = [
+                self._make_mock_order(
+                    'AAPL', 'buy', 10, 150.25,
+                    now - timedelta(days=5)
+                ),
+                self._make_mock_order(
+                    'AAPL', 'sell', 5, 155.00,
+                    now - timedelta(days=2)
+                ),
+            ]
+            mock_trading_class.return_value = mock_trading
+
+            data_provider = DataProvider()
+            result = data_provider.get_filled_orders_for_symbol('AAPL')
+
+            self.assertIsInstance(result, pd.DataFrame)
+            self.assertEqual(len(result), 2)
+            self.assertIn('symbol', result.columns)
+            self.assertIn('side', result.columns)
+            self.assertIn('filled_qty', result.columns)
+            self.assertIn('filled_avg_price', result.columns)
+            self.assertIn('submitted_at', result.columns)
+            self.assertEqual(result.iloc[0]['symbol'], 'AAPL')
+            self.assertEqual(result.iloc[0]['side'], 'buy')
+            self.assertEqual(result.iloc[0]['filled_qty'], 10.0)
+
+            mock_trading.get_orders.assert_called_once_with(
+                status='filled', symbols=['AAPL'], limit=50, direction='desc'
+            )
+
+    @patch('data_provider.globalConfig')
+    def test_get_filled_orders_for_symbol_empty(self, mock_config):
+        """Test retrieving filled orders when none exist."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        with patch('data_provider.TradingClient') as mock_trading_class:
+            mock_trading = Mock()
+            mock_trading.get_orders.return_value = []
+            mock_trading_class.return_value = mock_trading
+
+            data_provider = DataProvider()
+            result = data_provider.get_filled_orders_for_symbol('UNKNOWN')
+
+            self.assertIsInstance(result, pd.DataFrame)
+            self.assertTrue(result.empty)
+
+    @patch('data_provider.globalConfig')
+    def test_get_filled_orders_for_symbol_no_client(self, mock_config):
+        """Test retrieving filled orders when trading client is None."""
+        mock_config.get_alpaca_config.return_value = {
+            'api_key': '', 'secret_key': ''}
+
+        data_provider = DataProvider()
+        result = data_provider.get_filled_orders_for_symbol('AAPL')
+
+        self.assertIsInstance(result, pd.DataFrame)
+        self.assertTrue(result.empty)
+
+    @patch('data_provider.globalConfig')
+    def test_get_entry_order_for_symbol_long(self, mock_config):
+        """Test finding entry order for a long position."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        with patch('data_provider.TradingClient') as mock_trading_class:
+            mock_trading = Mock()
+            now = datetime(2026, 5, 15, 10, 30, 0)
+            mock_trading.get_orders.return_value = [
+                self._make_mock_order(
+                    'AAPL', 'sell', 10, 165.00,
+                    now - timedelta(days=1)
+                ),
+                self._make_mock_order(
+                    'AAPL', 'buy', 10, 150.25,
+                    now - timedelta(days=10)
+                ),
+            ]
+            mock_trading_class.return_value = mock_trading
+
+            data_provider = DataProvider()
+            result = data_provider.get_entry_order_for_symbol(
+                'AAPL', side='long')
+
+            self.assertIsNotNone(result)
+            submitted_at, price = result
+            self.assertIsInstance(submitted_at, datetime)
+            self.assertEqual(price, 150.25)
+
+    @patch('data_provider.globalConfig')
+    def test_get_entry_order_for_symbol_short(self, mock_config):
+        """Test finding entry order for a short position."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        with patch('data_provider.TradingClient') as mock_trading_class:
+            mock_trading = Mock()
+            now = datetime(2026, 5, 15, 10, 30, 0)
+            mock_trading.get_orders.return_value = [
+                self._make_mock_order(
+                    'TSLA', 'buy', 5, 200.00,
+                    now - timedelta(days=3)
+                ),
+                self._make_mock_order(
+                    'TSLA', 'sell', 5, 210.00,
+                    now - timedelta(days=8)
+                ),
+            ]
+            mock_trading_class.return_value = mock_trading
+
+            data_provider = DataProvider()
+            result = data_provider.get_entry_order_for_symbol(
+                'TSLA', side='short')
+
+            self.assertIsNotNone(result)
+            submitted_at, price = result
+            self.assertIsInstance(submitted_at, datetime)
+            self.assertEqual(price, 210.00)
+
+    @patch('data_provider.globalConfig')
+    def test_get_entry_order_for_symbol_no_match(self, mock_config):
+        """Test finding entry order when no matching order exists."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        with patch('data_provider.TradingClient') as mock_trading_class:
+            mock_trading = Mock()
+            mock_trading.get_orders.return_value = []
+            mock_trading_class.return_value = mock_trading
+
+            data_provider = DataProvider()
+            result = data_provider.get_entry_order_for_symbol(
+                'NONE', side='long')
+
+            self.assertIsNone(result)
+
+    @patch('data_provider.globalConfig')
+    def test_get_entry_order_for_symbol_returns_buy_not_sell(self, mock_config):
+        """Test long entry ignores sell orders."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        with patch('data_provider.TradingClient') as mock_trading_class:
+            mock_trading = Mock()
+            now = datetime(2026, 5, 15, 10, 30, 0)
+            mock_trading.get_orders.return_value = [
+                self._make_mock_order(
+                    'AAPL', 'sell', 10, 155.00,
+                    now - timedelta(days=1)
+                ),
+            ]
+            mock_trading_class.return_value = mock_trading
+
+            data_provider = DataProvider()
+            result = data_provider.get_entry_order_for_symbol(
+                'AAPL', side='long')
+
+            self.assertIsNone(result)
+
+
 class TestTechnicalIndicators(unittest.TestCase):
     """Test cases for the TechnicalIndicators class."""
 
