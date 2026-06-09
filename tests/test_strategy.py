@@ -185,6 +185,74 @@ class TestRSIStrategy(unittest.TestCase):
         self.assertEqual(result.rsi_lower, 30)
         self.assertEqual(result.rsi_upper, 70)
 
+    def test_short_generate_signals_cross_above_entry(self):
+        """Test short signals: RSI cross-above rsi_upper fires entry."""
+        strategy = RSIStrategy(
+            rsi_period=14, rsi_lower=30, rsi_upper=70, direction="short")
+
+        dates = pd.date_range('2024-01-01', periods=12, freq='D')
+        # RSI crosses above 70 at index 4 (prev=68, curr=75)
+        rsi_data = pd.Series(
+            [50, 55, 60, 68, 75, 80, 78, 72, 65, 55, 45, 35], index=dates)
+        prices = pd.Series(
+            [100, 102, 104, 106, 108, 110, 109, 107, 105, 103, 101, 99], index=dates)
+
+        df = pd.DataFrame({'close': prices})
+        signals = strategy._generate_signals(df, rsi_data)
+
+        buy_signal_indices = signals[signals['buy_signal']].index
+        self.assertGreater(len(buy_signal_indices), 0,
+                           "Short entry signal should fire on RSI cross-above rsi_upper")
+
+        # Position should go to -1 (short) after entry
+        entry_idx = signals.index.get_loc(buy_signal_indices[0])
+        position_after = signals['position'].iloc[entry_idx +
+                                                  1] if entry_idx + 1 < len(signals) else 0
+        self.assertEqual(position_after, -1,
+                         "Position should be -1 (short) after entry")
+
+    def test_short_returns_profitable_on_price_drop(self):
+        """Test that a price drop after a short entry yields positive return."""
+        strategy = RSIStrategy(
+            rsi_period=14, rsi_lower=30, rsi_upper=70, direction="short")
+
+        # Build a scenario: short entry, then price drops, then cover at lower price
+        dates = pd.date_range('2024-01-01', periods=20, freq='D')
+        prices = [100] * 20
+        rsi_vals = [50] * 20
+
+        # RSI cross-above 70 at index 5 → short entry
+        rsi_vals[4] = 68
+        rsi_vals[5] = 75
+        # Price then drops from 100 → 90
+        prices[6] = 95
+        prices[7] = 90
+        # RSI cross-below 30 at index 9 → cover
+        rsi_vals[8] = 35
+        rsi_vals[9] = 25
+        prices[9] = 85
+
+        df = pd.DataFrame({'close': pd.Series(prices, index=dates)})
+        rsi = pd.Series(rsi_vals, index=dates)
+
+        signals = strategy._generate_signals(df, rsi)
+        # Should have at least 1 buy (short entry) and 1 sell (cover)
+        self.assertGreater(signals['buy_signal'].sum(),
+                           0, "Should have short entry")
+        self.assertGreater(signals['sell_signal'].sum(),
+                           0, "Should have cover signal")
+
+        returns = strategy._calculate_returns(df, signals, 10000.0)
+        final_value = returns['portfolio_value'].iloc[-1]
+        # Short profit: portfolio should be > initial cash
+        self.assertGreater(final_value, 10000.0,
+                           f"Short should profit on price drop; final={final_value:.2f}")
+
+    def test_strategy_direction_defaults_to_long(self):
+        """Test that strategy direction defaults to 'long'."""
+        strategy = RSIStrategy(rsi_period=14, rsi_lower=30, rsi_upper=70)
+        self.assertEqual(strategy.direction, "long")
+
 
 if __name__ == '__main__':
     unittest.main()

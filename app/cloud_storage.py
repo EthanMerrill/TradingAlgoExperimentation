@@ -83,6 +83,9 @@ class CloudStorage:
                     'avg_trade_duration': result.avg_trade_duration,
                     'max_drawdown': result.max_drawdown,
                     'sharpe_ratio': result.sharpe_ratio,
+                    'calmar_ratio': result.calmar_ratio,
+                    'composite_score': result.composite_score,
+                    'direction': result.direction,
                     'profitable': result.profitable,
                     'current_rsi': result.current_rsi
                 }
@@ -151,6 +154,9 @@ class CloudStorage:
                     avg_trade_duration=float(row['avg_trade_duration']),
                     max_drawdown=float(row['max_drawdown']),
                     sharpe_ratio=float(row['sharpe_ratio']),
+                    calmar_ratio=float(row.get('calmar_ratio', 0)),
+                    composite_score=float(row.get('composite_score', 0)),
+                    direction=str(row.get('direction', 'long')),
                     profitable=bool(row['profitable']),
                     current_rsi=float(row['current_rsi']) if 'current_rsi' in row and pd.notna(
                         row['current_rsi']) else None
@@ -231,9 +237,12 @@ class CloudStorage:
 
             filename = f"{globalConfig.get_environment_path('Positions')}/positions_{timestamp}.csv"
 
-            # Round floats before uploading
+            # Round floats before uploading (skip datetime/timedelta columns)
             if isinstance(positions_df, pd.DataFrame):
-                rounded_df = positions_df.round(2)
+                numeric_cols = positions_df.select_dtypes(
+                    include='number').columns
+                rounded_df = positions_df.copy()
+                rounded_df[numeric_cols] = rounded_df[numeric_cols].round(2)
             else:
                 rounded_df = positions_df
 
@@ -362,7 +371,14 @@ class CloudStorage:
                 return pd.DataFrame()
 
             csv_string = blob.download_as_text()
-            df = pd.read_csv(io.StringIO(csv_string))
+            # Parse date columns when present; fall back gracefully for legacy
+            # files that don't have entry_date / exit_date columns yet.
+            date_cols = ['entry_date', 'exit_date']
+            try:
+                df = pd.read_csv(io.StringIO(csv_string),
+                                 parse_dates=date_cols)
+            except ValueError:
+                df = pd.read_csv(io.StringIO(csv_string))
 
             logger.info("Loaded position entries from %s", filename)
             return df

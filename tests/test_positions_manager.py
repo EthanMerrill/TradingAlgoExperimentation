@@ -3,15 +3,17 @@
 import os
 import sys
 import unittest
-from datetime import datetime
-from unittest.mock import Mock
+from datetime import datetime, timedelta
+from unittest.mock import Mock, patch
 
 import pandas as pd
+import numpy as np
 
 # Add app path before imports.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from positions import Position, PositionsManager  # noqa: E402
+from strategy import BacktestResult  # noqa: E402
 
 
 class TestPosition(unittest.TestCase):
@@ -168,6 +170,256 @@ class TestPositionsManager(unittest.TestCase):
         self.assertTrue(any(p.closed for p in self.manager.positions))
         closed = [p for p in self.manager.positions if p.closed]
         self.assertTrue(any(p.exit_reason == 'broker_closed' for p in closed))
+
+    @patch('positions.globalConfig')
+    def test_reconcile_alpaca_only_with_order_history(self, mock_config):
+        """Test reconciliation uses order history for entry date and constrained backtest."""
+        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
+        mock_config.STOP_LOSS_PCT = 0.05
+        mock_config.TAKE_PROFIT_PCT = 0.15
+
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [150.0],
+            'current_price': [155.0],
+            'market_value': [1550.0],
+        })
+
+        # Return a cloud DF with a DIFFERENT symbol so AAPL triggers the
+        # alpaca-only path (empty cloud would cause initialization from Alpaca).
+        # Use object-dtype for date columns to avoid datetime64 precision mismatches.
+        cloud_df = pd.DataFrame({
+            'symbol': ['MSFT'],
+            'shares': [5.0],
+            'entry_price': [300.0],
+            'current_price': [305.0],
+            'position_value': [1525.0],
+            'current_rsi': [50.0],
+            'entry_date': [datetime(2026, 5, 10)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.0],
+            'stop_loss_price': [np.nan],
+            'take_profit_price': [np.nan],
+            'exit_date': [None],
+            'exit_price': [np.nan],
+            'realized_return': [np.nan],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+        self.cloud.get_latest_positions_df.return_value = cloud_df
+
+        # Mock order history: submitted_at = 2026-05-25
+        entry_submitted = datetime(2026, 5, 25, 9, 30, 0)
+        self.data.get_entry_order_for_symbol.return_value = (
+            entry_submitted, 150.25
+        )
+
+        # Mock StrategyOptimizer to return a known backtest result
+        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+            mock_opt = Mock()
+            mock_opt_class.return_value = mock_opt
+
+            backtest_result = BacktestResult(
+                symbol='AAPL',
+                rsi_period=14,
+                rsi_lower=25,
+                rsi_upper=75,
+                total_return=0.05,
+                buy_and_hold_return=0.03,
+                alpha=0.02,
+                num_trades=5,
+                win_rate=0.6,
+                avg_trade_duration=10,
+                max_drawdown=0.02,
+                sharpe_ratio=1.2,
+                calmar_ratio=0.8,
+                profitable=True,
+                current_rsi=35.0,
+                composite_score=1.5,
+                direction='long',
+            )
+            mock_opt.optimize_symbol.return_value = backtest_result
+
+            open_positions = self.manager.get_and_reconcile_positions()
+
+        # MSFT from cloud + AAPL from Alpaca
+        self.assertEqual(len(open_positions), 2)
+        aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
+        self.assertEqual(aapl_pos.symbol, 'AAPL')
+
+        # entry_date should come from order history, not datetime.now()
+        self.assertEqual(aapl_pos.entry_date, entry_submitted)
+
+        # entry_price should come from order history
+        self.assertEqual(aapl_pos.entry_price, 150.25)
+
+        # RSI params should come from the backtest
+        self.assertEqual(aapl_pos.rsi_period, 14)
+        self.assertEqual(aapl_pos.rsi_lower, 25)
+        self.assertEqual(aapl_pos.rsi_upper, 75)
+        self.assertEqual(aapl_pos.alpha, 0.02)
+
+        # Verify backtest was called with constrained window ending day before submission
+        mock_opt.optimize_symbol.assert_called_once()
+        call_args, call_kwargs = mock_opt.optimize_symbol.call_args
+        # positional args: (symbol, start_date, end_date)
+        self.assertEqual(call_args[0], 'AAPL')
+        self.assertEqual(call_args[1], mock_config.BACKTEST_START_DATE)
+        self.assertEqual(call_args[2], entry_submitted - timedelta(days=1))
+        self.assertEqual(call_kwargs['direction'], 'long')
+
+    @patch('positions.globalConfig')
+    def test_reconcile_alpaca_only_order_history_fallback(self, mock_config):
+        """Test reconciliation falls back to default behavior when no order history."""
+        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
+        mock_config.STOP_LOSS_PCT = 0.05
+        mock_config.TAKE_PROFIT_PCT = 0.15
+
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [150.0],
+            'current_price': [155.0],
+            'market_value': [1550.0],
+        })
+
+        # Return a cloud DF with a DIFFERENT symbol
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+            'symbol': ['MSFT'],
+            'shares': [5.0],
+            'entry_price': [300.0],
+            'current_price': [305.0],
+            'position_value': [1525.0],
+            'current_rsi': [50.0],
+            'entry_date': [datetime(2026, 5, 10)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.0],
+            'stop_loss_price': [np.nan],
+            'take_profit_price': [np.nan],
+            'exit_date': [pd.NaT],
+            'exit_price': [np.nan],
+            'realized_return': [np.nan],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        # Mock order history returns None (no orders found)
+        self.data.get_entry_order_for_symbol.return_value = None
+
+        # Mock StrategyOptimizer
+        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+            mock_opt = Mock()
+            mock_opt_class.return_value = mock_opt
+
+            backtest_result = BacktestResult(
+                symbol='AAPL',
+                rsi_period=7,
+                rsi_lower=20,
+                rsi_upper=80,
+                total_return=0.10,
+                buy_and_hold_return=0.02,
+                alpha=0.08,
+                num_trades=8,
+                win_rate=0.75,
+                avg_trade_duration=8,
+                max_drawdown=0.03,
+                sharpe_ratio=1.5,
+                profitable=True,
+                current_rsi=42.0,
+                direction='long',
+            )
+            mock_opt.optimize_symbol.return_value = backtest_result
+
+            open_positions = self.manager.get_and_reconcile_positions()
+
+        # MSFT from cloud + AAPL from Alpaca
+        self.assertEqual(len(open_positions), 2)
+        aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
+        self.assertEqual(aapl_pos.symbol, 'AAPL')
+        self.assertEqual(aapl_pos.rsi_period, 7)
+        self.assertEqual(aapl_pos.rsi_lower, 20)
+        self.assertEqual(aapl_pos.rsi_upper, 80)
+
+        # Verify backtest was called with the full range (default behavior)
+        mock_opt.optimize_symbol.assert_called_once()
+        call_args, call_kwargs = mock_opt.optimize_symbol.call_args
+        self.assertEqual(call_args[0], 'AAPL')
+        self.assertEqual(call_args[1], mock_config.BACKTEST_START_DATE)
+        # end_date should be near now (datetime.now() - 20 min), not constrained
+        self.assertIsNotNone(call_args[2])
+
+    @patch('positions.globalConfig')
+    def test_reconcile_alpaca_only_backtest_skipped_if_entry_too_old(self, mock_config):
+        """Test backtest is skipped when entry date makes backtest window empty."""
+        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 20)
+        mock_config.STOP_LOSS_PCT = 0.05
+        mock_config.TAKE_PROFIT_PCT = 0.15
+
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [150.0],
+            'current_price': [155.0],
+            'market_value': [1550.0],
+        })
+
+        # Return a cloud DF with a DIFFERENT symbol
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+            'symbol': ['MSFT'],
+            'shares': [5.0],
+            'entry_price': [300.0],
+            'current_price': [305.0],
+            'position_value': [1525.0],
+            'current_rsi': [50.0],
+            'entry_date': [datetime(2026, 5, 10)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.0],
+            'stop_loss_price': [np.nan],
+            'take_profit_price': [np.nan],
+            'exit_date': [pd.NaT],
+            'exit_price': [np.nan],
+            'realized_return': [np.nan],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        # Entry submitted_at BEFORE BACKTEST_START_DATE
+        # end_date = submitted_at - 1 day, which is before start
+        early_date = datetime(2026, 5, 10)
+        self.data.get_entry_order_for_symbol.return_value = (early_date, 145.0)
+
+        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+            mock_opt = Mock()
+            mock_opt_class.return_value = mock_opt
+
+            open_positions = self.manager.get_and_reconcile_positions()
+
+        # MSFT from cloud + AAPL from Alpaca
+        self.assertEqual(len(open_positions), 2)
+        aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
+        self.assertEqual(aapl_pos.symbol, 'AAPL')
+
+        # Should use default RSI parameters since backtest was skipped
+        self.assertEqual(aapl_pos.rsi_period, 14)
+        self.assertEqual(aapl_pos.rsi_lower, 30)
+        self.assertEqual(aapl_pos.rsi_upper, 70)
+        self.assertEqual(aapl_pos.alpha, 0.0)
+
+        # entry_date should still come from order history
+        self.assertEqual(aapl_pos.entry_date, early_date)
+
+        # entry_price should come from order history
+        self.assertEqual(aapl_pos.entry_price, 145.0)
+
+        # Backtest should NOT have been called
+        mock_opt.optimize_symbol.assert_not_called()
 
 
 if __name__ == '__main__':

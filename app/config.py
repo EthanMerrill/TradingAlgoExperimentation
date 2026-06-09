@@ -88,11 +88,16 @@ class Config:
             self.MAX_HOLD_DAYS = trading.get('max_hold_days', 30)
             self.MIN_WIN_RATE = trading.get('min_win_rate', 0.7)
             self.MIN_NUM_TRADES = trading.get('min_num_trades', 3)
+            self.ENABLE_SHORT_SELLING = trading.get(
+                'enable_short_selling', False)
+            self.MAX_SHORT_LONG_RATIO = trading.get(
+                'max_short_long_ratio', 0.30)
 
             # Backtesting parameters
             backtesting = config_data.get('backtesting', {})
             self.BACKTEST_INIT_CASH = backtesting.get('init_cash', 10000)
             self.BACKTEST_MONTHS = backtesting.get('months', 6)
+            self.N_JOBS = backtesting.get('n_jobs', -1)
             self.BACKTEST_START_DATE = datetime.now() - timedelta(days=self.BACKTEST_MONTHS * 30)
 
             # RSI optimization ranges
@@ -160,11 +165,14 @@ class Config:
         self.TAKE_PROFIT_PCT = 0.15  # 15% take profit
         self.MAX_HOLD_DAYS = 30  # Max 30 days per trade
         self.MIN_WIN_RATE = 0.7  # Minimum win rate of 70%
+        self.ENABLE_SHORT_SELLING = False
+        self.MAX_SHORT_LONG_RATIO = 0.30  # Max 30% short notional exposure
 
     def setup_backtesting_parameters(self):
         """Set up backtesting parameters (fallback method)."""
         self.BACKTEST_INIT_CASH = 10000
         self.BACKTEST_MONTHS = 6
+        self.N_JOBS = -1  # -1 = use all available cores
         self.BACKTEST_START_DATE = datetime.now() - timedelta(days=self.BACKTEST_MONTHS * 30)
 
         # RSI optimization ranges
@@ -237,6 +245,7 @@ class Config:
             'position_size_pct': self.POSITION_SIZE_PCT,
             'min_cash_pct': self.MIN_CASH_PCT,
             'backtest_months': self.BACKTEST_MONTHS,
+            'n_jobs': self.N_JOBS,
             'rsi_period_range': self.RSI_PERIOD_RANGE,
             'rsi_lower_range': self.RSI_LOWER_RANGE,
             'rsi_upper_range': self.RSI_UPPER_RANGE,

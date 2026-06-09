@@ -353,6 +353,36 @@ class TestCloudStorage(unittest.TestCase):
         self.assertEqual(result.iloc[0]['symbol'], 'AAPL')
         self.assertEqual(result.iloc[1]['symbol'], 'TSLA')
 
+    @patch('cloud_storage.globalConfig')
+    @patch('cloud_storage.importlib')
+    def test_load_position_entries_parses_dates(self, mock_import_module, mock_config):
+        """Regression: load_position_entries must parse entry_date/exit_date as datetime,
+        not leave them as strings — otherwise ``datetime - entry_date`` raises TypeError."""
+        mock_config.GCS_BUCKET_NAME = 'test-bucket'
+        mock_storage_module = Mock()
+        mock_client = Mock()
+        mock_bucket = Mock()
+        mock_blob = Mock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage_module.Client.return_value = mock_client
+        mock_bucket.blob.return_value = mock_blob
+        mock_import_module.import_module.return_value = mock_storage_module
+
+        csv_data = (
+            "symbol,entry_price,entry_date,exit_date\n"
+            "AAPL,150.0,2025-06-07,\n"
+            "TSLA,800.0,2025-06-01,2025-06-05"
+        )
+        mock_blob.download_as_text.return_value = csv_data
+
+        cloud_storage = CloudStorage()
+        result = cloud_storage.load_position_entries('test_file.csv')
+
+        from datetime import datetime
+        self.assertIsInstance(result.iloc[0]['entry_date'], datetime,
+                              "entry_date must be datetime, not str — parse_dates may be missing from read_csv")
+        self.assertIsInstance(result.iloc[1]['exit_date'], datetime)
+
 
 if __name__ == '__main__':
     unittest.main()

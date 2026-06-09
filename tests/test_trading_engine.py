@@ -58,6 +58,8 @@ class TestTradingEngine(unittest.TestCase):
         r.alpha = alpha
         r.win_rate = win_rate
         r.num_trades = num_trades
+        r.composite_score = 5.0
+        r.direction = "long"
         return r
 
     def _position(self, symbol="AAPL", days_ago=1):
@@ -205,6 +207,210 @@ class TestTradingEngine(unittest.TestCase):
 
         self.assertEqual(out['positions_exited'], 1)
         self.assertEqual(out['orders_placed'], 1)
+        self.engine._positions_manager.close_position.assert_called_once_with(
+            "AAPL")
+
+    def test_identify_shorting_opportunities_cross_above(self):
+        """Short opportunity fires on RSI cross-above rsi_upper."""
+        long_r = self._result("AAPL", alpha=0.1, win_rate=0.9, num_trades=10)
+        long_r.direction = "long"
+        short_r = self._result("AAPL", alpha=0.15, win_rate=0.9, num_trades=10)
+        short_r.direction = "short"
+
+        # RSI cross-above: current=75, previous=65 (crossed above 70)
+        def rsi_side_effect(symbol, _period):
+            return (75.0, 65.0)
+
+        with patch.object(self.engine, '_get_rsi_with_previous', side_effect=rsi_side_effect), \
+                patch.object(self.engine, '_get_current_price', return_value=200.0), \
+                patch.object(self.engine, '_compute_rsi_cover_price', return_value=170.0):
+            opportunities = self.engine.identify_shorting_opportunities([
+                                                                        long_r, short_r])
+
+        self.assertEqual(len(opportunities), 1)
+        self.assertEqual(opportunities[0].symbol, "AAPL")
+        self.assertEqual(opportunities[0].direction, "short")
+        # Stop loss for short should be above entry: 200 * 1.05 = 210
+        self.assertAlmostEqual(
+            opportunities[0].stop_loss_price, 210.0, places=1)
+        self.assertEqual(opportunities[0].take_profit_price, 170.0)
+
+    def test_short_opportunity_excludes_if_no_cross(self):
+        """Short opportunity should not fire if RSI hasn't crossed above rsi_upper yet."""
+        results = [self._result("AAPL")]
+        results[0].direction = "short"
+
+        # RSI: current=65, previous=60 (no cross above 70)
+        def rsi_side_effect(symbol, _period):
+            return (65.0, 60.0)
+
+        with patch.object(self.engine, '_get_rsi_with_previous', side_effect=rsi_side_effect), \
+                patch.object(self.engine, '_get_current_price', return_value=200.0):
+            opportunities = self.engine.identify_shorting_opportunities(
+                results)
+
+        self.assertEqual(len(opportunities), 0)
+
+    def test_short_opportunity_excludes_existing_short(self):
+        """Symbol with existing open short position should be excluded."""
+        results = [self._result("AAPL")]
+        results[0].direction = "short"
+        results[0].rsi_lower = 30
+        results[0].rsi_upper = 70
+
+        # Add an existing open short position
+        existing_short = self._position("AAPL")
+        existing_short.side = "short"
+        self.engine._positions_manager.positions = [existing_short]
+
+        # RSI cross-above
+        def rsi_side_effect(symbol, _period):
+            return (75.0, 65.0)
+
+        with patch.object(self.engine, '_get_rsi_with_previous', side_effect=rsi_side_effect), \
+                patch.object(self.engine, '_get_current_price', return_value=200.0):
+            opportunities = self.engine.identify_shorting_opportunities(
+                results)
+
+        self.assertEqual(len(opportunities), 0,
+                         "Should exclude symbol with existing short position")
+
+    @patch('trading_engine.data_provider')
+    def test_calculate_short_position_sizes_respects_ratio(self, mock_data_provider):
+        """Short position sizes respect max_short_long_ratio cap."""
+        mock_data_provider.get_account_info.return_value = {
+            'cash': 50000.0,
+            'equity': 100000.0,
+        }
+        # Add existing short with $2000 notional
+        existing_short = self._position("MSFT")
+        existing_short.side = "short"
+        existing_short.entry_price = 100.0
+        existing_short.quantity = 20.0  # $2000 notional
+        self.engine._positions_manager.positions = [existing_short]
+
+        opp = TradingOpportunity(
+            symbol="AAPL",
+            current_rsi=75.0,
+            target_rsi_lower=30,
+            target_rsi_upper=70,
+            rsi_period=14,
+            backtest_return=0.15,
+            alpha=0.05,
+            win_rate=0.9,
+            entry_price=200.0,
+            stop_loss_price=210.0,
+            take_profit_price=170.0,
+            num_trades=10,
+            direction="short",
+        )
+
+        with patch('trading_engine.globalConfig') as mock_cfg:
+            mock_cfg.POSITION_SIZE_PCT = 0.1
+            mock_cfg.MAX_SHORT_LONG_RATIO = 0.30
+            mock_cfg.MAX_NEW_POSITIONS_PER_DAY = 2
+            mock_cfg.MAX_POSITIONS = 10
+
+            allocations = self.engine.calculate_short_position_sizes([opp])
+
+        # Max short notional = 100000 * 0.30 = 30000
+        # Existing = 2000, available = 28000
+        # Per-position = 28000, capped at position_size_pct = 10000
+        # Shares = 10000 / 200 = 50
+        self.assertEqual(len(allocations), 1)
+        self.assertEqual(allocations[0][0].symbol, "AAPL")
+        shares = allocations[0][1]
+        notional = shares * 200.0
+        self.assertLessEqual(
+            notional, 10000.0, "Should respect position size cap")
+        self.assertLessEqual(notional + 2000, 30000.0,
+                             "Total short notional should respect cap")
+        self.assertGreater(shares, 0)
+
+    def test_place_short_order_dry_run_returns_false(self):
+        """Dry run short order logs but returns False."""
+        self.engine.set_dry_run_mode(True)
+        opp = TradingOpportunity(
+            symbol="AAPL",
+            current_rsi=75.0,
+            target_rsi_lower=30,
+            target_rsi_upper=70,
+            rsi_period=14,
+            backtest_return=0.15,
+            alpha=0.05,
+            win_rate=0.9,
+            entry_price=200.0,
+            stop_loss_price=210.0,
+            take_profit_price=170.0,
+            num_trades=10,
+            direction="short",
+        )
+
+        result = self.engine.place_short_order(opp, 5)
+        self.assertFalse(result)
+
+    def test_place_short_order_live_success_adds_position(self):
+        """Live short order adds position with side='short'."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = Mock(
+            id="order_short_1")
+        opp = TradingOpportunity(
+            symbol="AAPL",
+            current_rsi=75.0,
+            target_rsi_lower=30,
+            target_rsi_upper=70,
+            rsi_period=14,
+            backtest_return=0.15,
+            alpha=0.05,
+            win_rate=0.9,
+            entry_price=200.0,
+            stop_loss_price=210.0,
+            take_profit_price=170.0,
+            num_trades=10,
+            direction="short",
+        )
+
+        result = self.engine.place_short_order(opp, 5)
+
+        self.assertTrue(result)
+        self.engine._positions_manager.open_position.assert_called_once()
+        # Verify the position was created with side="short"
+        call_args = self.engine._positions_manager.open_position.call_args
+        created_position = call_args[0][0]
+        self.assertEqual(created_position.side, "short")
+
+    def test_close_conflicting_position_no_conflict(self):
+        """No close when direction matches existing position."""
+        existing = self._position("AAPL")
+        # side defaults to "long" since not explicitly set
+        self.engine._positions_manager.positions = [existing]
+
+        result = self.engine._close_conflicting_position("AAPL", "long")
+        self.assertFalse(result,
+                         "Should not close when direction matches")
+
+    def test_close_conflicting_position_flip_to_short(self):
+        """Close existing long when flipping to short."""
+        existing = self._position("AAPL")
+        # side defaults to "long"
+        self.engine._positions_manager.positions = [existing]
+        self.engine.set_dry_run_mode(True)
+
+        result = self.engine._close_conflicting_position("AAPL", "short")
+        self.assertTrue(result, "Should close conflicting long position")
+        self.engine._positions_manager.close_position.assert_called_once_with(
+            "AAPL")
+
+    def test_close_conflicting_position_flip_to_long(self):
+        """Close existing short when flipping to long."""
+        existing = self._position("AAPL")
+        existing.side = "short"
+        self.engine._positions_manager.positions = [existing]
+        self.engine.set_dry_run_mode(True)
+
+        result = self.engine._close_conflicting_position("AAPL", "long")
+        self.assertTrue(result, "Should close conflicting short position")
         self.engine._positions_manager.close_position.assert_called_once_with(
             "AAPL")
 
