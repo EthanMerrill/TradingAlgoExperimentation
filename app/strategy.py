@@ -270,8 +270,6 @@ class RSIStrategy:
                 returns['portfolio_value']),
             sharpe_ratio=sharpe,
             calmar_ratio=calmar,
-            composite_score=StrategyOptimizer._composite_score_from_parts(
-                alpha, sharpe, calmar),
             profitable=total_return > 0,
             current_rsi=current_rsi,
             trade_details=trade_details,
@@ -684,22 +682,22 @@ class StrategyOptimizer:
 
     @staticmethod
     def _composite_score(result: BacktestResult) -> float:
-        """Compute composite score from alpha (%), Sharpe, and Calmar ratios.
+        """Deprecated: use zscore.compute_stage_zscores / compute_cross_symbol_zscores.
 
-        Each component is scaled to contribute roughly equally:
-          - alpha_pct = alpha * 100  (e.g., 0.05 → 5.0)
-          - sharpe_ratio              (typically 0–3)
-          - calmar_ratio             (typically 0–5)
+        Returns result.composite_score if already set (cross-symbol), otherwise
+        falls back to the legacy formula.  Still used by positions.py for display.
         """
+        if result.composite_score != 0.0:
+            return result.composite_score
         return StrategyOptimizer._composite_score_from_parts(
             result.alpha, result.sharpe_ratio, result.calmar_ratio
         )
 
     @staticmethod
     def _composite_score_from_parts(alpha: float, sharpe: float, calmar: float) -> float:
-        """Compute composite score from raw component values.
+        """Legacy fallback: (alpha*100) + sharpe + calmar.
 
-        Useful when a BacktestResult hasn't been built yet (e.g., in _run_backtest_core).
+        Only used when no Z-score pool is available.
         """
         return (alpha * 100) + sharpe + calmar
 
@@ -778,6 +776,9 @@ class StrategyOptimizer:
             tested_set: set = set()  # dedup between stages
             n_jobs = globalConfig.N_JOBS
 
+            # Lazy import to avoid circular dependency at module level.
+            import zscore  # pylint: disable=import-outside-toplevel,redefined-outer-name,reimported
+
             # Determine whether two-stage optimization is worthwhile.
             # Requires at least 3 values in both lower and upper ranges.
             fine_step_lower = (
@@ -851,8 +852,11 @@ class StrategyOptimizer:
                 parallel_results = cast(
                     List[Tuple[BacktestResult, int, int, int]], parallel_results)
 
-                for result, rp, rl, ru in parallel_results:
-                    score = StrategyOptimizer._composite_score(result)
+                # Compute Z-scores within the coarse pool
+                coarse_zscores = zscore.compute_stage_zscores(parallel_results)
+
+                for idx, (result, rp, rl, ru) in enumerate(parallel_results):
+                    score = coarse_zscores[idx]
                     if result.profitable:
                         coarse_candidates.append((score, rp, rl, ru))
                     if score > best_score and result.profitable:
@@ -913,13 +917,17 @@ class StrategyOptimizer:
                         fine_results = cast(
                             List[Tuple[BacktestResult, int, int, int]], fine_results)
 
-                        for result, rp, rl, ru in fine_results:
-                            score = StrategyOptimizer._composite_score(result)
+                        # Compute Z-scores within the fine pool
+                        fine_zscores = zscore.compute_stage_zscores(
+                            fine_results)
+
+                        for idx, (result, rp, rl, ru) in enumerate(fine_results):
+                            score = fine_zscores[idx]
                             if score > best_score and result.profitable:
                                 best_score = score
                                 best_result = result
                                 logger.debug(
-                                    "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
+                                    "🎯 %s: New best — RSI(%d, %d, %d) Z-Score: %.2f",
                                     symbol, rp, rl, ru, score
                                 )
 
@@ -960,25 +968,30 @@ class StrategyOptimizer:
                     fallback_results = cast(
                         List[Tuple[BacktestResult, int, int, int]], fallback_results)
 
-                    for result, rp, rl, ru in fallback_results:
-                        score = StrategyOptimizer._composite_score(result)
+                    # Compute Z-scores within the fallback pool
+                    fallback_zscores = zscore.compute_stage_zscores(
+                        fallback_results)
+
+                    for idx, (result, rp, rl, ru) in enumerate(fallback_results):
+                        score = fallback_zscores[idx]
                         if score > best_score and result.profitable:
                             best_score = score
                             best_result = result
                             logger.debug(
-                                "🎯 %s: New best — RSI(%d, %d, %d) Score: %.2f",
+                                "🎯 %s: New best — RSI(%d, %d, %d) Z-Score: %.2f",
                                 symbol, rp, rl, ru, score
                             )
 
             if best_result:
-                best_composite = StrategyOptimizer._composite_score(
-                    best_result)
+                # Store the within-symbol Z-score on the winning result.
+                # (This will be overwritten by cross-symbol Z-scores later.)
+                best_result.composite_score = best_score
                 logger.debug(
                     "✅ %s: Optimization complete — "
-                    "Best: RSI(%d, %d, %d) Score: %.2f "
+                    "Best: RSI(%d, %d, %d) Z-Score: %.2f "
                     "(α=%.2f%%, Sharpe=%.2f, Calmar=%.2f), Trades: %d (tested %d combos)",
                     symbol, best_result.rsi_period, best_result.rsi_lower,
-                    best_result.rsi_upper, best_composite,
+                    best_result.rsi_upper, best_score,
                     best_result.alpha * 100, best_result.sharpe_ratio,
                     best_result.calmar_ratio,
                     best_result.num_trades, tested_combinations
@@ -1150,6 +1163,12 @@ class StrategyOptimizer:
             self.last_consolidated_trades_df = self.build_consolidated_trades(
                 results)
 
+        # Compute cross-symbol Z-scores so results are comparable across symbols.
+        if results:
+            logger.info("📊 Computing cross-symbol Z-scores...")
+            import zscore  # pylint: disable=import-outside-toplevel,redefined-outer-name,reimported
+            zscore.compute_cross_symbol_zscores(results)
+
         return [r for r in results if r is not None]
 
     def build_consolidated_trades(self, results: List[BacktestResult]) -> pd.DataFrame:
@@ -1186,7 +1205,7 @@ class StrategyOptimizer:
                     result.win_rate > 0.3):  # At least 30% win rate
                 filtered.append(result)
 
-        # Sort by alpha (descending)
-        filtered.sort(key=lambda x: x.alpha, reverse=True)
+        # Sort by composite score (cross-symbol Z-score, descending)
+        filtered.sort(key=lambda x: x.composite_score, reverse=True)
 
         return filtered

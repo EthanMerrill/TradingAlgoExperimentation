@@ -40,7 +40,8 @@ class TradingOpportunity:
     stop_loss_price: float
     take_profit_price: float
     num_trades: int = 0  # Number of trades in backtest for this symbol
-    composite_score: float = 0.0  # Composite score (alpha% + sharpe + calmar)
+    # Cross-symbol Z-score (alpha + sharpe + calmar, normalised)
+    composite_score: float = 0.0
     direction: str = "long"  # "long" or "short"
 
 
@@ -136,8 +137,8 @@ class TradingEngine:
                     "Error evaluating opportunity for %s: %s", result.symbol, e)
                 continue
         # Opportunity filtering and sorting
-        # Sort by alpha (best opportunities first)
-        opportunities.sort(key=lambda x: x.alpha, reverse=True)
+        # Sort by composite score (cross-symbol Z-score, best opportunities first)
+        opportunities.sort(key=lambda x: x.composite_score, reverse=True)
         # Filter out opportunities with negative alpha
         opportunities = [op for op in opportunities if op.alpha > 0]
         # Filter out opportunities with low win rate
@@ -233,8 +234,8 @@ class TradingEngine:
                     "Error evaluating short opportunity for %s: %s", result.symbol, e)
                 continue
 
-        # Sort by alpha (best opportunities first)
-        opportunities.sort(key=lambda x: x.alpha, reverse=True)
+        # Sort by composite score (cross-symbol Z-score, best opportunities first)
+        opportunities.sort(key=lambda x: x.composite_score, reverse=True)
         # Filter out opportunities with negative alpha
         opportunities = [op for op in opportunities if op.alpha > 0]
         # Filter out opportunities with low win rate
