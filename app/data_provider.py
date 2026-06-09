@@ -298,12 +298,15 @@ class DataProvider:
                 logger.error("Trading client not available")
                 return pd.DataFrame()
 
-            orders = self.trading_client.get_orders(
-                status='filled',
+            from alpaca.trading.requests import GetOrdersRequest
+
+            request = GetOrdersRequest(
+                status='closed',
                 symbols=[symbol],
                 limit=limit,
                 direction='desc'
             )
+            orders = self.trading_client.get_orders(filter=request)
 
             if not orders:
                 logger.debug("No filled orders found for %s", symbol)
@@ -378,6 +381,12 @@ class DataProvider:
             # Ensure submitted_at is a datetime
             if not isinstance(submitted_at, datetime):
                 submitted_at = datetime.fromisoformat(str(submitted_at))
+
+            # Alpaca returns offset-aware UTC datetimes, but the rest of the
+            # system uses naive datetimes. Strip the timezone to avoid
+            # "can't compare offset-naive and offset-aware datetimes" errors.
+            if submitted_at.tzinfo is not None:
+                submitted_at = submitted_at.replace(tzinfo=None)
 
             logger.info(
                 "Found entry order for %s (side=%s): submitted_at=%s, price=%.2f, qty=%.2f",

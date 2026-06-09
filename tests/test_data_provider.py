@@ -299,9 +299,17 @@ class TestDataProviderOrderHistory(unittest.TestCase):
             self.assertEqual(result.iloc[0]['side'], 'buy')
             self.assertEqual(result.iloc[0]['filled_qty'], 10.0)
 
-            mock_trading.get_orders.assert_called_once_with(
-                status='filled', symbols=['AAPL'], limit=50, direction='desc'
-            )
+            mock_trading.get_orders.assert_called_once()
+            # Verify the filter was constructed correctly
+            from alpaca.trading.requests import GetOrdersRequest
+            call_kwargs = mock_trading.get_orders.call_args.kwargs
+            self.assertIn('filter', call_kwargs)
+            filter_req = call_kwargs['filter']
+            self.assertIsInstance(filter_req, GetOrdersRequest)
+            self.assertEqual(filter_req.status, 'closed')
+            self.assertEqual(filter_req.symbols, ['AAPL'])
+            self.assertEqual(filter_req.limit, 50)
+            self.assertEqual(filter_req.direction, 'desc')
 
     @patch('data_provider.globalConfig')
     def test_get_filled_orders_for_symbol_empty(self, mock_config):

@@ -171,7 +171,6 @@ class TestPositionsManager(unittest.TestCase):
         closed = [p for p in self.manager.positions if p.closed]
         self.assertTrue(any(p.exit_reason == 'broker_closed' for p in closed))
 
-
     @patch('positions.globalConfig')
     def test_reconcile_alpaca_only_with_order_history(self, mock_config):
         """Test reconciliation uses order history for entry date and constrained backtest."""
@@ -246,7 +245,8 @@ class TestPositionsManager(unittest.TestCase):
 
             open_positions = self.manager.get_and_reconcile_positions()
 
-        self.assertEqual(len(open_positions), 2)  # MSFT from cloud + AAPL from Alpaca
+        # MSFT from cloud + AAPL from Alpaca
+        self.assertEqual(len(open_positions), 2)
         aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
         self.assertEqual(aapl_pos.symbol, 'AAPL')
 
@@ -337,7 +337,8 @@ class TestPositionsManager(unittest.TestCase):
 
             open_positions = self.manager.get_and_reconcile_positions()
 
-        self.assertEqual(len(open_positions), 2)  # MSFT from cloud + AAPL from Alpaca
+        # MSFT from cloud + AAPL from Alpaca
+        self.assertEqual(len(open_positions), 2)
         aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
         self.assertEqual(aapl_pos.symbol, 'AAPL')
         self.assertEqual(aapl_pos.rsi_period, 7)
@@ -400,7 +401,8 @@ class TestPositionsManager(unittest.TestCase):
 
             open_positions = self.manager.get_and_reconcile_positions()
 
-        self.assertEqual(len(open_positions), 2)  # MSFT from cloud + AAPL from Alpaca
+        # MSFT from cloud + AAPL from Alpaca
+        self.assertEqual(len(open_positions), 2)
         aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
         self.assertEqual(aapl_pos.symbol, 'AAPL')
 

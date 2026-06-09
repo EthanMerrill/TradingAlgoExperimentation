@@ -84,7 +84,7 @@ class PositionsManager:
                     'current_price': pd.to_numeric(alpaca_positions.get('current_price', 0), errors='coerce').fillna(0.0),
                     'position_value': pd.to_numeric(alpaca_positions.get('market_value', 0), errors='coerce').fillna(0.0),
                     'current_rsi': 0.0,
-                    'entry_date': np.datetime64(datetime.now(), 's'),
+                    'entry_date': pd.Timestamp(datetime.now()).floor('s'),
                     'rsi_period': 14,
                     'rsi_lower': 30,
                     'rsi_upper': 70,
@@ -97,8 +97,108 @@ class PositionsManager:
                     'exit_reason': None,
                     'closed': False,
                 })
+                # Mark that we just created the cloud snapshot from Alpaca so
+                # we can enrich these rows using order history/backtests
+                initialized_from_alpaca = True
             else:
                 cloud_positions = pd.DataFrame()
+                initialized_from_alpaca = False
+        else:
+            initialized_from_alpaca = False
+
+        # If we initialized the cloud positions from Alpaca (no prior snapshot),
+        # attempt to enrich each row with order-history-derived entry_date/price
+        # and constrained backtests to avoid look-ahead bias.
+        if 'initialized_from_alpaca' in locals() and initialized_from_alpaca:
+            logger.info(
+                "Enriching initialized Alpaca positions with order history/backtests")
+            try:
+                from strategy import StrategyOptimizer
+                optimizer = StrategyOptimizer()
+            except (ImportError, AttributeError) as e:
+                logger.warning(
+                    "Could not initialize strategy optimizer for enrichment: %s", e)
+                optimizer = None
+
+            for idx, row in cloud_positions.iterrows():
+                symbol = row['symbol']
+                position_side = "long"
+                # Try to determine side from alpaca_positions if available
+                if 'side' in alpaca_positions.columns:
+                    try:
+                        raw_side = alpaca_positions.loc[alpaca_positions['symbol'] == symbol].iloc[0].get(
+                            'side', 'long')
+                        position_side = "short" if raw_side in (
+                            'short', 'Short') else "long"
+                    except Exception:
+                        position_side = "long"
+
+                entry_date = parse_dt(
+                    row.get('entry_date'), default=datetime.now())
+                entry_price = float(row.get('entry_price', 0) or 0)
+                order_info = None
+                try:
+                    order_info = self.data_provider.get_entry_order_for_symbol(
+                        symbol, side=position_side)
+                except Exception:
+                    order_info = None
+
+                if order_info is not None:
+                    try:
+                        order_submitted_at, order_price = order_info
+                        entry_date = order_submitted_at
+                        entry_price = order_price
+                    except Exception:
+                        # Unexpected return shape (e.g. a Mock); ignore and fall back
+                        order_info = None
+
+                # Default params
+                current_rsi = 0.0
+                rsi_period = 14
+                rsi_lower = 30
+                rsi_upper = 70
+                alpha = 0.0
+
+                if optimizer is not None:
+                    try:
+                        start_date = globalConfig.BACKTEST_START_DATE
+                        if order_info is not None:
+                            end_date = order_info[0] - timedelta(days=1)
+                        else:
+                            end_date = datetime.now() - timedelta(minutes=20)
+
+                        if end_date > start_date:
+                            backtest_result = optimizer.optimize_symbol(
+                                symbol, start_date, end_date, direction=position_side
+                            )
+                            if backtest_result is not None:
+                                current_rsi = float(
+                                    backtest_result.current_rsi) if backtest_result.current_rsi is not None else 0.0
+                                rsi_period = int(backtest_result.rsi_period)
+                                rsi_lower = int(backtest_result.rsi_lower)
+                                rsi_upper = int(backtest_result.rsi_upper)
+                                alpha = float(backtest_result.alpha)
+                        else:
+                            logger.warning(
+                                "%s: Entry date %s is too old for backtest window (start=%s). Using default RSI parameters.",
+                                symbol, entry_date, start_date
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Backtest enrichment failed for %s: %s", symbol, e)
+
+                # write enriched values back into the DataFrame (ensure datetime precision)
+                try:
+                    cloud_positions.at[idx, 'entry_date'] = pd.Timestamp(
+                        entry_date).floor('s')
+                except Exception:
+                    cloud_positions.at[idx, 'entry_date'] = entry_date
+                cloud_positions.at[idx, 'entry_price'] = entry_price
+                cloud_positions.at[idx, 'current_rsi'] = current_rsi
+                cloud_positions.at[idx, 'rsi_period'] = rsi_period
+                cloud_positions.at[idx, 'rsi_lower'] = rsi_lower
+                cloud_positions.at[idx, 'rsi_upper'] = rsi_upper
+                cloud_positions.at[idx, 'alpha'] = alpha
 
         # Reconcile positions from both sources
         newly_closed_positions = pd.DataFrame()
@@ -146,17 +246,24 @@ class PositionsManager:
                     entry_date = datetime.now()
                     entry_price = float(alpaca_row.get(
                         'avg_entry_price', 0) or 0)
-                    order_info = self.data_provider.get_entry_order_for_symbol(
-                        symbol, side=position_side)
+                    order_info = None
+                    try:
+                        order_info = self.data_provider.get_entry_order_for_symbol(
+                            symbol, side=position_side)
+                    except Exception:
+                        order_info = None
 
                     if order_info is not None:
-                        order_submitted_at, order_price = order_info
-                        logger.info(
-                            "Found order history for Alpaca-only %s: submitted_at=%s, price=%.2f",
-                            symbol, order_submitted_at, order_price
-                        )
-                        entry_date = order_submitted_at
-                        entry_price = order_price
+                        try:
+                            order_submitted_at, order_price = order_info
+                            logger.info(
+                                "Found order history for Alpaca-only %s: submitted_at=%s, price=%.2f",
+                                symbol, order_submitted_at, order_price
+                            )
+                            entry_date = order_submitted_at
+                            entry_price = order_price
+                        except Exception:
+                            order_info = None
 
                     current_rsi = 0.0
                     rsi_period = 14
@@ -204,7 +311,8 @@ class PositionsManager:
                                 if backtest_result is not None:
                                     current_rsi = float(
                                         backtest_result.current_rsi) if backtest_result.current_rsi is not None else 0.0
-                                    rsi_period = int(backtest_result.rsi_period)
+                                    rsi_period = int(
+                                        backtest_result.rsi_period)
                                     rsi_lower = int(backtest_result.rsi_lower)
                                     rsi_upper = int(backtest_result.rsi_upper)
                                     alpha = float(backtest_result.alpha)
@@ -221,7 +329,7 @@ class PositionsManager:
                         'current_price': float(alpaca_row.get('current_price', 0) or 0),
                         'position_value': float(alpaca_row.get('market_value', 0) or 0),
                         'current_rsi': current_rsi,
-                        'entry_date': np.datetime64(entry_date, 's'),
+                        'entry_date': pd.Timestamp(entry_date).floor('s'),
                         'rsi_period': rsi_period,
                         'rsi_lower': rsi_lower,
                         'rsi_upper': rsi_upper,
@@ -266,7 +374,7 @@ class PositionsManager:
                     if 'exit_date' not in cloud_positions.columns:
                         cloud_positions['exit_date'] = pd.NaT
                     cloud_positions.loc[symbol_mask,
-                                        'exit_date'] = np.datetime64(datetime.now(), 's')
+                                        'exit_date'] = pd.Timestamp(datetime.now()).floor('s')
 
                     if 'entry_price' in cloud_positions.columns:
                         if 'realized_return' not in cloud_positions.columns:
@@ -322,7 +430,8 @@ class PositionsManager:
                     # overwriting values coming from Alpaca.
                     if 'entry_date' in cloud_positions.columns:
                         try:
-                            cloud_positions.at[index, 'entry_date'] = np.datetime64(parse_dt(cloud_positions.at[index, 'entry_date']), 's')
+                            cloud_positions.at[index, 'entry_date'] = pd.Timestamp(
+                                parse_dt(cloud_positions.at[index, 'entry_date'])).floor('s')
                         except Exception:
                             # Fall back to leaving the existing value if parsing fails
                             pass
