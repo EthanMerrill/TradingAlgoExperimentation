@@ -79,10 +79,14 @@ class PositionsManager:
                     "Cloud positions are empty. Initializing with Alpaca positions.")
                 cloud_positions = pd.DataFrame({
                     'symbol': alpaca_positions['symbol'],
-                    'shares': pd.to_numeric(alpaca_positions.get('qty', 0), errors='coerce').fillna(0.0),
-                    'entry_price': pd.to_numeric(alpaca_positions.get('avg_entry_price', 0), errors='coerce').fillna(0.0),
-                    'current_price': pd.to_numeric(alpaca_positions.get('current_price', 0), errors='coerce').fillna(0.0),
-                    'position_value': pd.to_numeric(alpaca_positions.get('market_value', 0), errors='coerce').fillna(0.0),
+                    'shares': pd.to_numeric(
+                        alpaca_positions.get('qty', 0), errors='coerce').fillna(0.0),
+                    'entry_price': pd.to_numeric(
+                        alpaca_positions.get('avg_entry_price', 0), errors='coerce').fillna(0.0),
+                    'current_price': pd.to_numeric(
+                        alpaca_positions.get('current_price', 0), errors='coerce').fillna(0.0),
+                    'position_value': pd.to_numeric(
+                        alpaca_positions.get('market_value', 0), errors='coerce').fillna(0.0),
                     'current_rsi': 0.0,
                     'entry_date': pd.Timestamp(datetime.now()).floor('s'),
                     'rsi_period': 14,
@@ -130,7 +134,7 @@ class PositionsManager:
                             'side', 'long')
                         position_side = "short" if raw_side in (
                             'short', 'Short') else "long"
-                    except Exception:
+                    except (IndexError, KeyError, TypeError):
                         position_side = "long"
 
                 entry_date = parse_dt(
@@ -140,7 +144,7 @@ class PositionsManager:
                 try:
                     order_info = self.data_provider.get_entry_order_for_symbol(
                         symbol, side=position_side)
-                except Exception:
+                except (ValueError, RuntimeError, AttributeError):
                     order_info = None
 
                 if order_info is not None:
@@ -148,7 +152,7 @@ class PositionsManager:
                         order_submitted_at, order_price = order_info
                         entry_date = order_submitted_at
                         entry_price = order_price
-                    except Exception:
+                    except (TypeError, ValueError):
                         # Unexpected return shape (e.g. a Mock); ignore and fall back
                         order_info = None
 
@@ -180,10 +184,11 @@ class PositionsManager:
                                 alpha = float(backtest_result.alpha)
                         else:
                             logger.warning(
-                                "%s: Entry date %s is too old for backtest window (start=%s). Using default RSI parameters.",
+                                "%s: Entry date %s is too old for backtest window "
+                                "(start=%s). Using default RSI parameters.",
                                 symbol, entry_date, start_date
                             )
-                    except Exception as e:
+                    except (ValueError, TypeError, KeyError, RuntimeError) as e:
                         logger.warning(
                             "Backtest enrichment failed for %s: %s", symbol, e)
 
@@ -191,7 +196,7 @@ class PositionsManager:
                 try:
                     cloud_positions.at[idx, 'entry_date'] = pd.Timestamp(
                         entry_date).floor('s')
-                except Exception:
+                except (ValueError, TypeError):
                     cloud_positions.at[idx, 'entry_date'] = entry_date
                 cloud_positions.at[idx, 'entry_price'] = entry_price
                 cloud_positions.at[idx, 'current_rsi'] = current_rsi
@@ -250,7 +255,7 @@ class PositionsManager:
                     try:
                         order_info = self.data_provider.get_entry_order_for_symbol(
                             symbol, side=position_side)
-                    except Exception:
+                    except (ValueError, RuntimeError, AttributeError):
                         order_info = None
 
                     if order_info is not None:
@@ -262,7 +267,7 @@ class PositionsManager:
                             )
                             entry_date = order_submitted_at
                             entry_price = order_price
-                        except Exception:
+                        except (TypeError, ValueError):
                             order_info = None
 
                     current_rsi = 0.0
@@ -335,8 +340,10 @@ class PositionsManager:
                         'rsi_upper': rsi_upper,
                         'alpha': alpha,
                         'composite_score': composite_score,
-                        'stop_loss_price': (entry_price * (1 - globalConfig.STOP_LOSS_PCT)) if entry_price > 0 else np.nan,
-                        'take_profit_price': (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)) if entry_price > 0 else np.nan,
+                        'stop_loss_price': (
+                            (entry_price * (1 - globalConfig.STOP_LOSS_PCT)) if entry_price > 0 else np.nan),
+                        'take_profit_price': (
+                            (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)) if entry_price > 0 else np.nan),
                         'exit_date': pd.NaT,
                         'exit_price': np.nan,
                         'realized_return': np.nan,
@@ -423,16 +430,17 @@ class PositionsManager:
                         if 'cloud_symbols' in locals() and symbol in cloud_symbols:
                             cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
                                 alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
-                    except Exception:
+                    except (IndexError, KeyError, ValueError):
                         # If anything goes wrong, skip overwriting entry_price.
                         pass
                     # Ensure any datetime-like columns remain compatible when
                     # overwriting values coming from Alpaca.
                     if 'entry_date' in cloud_positions.columns:
                         try:
-                            cloud_positions.at[index, 'entry_date'] = pd.Timestamp(
-                                parse_dt(cloud_positions.at[index, 'entry_date'])).floor('s')
-                        except Exception:
+                            parsed = parse_dt(cloud_positions.at[index, 'entry_date'])
+                            if parsed is not None:
+                                cloud_positions.at[index, 'entry_date'] = pd.Timestamp(parsed).floor('s')
+                        except (ValueError, TypeError):
                             # Fall back to leaving the existing value if parsing fails
                             pass
         # Convert cloud positions DataFrame to a list of Position objects

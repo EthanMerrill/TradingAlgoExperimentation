@@ -9,7 +9,7 @@
 		"take_profit_pct": 0.15,
 		"max_hold_days": 30,
 		"min_win_rate": 0.7,
-		"enable_short_selling": false,
+		"enable_short_selling": true,
 		"max_short_long_ratio": 0.3
 	},
 	"backtesting": {
