@@ -437,9 +437,11 @@ class PositionsManager:
                     # overwriting values coming from Alpaca.
                     if 'entry_date' in cloud_positions.columns:
                         try:
-                            parsed = parse_dt(cloud_positions.at[index, 'entry_date'])
+                            parsed = parse_dt(
+                                cloud_positions.at[index, 'entry_date'])
                             if parsed is not None:
-                                cloud_positions.at[index, 'entry_date'] = pd.Timestamp(parsed).floor('s')
+                                cloud_positions.at[index, 'entry_date'] = pd.Timestamp(
+                                    parsed).floor('s')
                         except (ValueError, TypeError):
                             # Fall back to leaving the existing value if parsing fails
                             pass
@@ -583,8 +585,10 @@ class PositionsManager:
         """
         # Find and remove the position from self.positions
         position_found = False
+        position_side = "long"  # default fallback
         for i, position in enumerate(self.positions):
             if position.symbol == symbol:
+                position_side = position.side  # capture side before removing
                 self.positions.pop(i)
                 position_found = True
                 break
@@ -593,11 +597,44 @@ class PositionsManager:
             logger.warning(
                 "Position with symbol %s not found in current positions.", symbol)
             return
+
+        # Determine which order side represents the close:
+        #   Long positions  are closed with sell orders
+        #   Short positions are closed with buy  orders (cover)
+        close_order_side = "sell" if position_side == "long" else "buy"
+
+        # Try to get the actual filled close price from Alpaca order history
+        filled_exit_price = None
+        try:
+            orders_df = self.data_provider.get_filled_orders_for_symbol(
+                symbol, limit=50)
+            if not orders_df.empty and 'side' in orders_df.columns:
+                close_orders = orders_df[orders_df['side'] == close_order_side]
+                close_orders = close_orders[close_orders['filled_qty'] > 0]
+                if not close_orders.empty:
+                    latest_close = close_orders.iloc[0]
+                    filled_exit_price = latest_close['filled_avg_price']
+                    logger.info(
+                        "Found filled close order for %s (side=%s): price=%.2f, qty=%.2f",
+                        symbol, close_order_side, filled_exit_price,
+                        latest_close['filled_qty']
+                    )
+        except Exception as e:
+            logger.warning(
+                "Could not fetch filled close price for %s: %s. Falling back to current_price.",
+                symbol, e
+            )
+
         # Get current cloud positions to mark as closed
         cloud_positions = self.cloud_storage.get_latest_positions_df(True)
         if not cloud_positions.empty and 'symbol' in cloud_positions.columns:
             symbol_mask = cloud_positions['symbol'] == symbol
-            if 'current_price' in cloud_positions.columns:
+
+            # Use the filled close price from Alpaca if available, otherwise fall back
+            if filled_exit_price is not None:
+                cloud_positions.loc[symbol_mask,
+                                    'exit_price'] = filled_exit_price
+            elif 'current_price' in cloud_positions.columns:
                 cloud_positions.loc[symbol_mask,
                                     'exit_price'] = cloud_positions.loc[symbol_mask, 'current_price']
             elif 'entry_price' in cloud_positions.columns:

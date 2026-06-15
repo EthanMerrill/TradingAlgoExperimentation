@@ -19,17 +19,17 @@
 	"rsi_optimization": {
 		"period_range": {
 			"start": 3,
-			"stop": 24,
+			"stop": 40,
 			"step": 5
 		},
 		"lower_range": {
 			"start": 20,
-			"stop": 60,
+			"stop": 45,
 			"step": 5
 		},
 		"upper_range": {
 			"start": 50,
-			"stop": 86,
+			"stop": 85,
 			"step": 5
 		}
 	},

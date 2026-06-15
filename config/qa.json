@@ -19,8 +19,8 @@
 	"rsi_optimization": {
 		"period_range": {
 			"start": 3,
-			"stop": 34,
-			"step": 10
+			"stop": 40,
+			"step": 5
 		},
 		"lower_range": {
 			"start": 20,
@@ -28,14 +28,14 @@
 			"step": 5
 		},
 		"upper_range": {
-			"start": 60,
+			"start": 50,
 			"stop": 85,
 			"step": 5
 		}
 	},
 	"data_filtering": {
-		"min_volume": 200000,
-		"min_price": 15.0,
+		"min_volume": 60000,
+		"min_price": 8.0,
 		"max_price": 350.0,
 		"min_market_cap": 100000000
 	},
