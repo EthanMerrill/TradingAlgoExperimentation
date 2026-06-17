@@ -20,21 +20,21 @@
 		"period_range": {
 			"start": 3,
 			"stop": 40,
-			"step": 5
+			"step": 6
 		},
 		"lower_range": {
 			"start": 20,
-			"stop": 45,
-			"step": 5
+			"stop": 40,
+			"step": 6
 		},
 		"upper_range": {
 			"start": 50,
 			"stop": 85,
-			"step": 5
+			"step": 6
 		}
 	},
 	"data_filtering": {
-		"min_volume": 60000,
+		"min_volume": 20000,
 		"min_price": 8.0,
 		"max_price": 350.0,
 		"min_market_cap": 100000000
