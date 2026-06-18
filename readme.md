@@ -6,7 +6,7 @@ Some Experimenting with a trading algorithm for US Common Stock.
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.13+**
 - **TA-Lib** (C library — install via `brew install ta-lib` on macOS)
 - **Alpaca API keys** — sign up for free paper trading at [alpaca.markets](https://alpaca.markets)
 
