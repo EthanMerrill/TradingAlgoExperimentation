@@ -175,7 +175,8 @@ class TestTradingEngine(unittest.TestCase):
     def test_place_oco_close_order_dry_run(self):
         self.engine.set_dry_run_mode(True)
 
-        result = self.engine.place_oco_close_order("AAPL", 10, 95.0, 110.0, side="long")
+        result = self.engine.place_oco_close_order(
+            "AAPL", 10, 95.0, 110.0, side="long")
 
         self.assertTrue(result)
 
