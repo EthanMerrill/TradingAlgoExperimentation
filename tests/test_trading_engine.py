@@ -172,10 +172,10 @@ class TestTradingEngine(unittest.TestCase):
         self.assertTrue(result)
         self.engine._positions_manager.open_position.assert_called_once()
 
-    def test_place_oco_sell_order_dry_run(self):
+    def test_place_oco_close_order_dry_run(self):
         self.engine.set_dry_run_mode(True)
 
-        result = self.engine.place_oco_sell_order("AAPL", 10, 95.0, 110.0)
+        result = self.engine.place_oco_close_order("AAPL", 10, 95.0, 110.0, side="long")
 
         self.assertTrue(result)
 
@@ -201,7 +201,7 @@ class TestTradingEngine(unittest.TestCase):
 
         with patch.object(self.engine, 'place_market_sell_order', return_value=True), \
                 patch.object(self.engine, 'calculate_todays_stop_loss_and_take_profit', return_value=(90.0, 115.0)), \
-                patch.object(self.engine, 'place_oco_sell_order', return_value=True):
+                patch.object(self.engine, 'place_oco_close_order', return_value=True):
             out = self.engine.update_portfolio_orders(
                 summary, [expired, active])
 
