@@ -88,7 +88,7 @@ class TestPositionsManager(unittest.TestCase):
 
         self.assertEqual(len(self.manager.positions), 1)
 
-    def test_close_position_removes_from_in_memory_list(self):
+    def test_close_position_marks_closed_in_place(self):
         p = Position(
             symbol="AAPL",
             quantity=10.0,
@@ -100,19 +100,67 @@ class TestPositionsManager(unittest.TestCase):
             rsi_period=14,
             rsi_lower=30,
             rsi_upper=70,
+            stop_loss_price=95.0,
+            take_profit_price=110.0,
             closed=False,
+            side="long",
         )
         self.manager.positions = [p]
         self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
             'symbol': ['AAPL'],
             'entry_price': [100.0],
             'current_price': [101.0],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
             'closed': [False],
         })
 
         self.manager.close_position("AAPL")
 
-        self.assertEqual(len(self.manager.positions), 0)
+        # Position stays in list but is now closed
+        self.assertEqual(len(self.manager.positions), 1)
+        self.assertTrue(self.manager.positions[0].closed)
+        self.assertIsNotNone(self.manager.positions[0].exit_price)
+        self.assertIsNotNone(self.manager.positions[0].realized_return)
+
+    def test_close_short_position_correct_realized_return(self):
+        """Short that lost money: entry=100, covered at 105 → -5% return."""
+        p = Position(
+            symbol="PDD",
+            quantity=10.0,
+            entry_price=100.0,
+            current_price=110.0,
+            current_rsi=70.0,
+            entry_date=datetime.now(),
+            alpha=0.1,
+            rsi_period=14,
+            rsi_lower=30,
+            rsi_upper=70,
+            stop_loss_price=105.0,
+            take_profit_price=90.0,
+            closed=False,
+            side="short",
+        )
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+            'symbol': ['PDD'],
+            'entry_price': [100.0],
+            'current_price': [110.0],
+            'stop_loss_price': [105.0],
+            'take_profit_price': [90.0],
+            'side': ['short'],
+            'closed': [False],
+        })
+
+        self.manager.close_position("PDD")
+
+        self.assertEqual(len(self.manager.positions), 1)
+        self.assertTrue(self.manager.positions[0].closed)
+        # OCO fallback: 110 is closer to 105 (stop) than 90 (take), so exit=105
+        self.assertEqual(self.manager.positions[0].exit_price, 105.0)
+        # Short: (100 - 105) / 100 = -0.05
+        self.assertAlmostEqual(
+            self.manager.positions[0].realized_return, -0.05, places=4)
 
     def test_get_and_reconcile_positions_initializes_from_alpaca_when_cloud_empty(self):
         self.data.get_current_positions_df.return_value = pd.DataFrame({

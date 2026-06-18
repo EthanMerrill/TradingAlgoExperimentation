@@ -203,10 +203,16 @@ class CloudStorage:
 
                         realized_return = pos.realized_return
                         if realized_return is None and pos.closed and pos.entry_price:
-                            realized_return = (
-                                (exit_price - pos.entry_price) / pos.entry_price
-                                if exit_price is not None else None
-                            )
+                            if exit_price is not None:
+                                side = getattr(pos, 'side', 'long')
+                                if side == "short":
+                                    realized_return = (
+                                        pos.entry_price - exit_price) / pos.entry_price
+                                else:
+                                    realized_return = (
+                                        exit_price - pos.entry_price) / pos.entry_price
+                            else:
+                                realized_return = None
 
                         pos_dict = {
                             'symbol': pos.symbol,
@@ -224,7 +230,8 @@ class CloudStorage:
                             'closed': pos.closed,
                             'exit_date': pos.exit_date,
                             'exit_price': exit_price,
-                            'realized_return': realized_return
+                            'realized_return': realized_return,
+                            'side': getattr(pos, 'side', 'long'),
                         }
                         positions_list.append(pos_dict)
                     positions_df = pd.DataFrame(positions_list)
