@@ -144,8 +144,10 @@ All parameters can be configured via environment variables:
 | `MAX_HOLD_DAYS`     | 30      | Maximum holding period          |
 | `BACKTEST_MONTHS`   | 6       | Backtest lookback period        |
 | `MIN_VOLUME`        | 1000000 | Minimum daily volume filter     |
+| `MAX_VOLUME`        | null    | Maximum daily volume filter     |
 | `MIN_PRICE`         | 15.0    | Minimum stock price             |
 | `MAX_PRICE`         | 200.0   | Maximum stock price             |
+| `MAX_MARKET_CAP`    | null    | Maximum market cap (if available) |
 
 ## Data Storage
 

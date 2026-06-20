@@ -146,7 +146,7 @@ make docker-run    # Run the app in Docker
 
 ### Backtest
 
-1. Filter universe of all stocks to those with large market caps and a reasonable amount of volume results in 8-1.5k securities
+1. Filter universe of all stocks to those with bounded price and volume, plus market-cap filters when available, resulting in a focused tradable set
 2. For each security in this universe, backtest RSI Strategies over the past _6 months_. These are backtested with different combinations of `rsi upper bound`, `rsi lower bound`, and `rsi period`. These three parameters are optimized for each security using grid optimization. An improved optimization strategy is on the roadmap. This operation creates a dataframe with all the securities, their optimized parameters, the strategy return, and the return of a buy and hold strategy for the given security.
 3. Every 50 strategy generations, or securities run through the backests/parameter optimization, the dataframe is appended to a locally saved version. This is saved in a format called a pickle. This is a way of reducing the amount of ram required by the program.
 4. The backtest dataframe and is saved to google cloud storage once all securities have been processed.

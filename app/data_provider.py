@@ -473,11 +473,18 @@ class DataProvider:
 
             symbols = [getattr(asset, 'symbol', '')
                        for asset in tradable_stocks if getattr(asset, 'symbol', None)]
+            symbol_market_caps = {}
+            for asset in tradable_stocks:
+                symbol = getattr(asset, 'symbol', None)
+                market_cap = self._extract_market_cap(asset)
+                if symbol and market_cap is not None:
+                    symbol_market_caps[symbol] = market_cap
             logger.info(
                 "Found %d tradable stocks before price filtering", len(symbols))
 
             # Apply price filtering using snapshots
-            price_filtered_symbols = self._filter_symbols_by_price(symbols)
+            price_filtered_symbols = self._filter_symbols_by_price(
+                symbols, symbol_market_caps)
 
             # Create universe dataframe with price-filtered symbols
             universe_data = []
@@ -500,7 +507,18 @@ class DataProvider:
             logger.error("Error getting stock universe: %s", e)
             return pd.DataFrame()
 
-    def _filter_symbols_by_price(self, symbols: List[str]) -> List[str]:
+    def _extract_market_cap(self, asset: Any) -> Optional[float]:
+        """Extract market cap from an Alpaca asset if available."""
+        raw_market_cap = getattr(asset, 'market_cap', None)
+        if raw_market_cap is None:
+            return None
+
+        try:
+            return float(raw_market_cap)
+        except (TypeError, ValueError):
+            return None
+
+    def _filter_symbols_by_price(self, symbols: List[str], symbol_market_caps: Optional[Dict[str, float]] = None) -> List[str]:
         """
         Filter symbols by current price using Alpaca snapshots API.
 
@@ -581,11 +599,32 @@ class DataProvider:
                                     daily_volume = float(
                                         previous_bar['volume'])
 
-                            # Apply price and volume filters
+                            market_cap = None
+                            if symbol_market_caps:
+                                market_cap = symbol_market_caps.get(symbol)
+
+                            # Apply price, volume, and optional market cap filters
                             if current_price is not None and daily_volume is not None:
-                                if (current_price >= globalConfig.MIN_PRICE and
-                                    current_price <= globalConfig.MAX_PRICE and
-                                        daily_volume >= globalConfig.MIN_VOLUME):
+                                max_volume = getattr(
+                                    globalConfig, 'MAX_VOLUME', None)
+                                max_market_cap = getattr(
+                                    globalConfig, 'MAX_MARKET_CAP', None)
+
+                                within_price_range = (
+                                    current_price >= globalConfig.MIN_PRICE and
+                                    current_price <= globalConfig.MAX_PRICE
+                                )
+                                within_volume_range = (
+                                    daily_volume >= globalConfig.MIN_VOLUME and
+                                    (max_volume is None or daily_volume <= max_volume)
+                                )
+                                within_market_cap = (
+                                    max_market_cap is None or
+                                    market_cap is None or
+                                    market_cap <= max_market_cap
+                                )
+
+                                if within_price_range and within_volume_range and within_market_cap:
                                     filtered_symbols.append(symbol)
 
                 except Exception as batch_error:
@@ -597,9 +636,18 @@ class DataProvider:
                 # Rate limiting
                 time.sleep(self._rate_limit_delay)
 
+            max_volume = getattr(globalConfig, 'MAX_VOLUME', None)
+            max_market_cap = getattr(globalConfig, 'MAX_MARKET_CAP', None)
             logger.info(
-                "Price and volume filtering: %d/%d symbols passed ($%s - $%s, volume >= %s)",
-                len(filtered_symbols), len(symbols), globalConfig.MIN_PRICE, globalConfig.MAX_PRICE, f"{globalConfig.MIN_VOLUME:,}")
+                "Universe filtering: %d/%d symbols passed ($%s - $%s, volume >= %s%s%s)",
+                len(filtered_symbols),
+                len(symbols),
+                globalConfig.MIN_PRICE,
+                globalConfig.MAX_PRICE,
+                f"{globalConfig.MIN_VOLUME:,}",
+                f", volume <= {max_volume:,}" if max_volume is not None else "",
+                f", market_cap <= {max_market_cap:,} when available" if max_market_cap is not None else ""
+            )
             return filtered_symbols
 
         except Exception as e:

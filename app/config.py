@@ -131,6 +131,8 @@ class Config:
             self.MAX_PRICE = data_filtering.get('max_price', 200.0)
             self.MIN_MARKET_CAP = data_filtering.get(
                 'min_market_cap', 1000000000)
+            self.MAX_VOLUME = data_filtering.get('max_volume')
+            self.MAX_MARKET_CAP = data_filtering.get('max_market_cap')
 
             # API parameters
             api = config_data.get('api', {})
