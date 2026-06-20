@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -32,7 +32,12 @@ class Position:
     realized_return: Optional[float] = None
     exit_reason: Optional[str] = None
     closed: bool = False
-    side: str = "long"
+    side: str = field(init=False, default="long")
+
+    def __post_init__(self):
+        """Derive side from quantity: negative qty = short position."""
+        if self.quantity < 0:
+            object.__setattr__(self, 'side', 'short')
 
 
 class PositionsManager:
@@ -126,16 +131,9 @@ class PositionsManager:
 
             for idx, row in cloud_positions.iterrows():
                 symbol = row['symbol']
-                position_side = "long"
-                # Try to determine side from alpaca_positions if available
-                if 'side' in alpaca_positions.columns:
-                    try:
-                        raw_side = alpaca_positions.loc[alpaca_positions['symbol'] == symbol].iloc[0].get(
-                            'side', 'long')
-                        position_side = "short" if raw_side in (
-                            'short', 'Short') else "long"
-                    except (IndexError, KeyError, TypeError):
-                        position_side = "long"
+                # Derive side from quantity sign (negative = short)
+                qty = float(row.get('shares', 0) or 0)
+                position_side = "short" if qty < 0 else "long"
 
                 entry_date = parse_dt(
                     row.get('entry_date'), default=datetime.now())
@@ -238,12 +236,9 @@ class PositionsManager:
                     alpaca_row = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol].iloc[0]
 
-                    # Determine side from Alpaca position data if available
-                    position_side = "long"
-                    if 'side' in alpaca_positions.columns:
-                        raw_side = alpaca_row.get('side', 'long')
-                        position_side = "short" if raw_side in (
-                            'short', 'Short') else "long"
+                    # Derive side from quantity sign (negative = short)
+                    alpaca_qty = float(alpaca_row.get('qty', 0) or 0)
+                    position_side = "short" if alpaca_qty < 0 else "long"
 
                     # Try to find the entry order from Alpaca order history
                     # to determine the real entry date and price, avoiding
@@ -371,11 +366,10 @@ class PositionsManager:
                 for symbol in cloud_only_symbols:
                     symbol_mask = cloud_positions['symbol'] == symbol
 
-                    # Determine position side for correct return formula
-                    position_side = str(cloud_positions.loc[symbol_mask, 'side'].values[0]) \
-                        if 'side' in cloud_positions.columns and pd.notna(
-                            cloud_positions.loc[symbol_mask, 'side'].values[0]
-                    ) else "long"
+                    # Determine position side from quantity sign (negative = short)
+                    cloud_qty = float(cloud_positions.loc[symbol_mask, 'shares'].values[0]) \
+                        if 'shares' in cloud_positions.columns else 0.0
+                    position_side = "short" if cloud_qty < 0 else "long"
 
                     # Determine exit price: try OCO targets first, then fall back
                     stop_loss = cloud_positions.loc[symbol_mask, 'stop_loss_price'].values[0] \
@@ -523,8 +517,6 @@ class PositionsManager:
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=parse_dt(
                         row['exit_date'], default=None),
-                    side=str(row['side']) if 'side' in row and pd.notna(
-                        row['side']) else "long"
                 )
                 self.positions.append(position)
 
@@ -564,8 +556,6 @@ class PositionsManager:
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=parse_dt(
                         row['exit_date'], default=None),
-                    side=str(row['side']) if 'side' in row and pd.notna(
-                        row['side']) else "long"
                 )
                 self.positions.append(position)
 
@@ -603,8 +593,6 @@ class PositionsManager:
                     closed=True,
                     exit_date=parse_dt(
                         row['exit_date'], default=datetime.now()),
-                    side=str(row['side']) if 'side' in row and pd.notna(
-                        row['side']) else "long"
                 )
                 self.positions.append(position)
 
@@ -714,9 +702,6 @@ class PositionsManager:
             if 'entry_price' in cloud_positions.columns:
                 entry_prices = pd.to_numeric(
                     cloud_positions.loc[symbol_mask, 'entry_price'], errors='coerce')
-                if 'side' not in cloud_positions.columns:
-                    cloud_positions['side'] = "long"
-                cloud_positions.loc[symbol_mask, 'side'] = position_side
                 if position_side == "short":
                     cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
                         entry_prices > 0,

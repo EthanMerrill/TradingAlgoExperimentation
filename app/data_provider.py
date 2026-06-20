@@ -251,7 +251,13 @@ class DataProvider:
             for position in positions:
                 # Safely handle position attributes
                 symbol = getattr(position, 'symbol', None)
-                qty = getattr(position, 'qty', 0)
+                qty_raw = getattr(position, 'qty', 0)
+                qty = float(qty_raw) if qty_raw else 0.0
+                # Alpaca returns positive qty for both longs and shorts;
+                # negate for shorts so that qty < 0 implies a short position.
+                pos_side = getattr(position, 'side', 'long')
+                if str(pos_side).lower() == 'short':
+                    qty = -abs(qty)
                 market_value = getattr(position, 'market_value', 0)
                 avg_entry_price = getattr(position, 'avg_entry_price', 0)
                 unrealized_pl = getattr(position, 'unrealized_pl', 0)
@@ -260,7 +266,7 @@ class DataProvider:
 
                 position_data.append({
                     'symbol': symbol,
-                    'qty': float(qty) if qty else 0.0,
+                    'qty': qty,
                     'market_value': float(market_value) if market_value else 0.0,
                     'avg_entry_price': float(avg_entry_price) if avg_entry_price else 0.0,
                     'unrealized_pl': float(unrealized_pl) if unrealized_pl else 0.0,

@@ -103,7 +103,6 @@ class TestPositionsManager(unittest.TestCase):
             stop_loss_price=95.0,
             take_profit_price=110.0,
             closed=False,
-            side="long",
         )
         self.manager.positions = [p]
         self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
@@ -127,7 +126,7 @@ class TestPositionsManager(unittest.TestCase):
         """Short that lost money: entry=100, covered at 105 → -5% return."""
         p = Position(
             symbol="PDD",
-            quantity=10.0,
+            quantity=-10.0,  # negative = short
             entry_price=100.0,
             current_price=110.0,
             current_rsi=70.0,
@@ -139,16 +138,15 @@ class TestPositionsManager(unittest.TestCase):
             stop_loss_price=105.0,
             take_profit_price=90.0,
             closed=False,
-            side="short",
         )
         self.manager.positions = [p]
         self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
             'symbol': ['PDD'],
             'entry_price': [100.0],
             'current_price': [110.0],
+            'shares': [-10.0],
             'stop_loss_price': [105.0],
             'take_profit_price': [90.0],
-            'side': ['short'],
             'closed': [False],
         })
 

@@ -559,7 +559,7 @@ class TradingEngine:
             try:
                 new_position = Position(
                     symbol=opportunity.symbol,
-                    quantity=float(shares),
+                    quantity=-float(shares),  # negative = short
                     entry_price=opportunity.entry_price,
                     current_price=opportunity.entry_price,
                     current_rsi=opportunity.current_rsi,
@@ -572,7 +572,6 @@ class TradingEngine:
                     take_profit_price=opportunity.take_profit_price,
                     closed=False,
                     exit_date=None,
-                    side="short"
                 )
 
                 self._positions_manager.open_position(new_position)

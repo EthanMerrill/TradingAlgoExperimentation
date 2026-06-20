@@ -231,7 +231,6 @@ class CloudStorage:
                             'exit_date': pos.exit_date,
                             'exit_price': exit_price,
                             'realized_return': realized_return,
-                            'side': getattr(pos, 'side', 'long'),
                         }
                         positions_list.append(pos_dict)
                     positions_df = pd.DataFrame(positions_list)
