@@ -122,7 +122,7 @@ class PositionsManager:
             logger.info(
                 "Enriching initialized Alpaca positions with order history/backtests")
             try:
-                from strategy import StrategyOptimizer
+                from optimizer import StrategyOptimizer
                 optimizer = StrategyOptimizer()
             except (ImportError, AttributeError) as e:
                 logger.warning(
@@ -225,7 +225,7 @@ class PositionsManager:
                 optimizer = None
                 try:
                     # Local import avoids unnecessary startup cost and potential import cycles.
-                    from strategy import StrategyOptimizer
+                    from optimizer import StrategyOptimizer
                     optimizer = StrategyOptimizer()
                 except (ImportError, AttributeError) as e:
                     logger.warning(
