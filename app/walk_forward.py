@@ -208,7 +208,8 @@ class WalkForwardValidator:
                 needed_days = (
                     globalConfig.WF_IS_MONTHS
                     + globalConfig.WF_OOS_MONTHS
-                    + globalConfig.WF_STEP_MONTHS * (globalConfig.WF_MIN_WINDOWS - 1)
+                    + globalConfig.WF_STEP_MONTHS *
+                    (globalConfig.WF_MIN_WINDOWS - 1)
                 ) * 30
 
                 # Emit a detailed explanation once per universe run.
@@ -256,7 +257,8 @@ class WalkForwardValidator:
                     logger.debug(
                         "⚠️  %s (%s): Only %d walk-forward window(s) available "
                         "(need ≥%d). Skipping walk-forward.",
-                        symbol, direction, len(windows), globalConfig.WF_MIN_WINDOWS,
+                        symbol, direction, len(
+                            windows), globalConfig.WF_MIN_WINDOWS,
                     )
                 return None
 
