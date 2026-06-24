@@ -14,6 +14,7 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
+from alpaca.data.enums import Adjustment
 
 from config import globalConfig  # type: ignore
 
@@ -64,97 +65,6 @@ class DataProvider:
         print("DataProvider initialized with rate limit delay of",
               self._rate_limit_delay)
 
-    # async def get_historical_bars(
-    #     self,
-    #     symbols: List[str],
-    #     start_date: datetime,
-    #     end_date: datetime,
-    #     timeframe: TimeFrame = TimeFrame(1, TimeFrameUnit.Day)
-    # ) -> Dict[str, pd.DataFrame]:
-    #     """
-    #     Get historical bar data for multiple symbols using Alpaca's current API.
-
-    #     Args:
-    #         symbols: List of stock symbols
-    #         start_date: Start date for data
-    #         end_date: End date for data
-    #         timeframe: Data timeframe (Day, Hour, Minute)
-
-    #     Returns:
-    #         Dictionary with symbol as key and DataFrame as value
-    #     """
-    #     try:
-    #         if self.historical_client is None:
-    #             logger.error("Historical client not available")
-    #             return {}
-
-    #         request_params = StockBarsRequest(
-    #             symbol_or_symbols=symbols,
-    #             timeframe=timeframe,
-    #             start=start_date,
-    #             end=end_date
-    #         )
-
-    #         bars = self.historical_client.get_stock_bars(request_params)
-
-    #         # Convert to DataFrame format
-    #         result = {}
-    #         for symbol in symbols:
-    #             # Handle both actual API response (with .data attribute) and test mocks (direct dict)
-    #             if isinstance(bars, dict):
-    #                 # Direct dict response (test mocks)
-    #                 bars_data = bars
-    #             else:
-    #                 # API response with .data attribute
-    #                 bars_data = getattr(bars, 'data', None) if bars else None
-
-    #             if bars_data:
-    #                 # Handle both dict and object-like access
-    #                 symbol_bars = None
-    #                 if hasattr(bars_data, 'get'):
-    #                     # Dict-like access
-    #                     symbol_bars = bars_data.get(symbol, None)
-    #                 elif hasattr(bars_data, symbol):
-    #                     # Attribute access
-    #                     symbol_bars = getattr(bars_data, symbol, None)
-
-    #                 if symbol_bars:
-    #                     df_data = []
-    #                     for bar in symbol_bars:
-    #                         df_data.append({
-    #                             'timestamp': bar.timestamp,
-    #                             'open': bar.open,
-    #                             'high': bar.high,
-    #                             'low': bar.low,
-    #                             'close': bar.close,
-    #                             'volume': bar.volume
-    #                         })
-
-    #                     if df_data:
-    #                         df = pd.DataFrame(df_data)
-    #                         df['symbol'] = symbol
-    #                         df.set_index('timestamp', inplace=True)
-    #                         result[symbol] = df
-    #                     else:
-    #                         logger.warning(
-    #                             "No data found for symbol %s", symbol)
-    #                         result[symbol] = pd.DataFrame()
-    #                 else:
-    #                     logger.warning(
-    #                         "Symbol %s not found in response", symbol)
-    #                     result[symbol] = pd.DataFrame()
-    #             else:
-    #                 logger.warning("Symbol %s not found in response", symbol)
-    #                 result[symbol] = pd.DataFrame()
-
-    #         # Rate limiting
-    #         await asyncio.sleep(self._rate_limit_delay)
-    #         return result
-
-    #     except Exception as e:
-    #         logger.error("Error fetching historical data: %s", e)
-    #         return {symbol: pd.DataFrame() for symbol in symbols}
-
     def get_single_stock_bars(
         self,
         symbol: str,
@@ -182,7 +92,9 @@ class DataProvider:
                 symbol_or_symbols=[symbol],
                 timeframe=TimeFrame(1, cast(TimeFrameUnit, TimeFrameUnit.Day)),
                 start=start_date,
-                end=end_date
+                end=end_date,
+                limit=10000,
+                adjustment=Adjustment.ALL
             )
 
             bars = self.historical_client.get_stock_bars(request_params)
@@ -847,125 +759,6 @@ class DataProvider:
         except Exception as e:
             logger.error("Error getting current price for %s: %s", symbol, e)
             return None
-
-    # def get_multiple_stocks_data(self, symbols: List[str], **kwargs) -> Dict[str, pd.DataFrame]:
-    #     """
-    #     Get historical data for multiple symbols - wrapper for compatibility with tests.
-
-    #     Args:
-    #         symbols: List of stock symbols
-    #         **kwargs: Additional parameters (like days_back)
-
-    #     Returns:
-    #         Dict mapping symbols to their DataFrames
-    #     """
-    #     try:
-    #         if not self.historical_client:
-    #             logger.error(
-    #                 "Historical client not initialized - missing API credentials")
-    #             return {}
-
-    #         # Get days_back from kwargs, default to 30
-    #         days_back = kwargs.get('days_back', 30)
-
-    #         # Try to get historical data using the same approach as get_historical_bars but synchronously
-    #         request_params = StockBarsRequest(
-    #             symbol_or_symbols=symbols,
-    #             timeframe=TimeFrame(1, TimeFrameUnit.Day),
-    #             start=datetime.now() - timedelta(days=days_back),
-    #             end=datetime.now()
-    #         )
-
-    #         bars = self.historical_client.get_stock_bars(request_params)
-
-    #         # Handle both actual API response (with .data attribute) and test mocks (direct dict)
-    #         if isinstance(bars, dict):
-    #             # Direct dict response (test mocks)
-    #             bars_data = bars
-    #         else:
-    #             # API response with .data attribute
-    #             bars_data = getattr(bars, 'data', None) if bars else None
-
-    #         result = {}
-    #         for symbol in symbols:
-    #             if bars_data:
-    #                 # Handle both dict and object-like access
-    #                 symbol_bars = None
-    #                 if hasattr(bars_data, 'get'):
-    #                     # Dict-like access
-    #                     symbol_bars = bars_data.get(symbol, None)
-    #                 elif hasattr(bars_data, symbol):
-    #                     # Attribute access
-    #                     symbol_bars = getattr(bars_data, symbol, None)
-
-    #                 if symbol_bars:
-    #                     df_data = []
-    #                     for bar in symbol_bars:
-    #                         df_data.append({
-    #                             'timestamp': bar.timestamp,
-    #                             'open': getattr(bar, 'open', None),
-    #                             'high': getattr(bar, 'high', None),
-    #                             'low': getattr(bar, 'low', None),
-    #                             'close': getattr(bar, 'close', None),
-    #                             'volume': getattr(bar, 'volume', None)
-    #                         })
-
-    #                     if df_data:
-    #                         df = pd.DataFrame(df_data)
-    #                         df['symbol'] = symbol
-    #                         df.set_index('timestamp', inplace=True)
-    #                         result[symbol] = df
-    #                     else:
-    #                         result[symbol] = pd.DataFrame()
-    #                 else:
-    #                     result[symbol] = pd.DataFrame()
-    #             else:
-    #                 result[symbol] = pd.DataFrame()
-
-    #         return result
-
-    #     except Exception as e:
-    #         logger.error("Error getting multiple stocks data: %s", e)
-    #         return {}
-
-    # def get_market_snapshot(self, symbols: List[str]) -> Dict[str, float]:
-    #     """
-    #     Get market snapshot for multiple symbols - wrapper for compatibility with tests.
-
-    #     Args:
-    #         symbols: List of stock symbols
-
-    #     Returns:
-    #         Dict mapping symbols to their prices
-    #     """
-    #     try:
-    #         result = {}
-
-    #         # For test compatibility, try the mocked method first
-    #         if hasattr(self.historical_client, 'get_stock_snapshots'):
-    #             request = StockSnapshotRequest(symbol_or_symbols=symbols)
-    #             try:
-    #                 snapshots = getattr(
-    #                     self.historical_client, 'get_stock_snapshots')(request)
-    #                 if isinstance(snapshots, dict):
-    #                     for symbol in symbols:
-    #                         if symbol in snapshots:
-    #                             snapshot_data = snapshots[symbol]
-    #                             if hasattr(snapshot_data, 'latest_trade') and hasattr(snapshot_data.latest_trade, 'price'):
-    #                                 result[symbol] = snapshot_data.latest_trade.price
-    #                     return result
-    #             except (AttributeError, TypeError):
-    #                 pass  # Fall through to normal method
-
-    #         # Fallback to individual snapshot calls
-    #         for symbol in symbols:
-    #             snapshot = self.get_current_snapshot(symbol)
-    #             if snapshot:
-    #                 result[symbol] = snapshot
-    #         return result
-    #     except Exception as e:
-    #         logger.error("Error getting market snapshot: %s", e)
-    #         return {}
 
 
 class TechnicalIndicators:

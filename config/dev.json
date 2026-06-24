@@ -17,6 +17,7 @@
 		"months": 12
 	},
 	"rsi_optimization": {
+		"fine_tuning_enabled": false,
 		"period_range": {
 			"start": 3,
 			"stop": 40,
@@ -34,14 +35,21 @@
 		}
 	},
 	"data_filtering": {
-		"min_volume": 20,
-		"max_volume": 10000,
-		"min_price": 3.0,
+		"min_volume": 200,
+		"max_volume": 800,
+		"min_price": 5.0,
 		"max_price": 350.0,
-		"min_market_cap": 10,
-		"max_market_cap": 1000000
+		"min_market_cap": 500,
+		"max_market_cap": 9000
 	},
 	"api": {
 		"rate_limit_delay": 0.05
+	},
+	"walk_forward": {
+		"enabled": true,
+		"is_months": 4,
+		"oos_months": 2,
+		"step_months": 2,
+		"min_windows": 3
 	}
 }

@@ -264,7 +264,7 @@ class TestPositionsManager(unittest.TestCase):
         )
 
         # Mock StrategyOptimizer to return a known backtest result
-        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
             mock_opt = Mock()
             mock_opt_class.return_value = mock_opt
 
@@ -358,7 +358,7 @@ class TestPositionsManager(unittest.TestCase):
         self.data.get_entry_order_for_symbol.return_value = None
 
         # Mock StrategyOptimizer
-        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
             mock_opt = Mock()
             mock_opt_class.return_value = mock_opt
 
@@ -441,7 +441,7 @@ class TestPositionsManager(unittest.TestCase):
         early_date = datetime(2026, 5, 10)
         self.data.get_entry_order_for_symbol.return_value = (early_date, 145.0)
 
-        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
             mock_opt = Mock()
             mock_opt_class.return_value = mock_opt
 

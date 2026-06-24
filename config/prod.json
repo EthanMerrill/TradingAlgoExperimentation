@@ -17,6 +17,7 @@
 		"months": 6
 	},
 	"rsi_optimization": {
+		"fine_tuning_enabled": false,
 		"period_range": {
 			"start": 3,
 			"stop": 34,
@@ -43,5 +44,12 @@
 	},
 	"api": {
 		"rate_limit_delay": 0.1
+	},
+	"walk_forward": {
+		"enabled": false,
+		"is_months": 6,
+		"oos_months": 2,
+		"step_months": 2,
+		"min_windows": 3
 	}
 }

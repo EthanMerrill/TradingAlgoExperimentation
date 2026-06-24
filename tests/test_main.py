@@ -58,7 +58,7 @@ class TestMainModule(unittest.TestCase):
         mock_trading_calendar.is_trading_day.return_value = True
         mock_trading_calendar_class.return_value = mock_trading_calendar
 
-        with patch('main.StrategyOptimizer') as mock_optimizer_class:
+        with patch('optimizer.StrategyOptimizer') as mock_optimizer_class:
             with patch('main.TradingEngine') as mock_trading_engine_class:
                 # Mock optimizer
                 mock_optimizer = Mock()
@@ -99,7 +99,7 @@ class TestMainModule(unittest.TestCase):
                 with self.assertRaises(Exception):
                     TradingAlgorithm()
 
-    @patch('main.StrategyOptimizer')
+    @patch('optimizer.StrategyOptimizer')
     @patch('main.cloud_storage')
     async def test_run_backtests_function(self, mock_cloud_storage, mock_optimizer_class):
         """Test the backtest functionality in TradingAlgorithm."""
