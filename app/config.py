@@ -106,6 +106,10 @@ class Config:
             lower_range = rsi_opt.get('lower_range', {})
             upper_range = rsi_opt.get('upper_range', {})
 
+            # Feature flag: enable/disable two-stage (coarse + fine) optimization
+            self.RSI_FINE_TUNING_ENABLED = rsi_opt.get(
+                'fine_tuning_enabled', False)
+
             self.RSI_PERIOD_RANGE = (
                 period_range.get('start', 3),
                 period_range.get('stop', 34),
@@ -186,6 +190,7 @@ class Config:
         self.BACKTEST_START_DATE = datetime.now() - timedelta(days=self.BACKTEST_MONTHS * 30)
 
         # RSI optimization ranges
+        self.RSI_FINE_TUNING_ENABLED = False
         self.RSI_PERIOD_RANGE = (3, 34, 10)
         self.RSI_LOWER_RANGE = (20, 41, 5)
         self.RSI_UPPER_RANGE = (60, 85, 5)

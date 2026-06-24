@@ -135,8 +135,9 @@ class StrategyOptimizer:
             # Lazy import to avoid circular dependency at module level.
             import zscore  # pylint: disable=import-outside-toplevel,redefined-outer-name,reimported
 
-            # Determine whether two-stage optimization is worthwhile.
-            # Requires at least 3 values in both lower and upper ranges.
+            # Determine whether two-stage (coarse + fine) optimization is enabled.
+            # Gated behind the fine_tuning_enabled feature flag and requires at least
+            # 4 values in both lower and upper ranges for the coarse grid to be meaningful.
             fine_step_lower = (
                 self.rsi_lowers[1] - self.rsi_lowers[0]
                 if len(self.rsi_lowers) >= 2 else 1
@@ -146,7 +147,8 @@ class StrategyOptimizer:
                 if len(self.rsi_uppers) >= 2 else 1
             )
             use_two_stage = (
-                len(self.rsi_lowers) >= 4
+                globalConfig.RSI_FINE_TUNING_ENABLED
+                and len(self.rsi_lowers) >= 4
                 and len(self.rsi_uppers) >= 4
                 and fine_step_lower > 0
                 and fine_step_upper > 0

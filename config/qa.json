@@ -17,6 +17,7 @@
 		"months": 6
 	},
 	"rsi_optimization": {
+		"fine_tuning_enabled": false,
 		"period_range": {
 			"start": 3,
 			"stop": 40,
@@ -42,7 +43,7 @@
 		"max_market_cap": 2000000000000000
 	},
 	"api": {
-		"rate_limit_delay": 0.1
+		"rate_limit_delay": 0.07
 	},
 	"walk_forward": {
 		"enabled": false,

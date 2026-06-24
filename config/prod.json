@@ -17,6 +17,7 @@
 		"months": 6
 	},
 	"rsi_optimization": {
+		"fine_tuning_enabled": false,
 		"period_range": {
 			"start": 3,
 			"stop": 34,
