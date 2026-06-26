@@ -2,11 +2,13 @@
 Cloud storage module for persisting data and results.
 Handles Google Cloud Storage operations for backtests and positions.
 """
+import base64
 import importlib
 import io
 import json
 import logging
 import os
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
@@ -32,9 +34,11 @@ class CloudStorage:
             storage_module = importlib.import_module("google.cloud.storage")
 
             # Step A: JSON credentials in env var (Coolify secret, etc.)
+            # Supports both raw JSON and base64-encoded JSON (for platforms
+            # like Coolify where raw JSON breaks .env parsing).
             creds_json = os.environ.get(_GCS_JSON_CREDENTIALS_ENV)
             if creds_json:
-                creds_info = json.loads(creds_json)
+                creds_info = self._parse_credentials_json(creds_json)
                 self.client = storage_module.Client.from_service_account_info(
                     creds_info
                 )
@@ -61,6 +65,53 @@ class CloudStorage:
             logger.error("Error initializing cloud storage: %s", e)
             self.client = None
             self.bucket = None
+
+    @staticmethod
+    def _parse_credentials_json(raw_value: str) -> dict:
+        """Parse GOOGLE_APPLICATION_CREDENTIALS_JSON from env var.
+
+        Tries raw JSON first, then falls back to base64 decoding.
+        Strips whitespace/newlines (Coolify .env may inject them) and
+        removes the ``type`` metadata field (it is not a credential
+        keyword and can break from_service_account_info on some versions).
+        """
+        # Sanitize: strip whitespace, newlines, and invisible chars that
+        # Coolify / .env parsers may inject around the value.
+        cleaned = raw_value.strip()
+
+        # Try raw JSON first
+        creds = None
+        try:
+            creds = json.loads(cleaned)
+            logger.debug("Parsed %s as raw JSON", _GCS_JSON_CREDENTIALS_ENV)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fall back to base64-decoded JSON
+        if creds is None:
+            try:
+                # Remove whitespace that Coolify may inject into the
+                # base64 string.
+                b64_clean = re.sub(r'[\s]', '', cleaned)
+                decoded = base64.b64decode(b64_clean).decode("utf-8")
+                creds = json.loads(decoded)
+                logger.debug("Parsed %s as base64-encoded JSON",
+                             _GCS_JSON_CREDENTIALS_ENV)
+            except Exception as e:
+                preview = cleaned[:80] if len(cleaned) > 80 else cleaned
+                raise ValueError(
+                    f"{_GCS_JSON_CREDENTIALS_ENV} is neither valid JSON "
+                    f"nor valid base64-encoded JSON: {e}. "
+                    f"Raw value preview: {preview!r}"
+                ) from e
+
+        # Strip the "type" field — it is metadata ("service_account"),
+        # not a credential parameter, and can cause:
+        #   "unexpected keyword argument 'type'"
+        # on some google-auth library versions.
+        creds.pop("type", None)
+
+        return creds
 
     def _round_floats(self, data):
         """

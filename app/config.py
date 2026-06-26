@@ -58,7 +58,9 @@ class Config:
 
         # Optional variables
         # GOOGLE_APPLICATION_CREDENTIALS: Path to GCS service account JSON file (local dev)
-        # GOOGLE_APPLICATION_CREDENTIALS_JSON: Full GCS service account JSON as string (server secrets)
+        # GOOGLE_APPLICATION_CREDENTIALS_JSON: GCS service account JSON or base64-encoded JSON
+        #   - Raw JSON works on platforms that support it
+        #   - Base64 encode (e.g. `base64 -w0 key.json`) for Coolify/.env files
         optional_vars = ['GOOGLE_APPLICATION_CREDENTIALS',
                          'GOOGLE_APPLICATION_CREDENTIALS_JSON']
         for var in optional_vars:
