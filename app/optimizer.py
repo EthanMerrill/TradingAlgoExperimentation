@@ -14,6 +14,7 @@ import pandas as pd
 import pytz
 from data_provider import TechnicalIndicators, data_provider
 from joblib import Parallel, delayed
+from strategy import RSIStrategy
 from utils import PerformanceMetrics, ProgressIndicator
 
 from config import globalConfig  # type: ignore
@@ -71,9 +72,6 @@ class StrategyOptimizer:
         Returns:
             Tuple of (BacktestResult, rsi_period, rsi_lower, rsi_upper)
         """
-        # Lazy import to avoid circular dependency at module level.
-        from strategy import RSIStrategy  # pylint: disable=import-outside-toplevel
-
         strategy = RSIStrategy(
             rsi_period, rsi_lower, rsi_upper, direction=direction
         )
@@ -82,7 +80,7 @@ class StrategyOptimizer:
         )
         return result, rsi_period, rsi_lower, rsi_upper
 
-    def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime, direction: str = "long") -> Optional["BacktestResult"]:  # noqa: F821
+    def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime, direction: str = "long", prefetched_data: Optional[pd.DataFrame] = None) -> Optional["BacktestResult"]:  # noqa: F821
         """
         Optimize RSI parameters for a single symbol.
 
@@ -91,6 +89,7 @@ class StrategyOptimizer:
             start_date: Backtest start date
             end_date: Backtest end date
             direction: "long" or "short"
+            prefetched_data: Optional pre-fetched OHLCV DataFrame (skips API call when provided).
 
         Returns:
             Best BacktestResult or None if optimization fails
@@ -107,9 +106,13 @@ class StrategyOptimizer:
             warmup_days = max_rsi_period * 2
             warmup_start = start_date - timedelta(days=warmup_days)
 
-            # Get historical data
-            data = data_provider.get_single_stock_bars(
-                symbol, warmup_start, end_date)
+            # Use pre-fetched data when available (avoids duplicate API calls
+            # when testing both long and short for the same symbol).
+            if prefetched_data is not None:
+                data = prefetched_data
+            else:
+                data = data_provider.get_single_stock_bars(
+                    symbol, warmup_start, end_date)
 
             if data.empty or len(data) < 50:
                 logger.debug(
@@ -417,17 +420,40 @@ class StrategyOptimizer:
             logger.info(
                 f"📊 Processing batch {batch_num}/{total_batches} ({len(batch)} symbols): {', '.join(batch)}")
 
-            tasks = []
+            # Compute warmup days once for the batch
+            max_rsi_period = max(self.rsi_periods) if self.rsi_periods else 14
+            warmup_days = max_rsi_period * 2
+            warmup_start = start_date - timedelta(days=warmup_days)
+
+            # Pre-fetch OHLCV data per symbol so long and short share the same fetch
+            symbol_data_map: Dict[str, pd.DataFrame] = {}
             for symbol in batch:
+                fetched = data_provider.get_single_stock_bars(
+                    symbol, warmup_start, end_date)
+                if not fetched.empty and len(fetched) >= 50:
+                    symbol_data_map[symbol] = fetched
+                else:
+                    logger.debug(
+                        f"⚠️  {symbol}: Insufficient data ({len(fetched)} rows), skipping")
+
+            tasks = []
+            task_symbols: List[Tuple[str, str]] = []  # (symbol, direction)
+            for symbol in batch:
+                prefetched = symbol_data_map.get(symbol)
+                if prefetched is None:
+                    continue  # skip symbols with no data
+
                 task = loop.run_in_executor(
                     None,
                     self.optimize_symbol,
                     symbol,
                     start_date,
                     end_date,
-                    "long"
+                    "long",
+                    prefetched,
                 )
                 tasks.append(task)
+                task_symbols.append((symbol, "long"))
                 if globalConfig.ENABLE_SHORT_SELLING:
                     short_task = loop.run_in_executor(
                         None,
@@ -435,24 +461,27 @@ class StrategyOptimizer:
                         symbol,
                         start_date,
                         end_date,
-                        "short"
+                        "short",
+                        prefetched,
                     )
                     tasks.append(short_task)
+                    task_symbols.append((symbol, "short"))
 
             batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Group results per symbol to count progress correctly.
-            # Each symbol may have 1 (long-only) or 2 (long+short) tasks.
-            results_per_symbol = len(tasks) // len(batch)
+            # Process results — one BacktestResult per task
             batch_successful = 0
-            for sym_idx, symbol in enumerate(batch):
-                processed_count += 1
-                progress.update(1, f"Batch {batch_num}/{total_batches}")
+            for (sym, _dir), result in zip(task_symbols, batch_results):
+                if isinstance(result, BacktestResult):
+                    results.append(result)
+                    successful_count += 1
+                    batch_successful += 1
+                elif result is not None:
+                    logger.error(f"Error in batch processing: {result}")
 
-                # Collect all task results for this symbol
-                sym_start = sym_idx * results_per_symbol
-                sym_end = sym_start + results_per_symbol
-                sym_results = batch_results[sym_start:sym_end]
+            processed_count += len(batch)
+            for _ in batch:
+                progress.update(1, f"Batch {batch_num}/{total_batches}")
 
                 for result in sym_results:
                     if isinstance(result, BacktestResult):

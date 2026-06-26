@@ -393,74 +393,71 @@ class RSIStrategy:
         return False, None
 
     def _calculate_returns(self, data: pd.DataFrame, signals: pd.DataFrame, initial_cash: float) -> pd.DataFrame:
-        """Calculate portfolio returns based on signals.
+        """Calculate portfolio returns based on signals (vectorized per-bar).
 
-        For longs (position=1): buy shares with cash, portfolio = cash + shares * price.
-        For shorts (position=-1): sell borrowed shares for cash, portfolio = cash - shares * price.
+        Long positions compound daily (geometric) while short positions are tied
+        to entry price (linear).  We iterate once over bars using NumPy arrays —
+        the loop body is simple arithmetic without .at[] pandas overhead.
         """
         logger.debug(
             f"Calculating returns with initial cash: {initial_cash}, RSI({self.rsi_period}, {self.rsi_lower}, {self.rsi_upper})")
         returns = pd.DataFrame(index=data.index)
         price_col = self._get_price_column(data)
-        returns['price'] = data[price_col]
+        prices = data[price_col].values.astype(np.float64)
+        returns['price'] = prices
         # Shift position by 1 bar so execution happens at the bar *after* the signal,
         # eliminating look-ahead bias (signal uses bar-i close; trade fills at bar-i+1).
-        returns['position'] = signals['position'].shift(1).fillna(0)
+        position = signals['position'].shift(
+            1).fillna(0).values.astype(np.int8)
+        returns['position'] = position
 
-        # Initialize with correct dtypes to avoid FutureWarning
-        returns['cash'] = float(initial_cash)
-        returns['shares'] = 0.0
-        returns['portfolio_value'] = float(initial_cash)
+        n = len(prices)
+        portfolio_values = np.empty(n, dtype=np.float64)
+        portfolio_values[0] = np.float64(initial_cash)
 
-        # Ensure proper dtypes
-        returns = returns.astype({
-            'cash': 'float64',
-            'shares': 'float64',
-            'portfolio_value': 'float64'
-        })
-
-        cash = float(initial_cash)
-        shares = 0.0
+        # Track entry state for short positions (tied to entry price)
+        entry_value = np.float64(initial_cash)
+        entry_price = prices[0]
 
         trade_count = 0
 
-        for i in range(len(returns)):
-            if i == 0:
-                continue
+        for i in range(1, n):
+            prev_pos = int(position[i - 1])
+            curr_pos = int(position[i])
+            prev_val = portfolio_values[i - 1]
 
-            prev_position = returns['position'].iloc[i-1]
-            curr_position = returns['position'].iloc[i]
-            price = returns['price'].iloc[i]
+            if curr_pos == 1:
+                # Long: portfolio compounds with daily price returns
+                portfolio_values[i] = prev_val * (prices[i] / prices[i - 1])
+                if prev_pos == 0:
+                    trade_count += 1  # entry
+            elif curr_pos == -1:
+                # Short: liability tied to entry price (not compounded daily)
+                if prev_pos == 0:
+                    entry_price_at_trade = prices[i]
+                    entry_value = prev_val
+                    trade_count += 1  # entry
+                portfolio_values[i] = entry_value * \
+                    (2.0 - prices[i] / entry_price_at_trade)
+            else:  # curr_pos == 0
+                if prev_pos == 1:
+                    # Exit long: final bar compounds
+                    portfolio_values[i] = prev_val * \
+                        (prices[i] / prices[i - 1])
+                elif prev_pos == -1:
+                    # Exit short: final bar uses entry-price formula
+                    portfolio_values[i] = entry_value * \
+                        (2.0 - prices[i] / entry_price_at_trade)
+                else:
+                    # Stay flat
+                    portfolio_values[i] = prev_val
 
-            if curr_position == 1 and prev_position == 0:
-                # Enter long: use cash to buy shares
-                shares = cash / price
-                cash = 0.0
-                trade_count += 1
-            elif curr_position == 0 and prev_position == 1:
-                # Exit long: sell shares for cash
-                cash = shares * price
-                shares = 0.0
-            elif curr_position == -1 and prev_position == 0:
-                # Enter short: sell borrowed shares, receive cash
-                shares = cash / price
-                cash = cash + shares * price
-                trade_count += 1
-            elif curr_position == 0 and prev_position == -1:
-                # Cover short: buy back shares with cash
-                cash = cash - shares * price
-                shares = 0.0
-            # portfolio_value = cash + (position * shares * price)
-            # position is 1 for long (adds), -1 for short (subtracts)
-            returns.at[returns.index[i], 'cash'] = cash
-            returns.at[returns.index[i], 'shares'] = shares
-            returns.at[returns.index[i],
-                       'portfolio_value'] = cash + (curr_position * shares * price)
+        returns['portfolio_value'] = portfolio_values
 
-        # Calculate daily returns
+        # Daily returns
         returns['daily_returns'] = returns['portfolio_value'].pct_change().fillna(0)
 
-        final_portfolio_value = returns['portfolio_value'].iloc[-1]
+        final_portfolio_value = portfolio_values[-1]
         total_return_pct = (final_portfolio_value / initial_cash - 1) * 100
 
         logger.debug(f"Return calculation complete - trades: {trade_count}, "

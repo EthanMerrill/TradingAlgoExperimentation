@@ -55,6 +55,9 @@ class TradingAlgorithm:
         """
         self.session_metadata['start_time'] = datetime.now()
 
+        # Clear per-cycle caches to avoid stale data
+        self.trading_engine._clear_ohlcv_cache()
+
         # Startup banner
         logger.info("🚀" * 20)
         logger.info("🚀 TRADING ALGORITHM STARTING")

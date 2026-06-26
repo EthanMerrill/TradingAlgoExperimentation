@@ -43,7 +43,7 @@
 		"max_market_cap": 9000
 	},
 	"api": {
-		"rate_limit_delay": 0.05
+		"rate_limit_delay": 0.03
 	},
 	"walk_forward": {
 		"enabled": true,
