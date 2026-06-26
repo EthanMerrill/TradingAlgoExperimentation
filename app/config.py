@@ -59,7 +59,8 @@ class Config:
         # Optional variables
         # GOOGLE_APPLICATION_CREDENTIALS: Path to GCS service account JSON file (local dev)
         # GOOGLE_APPLICATION_CREDENTIALS_JSON: Full GCS service account JSON as string (server secrets)
-        optional_vars = ['GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_APPLICATION_CREDENTIALS_JSON']
+        optional_vars = ['GOOGLE_APPLICATION_CREDENTIALS',
+                         'GOOGLE_APPLICATION_CREDENTIALS_JSON']
         for var in optional_vars:
             if not os.getenv(var):
                 print(f"Info: Optional environment variable {var} not set.")

@@ -38,7 +38,8 @@ class CloudStorage:
                 self.client = storage_module.Client.from_service_account_info(
                     creds_info
                 )
-                logger.info("Cloud storage initialized via %s", _GCS_JSON_CREDENTIALS_ENV)
+                logger.info("Cloud storage initialized via %s",
+                            _GCS_JSON_CREDENTIALS_ENV)
             else:
                 # Step B: File-based credentials path (local dev)
                 creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
