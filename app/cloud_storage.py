@@ -4,7 +4,9 @@ Handles Google Cloud Storage operations for backtests and positions.
 """
 import importlib
 import io
+import json
 import logging
+import os
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
@@ -17,6 +19,10 @@ from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+# Environment variable name for JSON-based service account credentials.
+# When set, takes priority over file-based GOOGLE_APPLICATION_CREDENTIALS.
+_GCS_JSON_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+
 
 class CloudStorage:
     """Google Cloud Storage handler for trading data."""
@@ -24,7 +30,31 @@ class CloudStorage:
     def __init__(self):
         try:
             storage_module = importlib.import_module("google.cloud.storage")
-            self.client = storage_module.Client()
+
+            # Step A: JSON credentials in env var (Coolify secret, etc.)
+            creds_json = os.environ.get(_GCS_JSON_CREDENTIALS_ENV)
+            if creds_json:
+                creds_info = json.loads(creds_json)
+                self.client = storage_module.Client.from_service_account_info(
+                    creds_info
+                )
+                logger.info("Cloud storage initialized via %s", _GCS_JSON_CREDENTIALS_ENV)
+            else:
+                # Step B: File-based credentials path (local dev)
+                creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+                if creds_path and not os.path.exists(creds_path):
+                    logger.warning(
+                        "GOOGLE_APPLICATION_CREDENTIALS=%s does not exist; "
+                        "unsetting and falling back to Application Default Credentials",
+                        creds_path,
+                    )
+                    # Unset so the GCS client falls through to ADC instead of
+                    # failing on a missing file.
+                    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+
+                # Step C: Default ADC (metadata server, gcloud config, etc.)
+                self.client = storage_module.Client()
+
             self.bucket = self.client.bucket(globalConfig.GCS_BUCKET_NAME)
         except Exception as e:
             logger.error("Error initializing cloud storage: %s", e)
