@@ -66,6 +66,7 @@ class TradingAlgorithm:
         logger.info("🔍 Dry Run Mode: %s", dry_run)
         logger.info("🧪 Test Mode: %s", test_mode)
         logger.info("🪟 Walk-Forward: %s", globalConfig.WF_ENABLED)
+        logger.info("🔬 RSI Fine Tuning: %s", globalConfig.RSI_FINE_TUNING_ENABLED)
         logger.info("=" * 60)
 
         # Set dry run mode on trading engine
