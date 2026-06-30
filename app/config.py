@@ -160,7 +160,9 @@ class Config:
             # leave unset on GCP Cloud Run to scale-to-zero after execution.
             self.KEEP_ALIVE = os.getenv(
                 'KEEP_ALIVE', 'false').lower() in ('true', '1', 'yes')
-            print(f"Info: KEEP_ALIVE = {self.KEEP_ALIVE}")
+            self.HEALTH_PORT = int(os.getenv('HEALTH_PORT', '8080'))
+            print(
+                f"Info: KEEP_ALIVE = {self.KEEP_ALIVE}, HEALTH_PORT = {self.HEALTH_PORT}")
 
             print(f"Info: Loaded configuration from {config_file}")
 

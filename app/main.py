@@ -361,6 +361,43 @@ async def main():
         return {'status': 'error', 'error': str(e)}
 
 
+def _start_health_server(port: int, last_result: dict):
+    """Start a minimal HTTP health-check server on the given port.
+
+    Runs in a daemon thread so it doesn't block shutdown.
+    Exposes /health with JSON containing the last run's status and timing.
+    """
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import json as _json
+
+    result_json = _json.dumps({
+        'status': 'idle',
+        'last_run_status': last_result.get('status', 'unknown'),
+        'last_run_summary': last_result.get('trading_summary', {}),
+        'last_run_backtest_count': last_result.get('backtest_count', 0),
+        'last_run_duration_seconds': last_result.get('duration', 0),
+    }).encode('utf-8')
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(result_json)))
+                self.end_headers()
+                self.wfile.write(result_json)
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, fmt, *args):
+            pass  # suppress access logs
+
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    logger.info("🏥 Health server listening on 0.0.0.0:%d", port)
+    server.serve_forever()
+
+
 if __name__ == "__main__":
     result = asyncio.run(main())
 
@@ -370,6 +407,17 @@ if __name__ == "__main__":
     if globalConfig.KEEP_ALIVE:
         logger.info("🛟 KEEP_ALIVE enabled — container will idle indefinitely")
         logger.info("   Press Ctrl+C or stop the container to exit.")
+
+        # Start a lightweight health-check HTTP server in a daemon thread.
+        # Coolify / Docker HEALTHCHECK can curl http://localhost:8080/health
+        import threading
+        health_thread = threading.Thread(
+            target=_start_health_server,
+            args=(globalConfig.HEALTH_PORT, result),
+            daemon=True,
+        )
+        health_thread.start()
+
         try:
             import time
             while True:

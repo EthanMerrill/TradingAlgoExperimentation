@@ -95,6 +95,7 @@ RUN python -c "import talib; print('TA-Lib imported successfully')" || \
 # Set the default command to run the main application
 ENTRYPOINT ["python", "app/main.py"]
 
-# Health check
+# Health check — curls the keep-alive health server when KEEP_ALIVE=true.
+# Falls back to a basic liveness check for normal (non-keep-alive) runs.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+    CMD curl -sf http://localhost:${HEALTH_PORT:-8080}/health || python -c "import sys; sys.exit(0)"
