@@ -376,7 +376,7 @@ def _start_health_server(port: int, last_result: dict):
         'last_run_summary': last_result.get('trading_summary', {}),
         'last_run_backtest_count': last_result.get('backtest_count', 0),
         'last_run_duration_seconds': last_result.get('duration', 0),
-    }).encode('utf-8')
+    }, default=str).encode('utf-8')
 
     class HealthHandler(BaseHTTPRequestHandler):
         def do_GET(self):
