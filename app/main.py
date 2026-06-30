@@ -364,6 +364,20 @@ async def main():
 if __name__ == "__main__":
     result = asyncio.run(main())
 
+    # If KEEP_ALIVE is set (Coolify deployments), idle indefinitely
+    # so the container stays running for SSH access. On GCP Cloud Run,
+    # leave KEEP_ALIVE unset so the container exits and scales to zero.
+    if globalConfig.KEEP_ALIVE:
+        logger.info("🛟 KEEP_ALIVE enabled — container will idle indefinitely")
+        logger.info("   Press Ctrl+C or stop the container to exit.")
+        try:
+            import time
+            while True:
+                time.sleep(60)
+        except KeyboardInterrupt:
+            logger.info("Idle loop interrupted — shutting down.")
+            sys.exit(0)
+
     # Exit with appropriate code
     if result.get('status') == 'success':
         sys.exit(0)

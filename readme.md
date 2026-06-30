@@ -45,6 +45,9 @@ export ALPACA_DEV_PAPER_SECRET=your_paper_secret
 
 # Optional: Google Cloud Storage (for data persistence)
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+
+# Optional: Keep container alive after completion (for SSH/debugging in Coolify)
+export KEEP_ALIVE=true     # default: false
 ```
 
 Environment-specific API key pairs:
@@ -135,6 +138,21 @@ make clean       # Remove Python cache and logs
 make docker-build  # Build the Docker image
 make docker-run    # Run the app in Docker
 ```
+
+## Deployment
+
+### GCP Cloud Run (default behavior)
+
+On Google Cloud Run, **do not** set `KEEP_ALIVE`. The container exits after each trading cycle, allowing Cloud Run to scale to zero and save costs. Cloud Run will spin up a new container when the next scheduled job triggers.
+
+### Coolify (SSH/debugging)
+
+If you deploy via Coolify and need to SSH into the container (e.g., for debugging or checking logs), set the environment variable `KEEP_ALIVE=true`. After the trading cycle completes, the container will **idle indefinitely** instead of exiting, keeping the SSH connection open.
+
+| Platform | `KEEP_ALIVE` | Container behavior after cycle |
+|----------|---------------|-------------------------------|
+| GCP Cloud Run | unset or `false` | Exits → scale to zero (saves costs) |
+| Coolify | `true` | Sleeps indendently → stays running for SSH |
 
 ## Processes Overview:
 

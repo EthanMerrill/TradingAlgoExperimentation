@@ -155,6 +155,13 @@ class Config:
             self.WF_STEP_MONTHS = walk_forward.get('step_months', 2)
             self.WF_MIN_WINDOWS = walk_forward.get('min_windows', 3)
 
+            # Keep-alive mode: when true, container idles after completion
+            # instead of exiting. Set KEEP_ALIVE=true in Coolify env vars;
+            # leave unset on GCP Cloud Run to scale-to-zero after execution.
+            self.KEEP_ALIVE = os.getenv(
+                'KEEP_ALIVE', 'false').lower() in ('true', '1', 'yes')
+            print(f"Info: KEEP_ALIVE = {self.KEEP_ALIVE}")
+
             print(f"Info: Loaded configuration from {config_file}")
 
         except FileNotFoundError:
