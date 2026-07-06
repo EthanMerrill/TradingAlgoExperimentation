@@ -483,14 +483,6 @@ class StrategyOptimizer:
             for _ in batch:
                 progress.update(1, f"Batch {batch_num}/{total_batches}")
 
-                for result in sym_results:
-                    if isinstance(result, BacktestResult):
-                        results.append(result)
-                        successful_count += 1
-                        batch_successful += 1
-                    elif result is not None:
-                        logger.error(f"Error in batch processing: {result}")
-
             # Calculate progress and time estimates
             batch_time = time.time() - batch_start_time
             total_elapsed = time.time() - start_time
