@@ -303,7 +303,8 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(aapl_pos.symbol, 'AAPL')
 
         # MSFT should be in self.manager.positions as closed (broker_closed)
-        msft_positions = [p for p in self.manager.positions if p.symbol == 'MSFT']
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
         self.assertEqual(len(msft_positions), 1)
         self.assertTrue(msft_positions[0].closed)
         self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
@@ -411,7 +412,8 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(aapl_pos.rsi_upper, 80)
 
         # MSFT should be in self.manager.positions as closed (broker_closed)
-        msft_positions = [p for p in self.manager.positions if p.symbol == 'MSFT']
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
         self.assertEqual(len(msft_positions), 1)
         self.assertTrue(msft_positions[0].closed)
         self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
@@ -485,7 +487,8 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(aapl_pos.symbol, 'AAPL')
 
         # MSFT should be in self.manager.positions as closed (broker_closed)
-        msft_positions = [p for p in self.manager.positions if p.symbol == 'MSFT']
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
         self.assertEqual(len(msft_positions), 1)
         self.assertTrue(msft_positions[0].closed)
         self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
@@ -608,7 +611,8 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(call_kwargs['direction'], 'short')
 
         # MSFT marked broker_closed
-        msft_positions = [p for p in self.manager.positions if p.symbol == 'MSFT']
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
         self.assertEqual(len(msft_positions), 1)
         self.assertTrue(msft_positions[0].closed)
         self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
@@ -828,14 +832,16 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(aapl.entry_price, 155.0)
 
         # MSFT marked broker_closed
-        msft_positions = [p for p in self.manager.positions if p.symbol == 'MSFT']
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
         self.assertEqual(len(msft_positions), 1)
         self.assertTrue(msft_positions[0].closed)
         self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
         # OCO fallback: current=305, stop=285, take=330 → stop closer → exit=285
         self.assertEqual(msft_positions[0].exit_price, 285.0)
         # Long realized return: (285 - 300) / 300 = -0.05
-        self.assertAlmostEqual(msft_positions[0].realized_return, -0.05, places=4)
+        self.assertAlmostEqual(
+            msft_positions[0].realized_return, -0.05, places=4)
 
     def test_reconcile_zero_quantity_alpaca_position(self):
         """Zero-quantity Alpaca position should not crash but is added as phantom (edge case)."""
@@ -903,7 +909,8 @@ class TestPositionsManager(unittest.TestCase):
 
         # PHANTOM appears as open with 0 shares (known limitation — does not crash)
         # MSFT is cloud-only → broker_closed
-        phantom_positions = [p for p in open_positions if p.symbol == 'PHANTOM']
+        phantom_positions = [
+            p for p in open_positions if p.symbol == 'PHANTOM']
         self.assertEqual(len(phantom_positions), 1)
         self.assertEqual(phantom_positions[0].quantity, 0.0)
         self.assertEqual(phantom_positions[0].side, 'long')
