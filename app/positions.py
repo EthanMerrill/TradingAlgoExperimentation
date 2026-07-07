@@ -77,6 +77,12 @@ class PositionsManager:
                 cloud_positions), alpaca_symbols_list, cloud_symbols_list
         )
 
+        # Capture the original cloud symbol set BEFORE any enrichment or
+        # initialization modifies the cloud DataFrame. This is used later
+        # to guard against overwriting order-history-derived entry_price
+        # with Alpaca's avg_entry_price during the live-update pass.
+        _original_cloud_symbols = set(cloud_symbols_list)
+
         # Normalize cloud schema when there is no prior snapshot but Alpaca has open positions.
         if cloud_positions.empty:
             if not alpaca_positions.empty:
@@ -336,9 +342,15 @@ class PositionsManager:
                         'alpha': alpha,
                         'composite_score': composite_score,
                         'stop_loss_price': (
-                            (entry_price * (1 - globalConfig.STOP_LOSS_PCT)) if entry_price > 0 else np.nan),
+                            (entry_price * (1 + globalConfig.STOP_LOSS_PCT))
+                            if entry_price > 0 and position_side == 'short'
+                            else (entry_price * (1 - globalConfig.STOP_LOSS_PCT))
+                            if entry_price > 0 else np.nan),
                         'take_profit_price': (
-                            (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)) if entry_price > 0 else np.nan),
+                            (entry_price * (1 - globalConfig.TAKE_PROFIT_PCT))
+                            if entry_price > 0 and position_side == 'short'
+                            else (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT))
+                            if entry_price > 0 else np.nan),
                         'exit_date': pd.NaT,
                         'exit_price': np.nan,
                         'realized_return': np.nan,
@@ -457,10 +469,11 @@ class PositionsManager:
                     cloud_positions.at[index, 'position_value'] = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol, 'market_value'].values[0]
                     # Only overwrite entry_price if this symbol existed in the
-                    # original cloud snapshot. For Alpaca-only symbols we want
-                    # to preserve entry_price discovered via order history.
+                    # original cloud snapshot. For Alpaca-only symbols and
+                    # initialized-from-Alpaca symbols we preserve the
+                    # entry_price discovered via order history.
                     try:
-                        if 'cloud_symbols' in locals() and symbol in cloud_symbols:
+                        if '_original_cloud_symbols' in locals() and symbol in _original_cloud_symbols:
                             cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
                                 alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
                     except (IndexError, KeyError, ValueError):

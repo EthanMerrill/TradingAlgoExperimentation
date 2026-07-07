@@ -505,10 +505,25 @@ class CloudStorage:
             return pd.DataFrame()
         positions_df = self.load_position_entries(latest_file)
         # Filter out closed positions
-        if not positions_df.empty and 'closed' in positions_df.columns and openPosition:
-            return positions_df[positions_df['closed'] != True]
-        elif not positions_df.empty and 'closed' in positions_df.columns and not openPosition:
-            return positions_df[positions_df['closed'] == True]
+        if 'closed' in positions_df.columns:
+            if openPosition:
+                return positions_df[positions_df['closed'] != True]
+            else:
+                return positions_df[positions_df['closed'] == True]
+        else:
+            # Legacy CSV without 'closed' column — treat all rows as open
+            if not openPosition:
+                logger.warning(
+                    "Positions file '%s' is missing 'closed' column. "
+                    "Returning empty DataFrame for closed positions query.",
+                    latest_file
+                )
+                return pd.DataFrame()
+            logger.info(
+                "Positions file '%s' is missing 'closed' column. "
+                "Treating all rows as open (legacy format).",
+                latest_file
+            )
         return positions_df
 
 
