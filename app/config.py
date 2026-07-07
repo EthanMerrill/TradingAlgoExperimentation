@@ -57,7 +57,12 @@ class Config:
             print("Set these environment variables for the algorithm to work properly.")
 
         # Optional variables
-        optional_vars = ['GOOGLE_APPLICATION_CREDENTIALS']
+        # GOOGLE_APPLICATION_CREDENTIALS: Path to GCS service account JSON file (local dev)
+        # GOOGLE_APPLICATION_CREDENTIALS_JSON: GCS service account JSON or base64-encoded JSON
+        #   - Raw JSON works on platforms that support it
+        #   - Base64 encode (e.g. `base64 -w0 key.json`) for Coolify/.env files
+        optional_vars = ['GOOGLE_APPLICATION_CREDENTIALS',
+                         'GOOGLE_APPLICATION_CREDENTIALS_JSON']
         for var in optional_vars:
             if not os.getenv(var):
                 print(f"Info: Optional environment variable {var} not set.")
@@ -106,6 +111,10 @@ class Config:
             lower_range = rsi_opt.get('lower_range', {})
             upper_range = rsi_opt.get('upper_range', {})
 
+            # Feature flag: enable/disable two-stage (coarse + fine) optimization
+            self.RSI_FINE_TUNING_ENABLED = rsi_opt.get(
+                'fine_tuning_enabled', False)
+
             self.RSI_PERIOD_RANGE = (
                 period_range.get('start', 3),
                 period_range.get('stop', 34),
@@ -131,10 +140,29 @@ class Config:
             self.MAX_PRICE = data_filtering.get('max_price', 200.0)
             self.MIN_MARKET_CAP = data_filtering.get(
                 'min_market_cap', 1000000000)
+            self.MAX_VOLUME = data_filtering.get('max_volume')
+            self.MAX_MARKET_CAP = data_filtering.get('max_market_cap')
 
             # API parameters
             api = config_data.get('api', {})
             self.API_RATE_LIMIT_DELAY = api.get('rate_limit_delay', 0.1)
+
+            # Walk-forward validation parameters
+            walk_forward = config_data.get('walk_forward', {})
+            self.WF_ENABLED = walk_forward.get('enabled', False)
+            self.WF_IS_MONTHS = walk_forward.get('is_months', 6)
+            self.WF_OOS_MONTHS = walk_forward.get('oos_months', 2)
+            self.WF_STEP_MONTHS = walk_forward.get('step_months', 2)
+            self.WF_MIN_WINDOWS = walk_forward.get('min_windows', 3)
+
+            # Keep-alive mode: when true, container idles after completion
+            # instead of exiting. Set KEEP_ALIVE=true in Coolify env vars;
+            # leave unset on GCP Cloud Run to scale-to-zero after execution.
+            self.KEEP_ALIVE = os.getenv(
+                'KEEP_ALIVE', 'false').lower() in ('true', '1', 'yes')
+            self.HEALTH_PORT = int(os.getenv('HEALTH_PORT', '8080'))
+            print(
+                f"Info: KEEP_ALIVE = {self.KEEP_ALIVE}, HEALTH_PORT = {self.HEALTH_PORT}")
 
             print(f"Info: Loaded configuration from {config_file}")
 
@@ -168,6 +196,11 @@ class Config:
         self.ENABLE_SHORT_SELLING = False
         self.MAX_SHORT_LONG_RATIO = 0.30  # Max 30% short notional exposure
 
+        # Keep-alive & health server defaults
+        self.KEEP_ALIVE = os.getenv(
+            'KEEP_ALIVE', 'false').lower() in ('true', '1', 'yes')
+        self.HEALTH_PORT = int(os.getenv('HEALTH_PORT', '8080'))
+
     def setup_backtesting_parameters(self):
         """Set up backtesting parameters (fallback method)."""
         self.BACKTEST_INIT_CASH = 10000
@@ -176,9 +209,17 @@ class Config:
         self.BACKTEST_START_DATE = datetime.now() - timedelta(days=self.BACKTEST_MONTHS * 30)
 
         # RSI optimization ranges
+        self.RSI_FINE_TUNING_ENABLED = False
         self.RSI_PERIOD_RANGE = (3, 34, 10)
         self.RSI_LOWER_RANGE = (20, 41, 5)
         self.RSI_UPPER_RANGE = (60, 85, 5)
+
+        # Walk-forward validation defaults
+        self.WF_ENABLED = False
+        self.WF_IS_MONTHS = 6
+        self.WF_OOS_MONTHS = 2
+        self.WF_STEP_MONTHS = 2
+        self.WF_MIN_WINDOWS = 3
 
     def setup_data_parameters(self):
         """Set up data filtering parameters (fallback handled in load_json_config)."""

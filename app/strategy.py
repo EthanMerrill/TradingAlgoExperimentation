@@ -2,20 +2,17 @@
 Strategy backtesting module.
 Replaces the legacy backtrader-based approach with a modern vectorized implementation.
 """
-import asyncio
 import logging
-import os
 from dataclasses import dataclass
 # pylint: disable=broad-exception-caught,logging-fstring-interpolation
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, cast
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import pytz
 from data_provider import TechnicalIndicators, data_provider
-from joblib import Parallel, delayed
-from utils import PerformanceMetrics, ProgressIndicator
+from utils import PerformanceMetrics
 
 from config import globalConfig  # type: ignore
 
@@ -396,74 +393,71 @@ class RSIStrategy:
         return False, None
 
     def _calculate_returns(self, data: pd.DataFrame, signals: pd.DataFrame, initial_cash: float) -> pd.DataFrame:
-        """Calculate portfolio returns based on signals.
+        """Calculate portfolio returns based on signals (vectorized per-bar).
 
-        For longs (position=1): buy shares with cash, portfolio = cash + shares * price.
-        For shorts (position=-1): sell borrowed shares for cash, portfolio = cash - shares * price.
+        Long positions compound daily (geometric) while short positions are tied
+        to entry price (linear).  We iterate once over bars using NumPy arrays —
+        the loop body is simple arithmetic without .at[] pandas overhead.
         """
         logger.debug(
             f"Calculating returns with initial cash: {initial_cash}, RSI({self.rsi_period}, {self.rsi_lower}, {self.rsi_upper})")
         returns = pd.DataFrame(index=data.index)
         price_col = self._get_price_column(data)
-        returns['price'] = data[price_col]
+        prices = data[price_col].values.astype(np.float64)
+        returns['price'] = prices
         # Shift position by 1 bar so execution happens at the bar *after* the signal,
         # eliminating look-ahead bias (signal uses bar-i close; trade fills at bar-i+1).
-        returns['position'] = signals['position'].shift(1).fillna(0)
+        position = signals['position'].shift(
+            1).fillna(0).values.astype(np.int8)
+        returns['position'] = position
 
-        # Initialize with correct dtypes to avoid FutureWarning
-        returns['cash'] = float(initial_cash)
-        returns['shares'] = 0.0
-        returns['portfolio_value'] = float(initial_cash)
+        n = len(prices)
+        portfolio_values = np.empty(n, dtype=np.float64)
+        portfolio_values[0] = np.float64(initial_cash)
 
-        # Ensure proper dtypes
-        returns = returns.astype({
-            'cash': 'float64',
-            'shares': 'float64',
-            'portfolio_value': 'float64'
-        })
-
-        cash = float(initial_cash)
-        shares = 0.0
+        # Track entry state for short positions (tied to entry price)
+        entry_value = np.float64(initial_cash)
+        entry_price = prices[0]
 
         trade_count = 0
 
-        for i in range(len(returns)):
-            if i == 0:
-                continue
+        for i in range(1, n):
+            prev_pos = int(position[i - 1])
+            curr_pos = int(position[i])
+            prev_val = portfolio_values[i - 1]
 
-            prev_position = returns['position'].iloc[i-1]
-            curr_position = returns['position'].iloc[i]
-            price = returns['price'].iloc[i]
+            if curr_pos == 1:
+                # Long: portfolio compounds with daily price returns
+                portfolio_values[i] = prev_val * (prices[i] / prices[i - 1])
+                if prev_pos == 0:
+                    trade_count += 1  # entry
+            elif curr_pos == -1:
+                # Short: liability tied to entry price (not compounded daily)
+                if prev_pos == 0:
+                    entry_price_at_trade = prices[i]
+                    entry_value = prev_val
+                    trade_count += 1  # entry
+                portfolio_values[i] = entry_value * \
+                    (2.0 - prices[i] / entry_price_at_trade)
+            else:  # curr_pos == 0
+                if prev_pos == 1:
+                    # Exit long: final bar compounds
+                    portfolio_values[i] = prev_val * \
+                        (prices[i] / prices[i - 1])
+                elif prev_pos == -1:
+                    # Exit short: final bar uses entry-price formula
+                    portfolio_values[i] = entry_value * \
+                        (2.0 - prices[i] / entry_price_at_trade)
+                else:
+                    # Stay flat
+                    portfolio_values[i] = prev_val
 
-            if curr_position == 1 and prev_position == 0:
-                # Enter long: use cash to buy shares
-                shares = cash / price
-                cash = 0.0
-                trade_count += 1
-            elif curr_position == 0 and prev_position == 1:
-                # Exit long: sell shares for cash
-                cash = shares * price
-                shares = 0.0
-            elif curr_position == -1 and prev_position == 0:
-                # Enter short: sell borrowed shares, receive cash
-                shares = cash / price
-                cash = cash + shares * price
-                trade_count += 1
-            elif curr_position == 0 and prev_position == -1:
-                # Cover short: buy back shares with cash
-                cash = cash - shares * price
-                shares = 0.0
-            # portfolio_value = cash + (position * shares * price)
-            # position is 1 for long (adds), -1 for short (subtracts)
-            returns.at[returns.index[i], 'cash'] = cash
-            returns.at[returns.index[i], 'shares'] = shares
-            returns.at[returns.index[i],
-                       'portfolio_value'] = cash + (curr_position * shares * price)
+        returns['portfolio_value'] = portfolio_values
 
-        # Calculate daily returns
+        # Daily returns
         returns['daily_returns'] = returns['portfolio_value'].pct_change().fillna(0)
 
-        final_portfolio_value = returns['portfolio_value'].iloc[-1]
+        final_portfolio_value = portfolio_values[-1]
         total_return_pct = (final_portfolio_value / initial_cash - 1) * 100
 
         logger.debug(f"Return calculation complete - trades: {trade_count}, "
@@ -669,543 +663,3 @@ class RSIStrategy:
         else:
             raise ValueError(
                 f"No price column found. Expected 'close' or 'c' in data columns: {list(data.columns)}")
-
-
-class StrategyOptimizer:
-    """Optimize RSI strategy parameters for multiple symbols."""
-
-    def __init__(self):
-        self.rsi_periods = list(range(*globalConfig.RSI_PERIOD_RANGE))
-        self.rsi_lowers = list(range(*globalConfig.RSI_LOWER_RANGE))
-        self.rsi_uppers = list(range(*globalConfig.RSI_UPPER_RANGE))
-        self.last_consolidated_trades_df = pd.DataFrame()
-
-    @staticmethod
-    def _composite_score(result: BacktestResult) -> float:
-        """Deprecated: use zscore.compute_stage_zscores / compute_cross_symbol_zscores.
-
-        Returns result.composite_score if already set (cross-symbol), otherwise
-        falls back to the legacy formula.  Still used by positions.py for display.
-        """
-        if result.composite_score != 0.0:
-            return result.composite_score
-        return StrategyOptimizer._composite_score_from_parts(
-            result.alpha, result.sharpe_ratio, result.calmar_ratio
-        )
-
-    @staticmethod
-    def _composite_score_from_parts(alpha: float, sharpe: float, calmar: float) -> float:
-        """Legacy fallback: (alpha*100) + sharpe + calmar.
-
-        Only used when no Z-score pool is available.
-        """
-        return (alpha * 100) + sharpe + calmar
-
-    @staticmethod
-    def _test_single_combo(
-        data: pd.DataFrame,
-        symbol: str,
-        rsi_series: pd.Series,
-        rsi_period: int,
-        rsi_lower: int,
-        rsi_upper: int,
-        direction: str,
-        initial_cash: float,
-    ) -> Tuple[BacktestResult, int, int, int]:
-        """Run a single backtest for one parameter combination.
-
-        Extracted as a static method so it's trivially shareable across
-        threads/processes — no mutable instance state, all inputs are
-        read-only primitives or numpy/pandas objects.
-
-        Returns:
-            Tuple of (BacktestResult, rsi_period, rsi_lower, rsi_upper)
-        """
-        strategy = RSIStrategy(
-            rsi_period, rsi_lower, rsi_upper, direction=direction
-        )
-        result = strategy.backtest_with_rsi(
-            data, symbol, rsi_series, initial_cash
-        )
-        return result, rsi_period, rsi_lower, rsi_upper
-
-    def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime, direction: str = "long") -> Optional[BacktestResult]:
-        """
-        Optimize RSI parameters for a single symbol.
-
-        Args:
-            symbol: Stock symbol
-            start_date: Backtest start date
-            end_date: Backtest end date
-            direction: "long" or "short"
-
-        Returns:
-            Best BacktestResult or None if optimization fails
-        """
-        try:
-            # Shift start_date back to warm up RSI calculation.
-            # RSI needs rsi_period + 1 bars; the optimizer tests periods up to
-            # max(self.rsi_periods).  Multiply by 2 to convert trading days to
-            # calendar days (covers weekends + holidays with margin).
-            max_rsi_period = max(self.rsi_periods) if self.rsi_periods else 14
-            warmup_days = max_rsi_period * 2
-            warmup_start = start_date - timedelta(days=warmup_days)
-
-            # Get historical data
-            data = data_provider.get_single_stock_bars(
-                symbol, warmup_start, end_date)
-
-            if data.empty or len(data) < 50:
-                logger.debug(
-                    f"⚠️  {symbol}: Insufficient data ({len(data)} rows)")
-                return None
-
-# --- Tier 1: Precompute RSI for every unique period once ---
-            # RSI depends only on rsi_period, not lower/upper, so this eliminates
-            # ~96% of redundant RSI calculations (e.g., 28 recomputations → 1 per period).
-            price_col = RSIStrategy._get_price_column(data)
-            rsi_cache: Dict[int, pd.Series] = {}
-            for period in self.rsi_periods:
-                rsi_cache[period] = TechnicalIndicators.calculate_rsi(
-                    data, period, price_col
-                )
-
-            best_result: Optional[BacktestResult] = None
-            best_score = -float('inf')
-            tested_combinations = 0
-            tested_set: set = set()  # dedup between stages
-            n_jobs = globalConfig.N_JOBS
-
-            # Lazy import to avoid circular dependency at module level.
-            import zscore  # pylint: disable=import-outside-toplevel,redefined-outer-name,reimported
-
-            # Determine whether two-stage optimization is worthwhile.
-            # Requires at least 3 values in both lower and upper ranges.
-            fine_step_lower = (
-                self.rsi_lowers[1] - self.rsi_lowers[0]
-                if len(self.rsi_lowers) >= 2 else 1
-            )
-            fine_step_upper = (
-                self.rsi_uppers[1] - self.rsi_uppers[0]
-                if len(self.rsi_uppers) >= 2 else 1
-            )
-            use_two_stage = (
-                len(self.rsi_lowers) >= 4
-                and len(self.rsi_uppers) >= 4
-                and fine_step_lower > 0
-                and fine_step_upper > 0
-            )
-
-            if use_two_stage:
-                # --- Tier 2: Stage 1 — Coarse grid (double step) ---
-                coarse_step_lower = fine_step_lower * 2
-                coarse_step_upper = fine_step_upper * 2
-                coarse_lowers = list(range(
-                    self.rsi_lowers[0], self.rsi_lowers[-1] +
-                    1, coarse_step_lower
-                ))
-                coarse_uppers = list(range(
-                    self.rsi_uppers[0], self.rsi_uppers[-1] +
-                    1, coarse_step_upper
-                ))
-
-                coarse_count = len(coarse_lowers) * \
-                    len(coarse_uppers) * len(self.rsi_periods)
-                logger.debug(
-                    "🔍 %s: Stage 1/2 — coarse grid (%d lowers × %d uppers × %d periods = %d combos)",
-                    symbol, len(coarse_lowers), len(coarse_uppers),
-                    len(self.rsi_periods), coarse_count
-                )
-
-                coarse_candidates: List[Tuple[float, int, int, int]] = []
-
-                # Build flat list of combos for parallel dispatch
-                coarse_combos: List[Tuple[int, int, int, pd.Series]] = []
-                for rsi_period in self.rsi_periods:
-                    rsi = rsi_cache[rsi_period]
-                    for rsi_lower in coarse_lowers:
-                        for rsi_upper in coarse_uppers:
-                            if rsi_lower >= rsi_upper:
-                                continue
-                            tested_set.add((rsi_period, rsi_lower, rsi_upper))
-                            coarse_combos.append(
-                                (rsi_period, rsi_lower, rsi_upper, rsi))
-
-                coarse_count = len(coarse_combos)
-                tested_combinations = coarse_count
-                logger.debug(
-                    "🔍 %s: Stage 1/2 — coarse grid (%d lowers × %d uppers × %d periods = %d combos)",
-                    symbol, len(coarse_lowers), len(coarse_uppers),
-                    len(self.rsi_periods), coarse_count
-                )
-
-                # Run coarse grid in parallel
-                parallel_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
-                    delayed(StrategyOptimizer._test_single_combo)(
-                        data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
-                        direction, globalConfig.BACKTEST_INIT_CASH
-                    )
-                    for rsi_period, rsi_lower, rsi_upper, rsi_series in coarse_combos
-                )
-                assert isinstance(
-                    parallel_results, list), "Parallel() returned non-list for coarse grid"
-                parallel_results = cast(
-                    List[Tuple[BacktestResult, int, int, int]], parallel_results)
-
-                # Compute Z-scores within the coarse pool
-                coarse_zscores = zscore.compute_stage_zscores(parallel_results)
-
-                for idx, (result, rp, rl, ru) in enumerate(parallel_results):
-                    score = coarse_zscores[idx]
-                    if result.profitable:
-                        coarse_candidates.append((score, rp, rl, ru))
-                    if score > best_score and result.profitable:
-                        best_score = score
-                        best_result = result
-
-                # Keep top-3 for fine refinement
-                coarse_candidates.sort(key=lambda x: x[0], reverse=True)
-                top_candidates = coarse_candidates[:3]
-
-                # --- Tier 2: Stage 2 — Fine grid around top candidates (parallel) ---
-                if coarse_candidates:
-
-                    fine_combos: List[Tuple[int, int, int, pd.Series]] = []
-                    for _, c_period, c_lower, c_upper in top_candidates:
-                        fine_lowers = [
-                            x for x in range(
-                                c_lower - fine_step_lower,
-                                c_lower + fine_step_lower + 1,
-                                fine_step_lower
-                            )
-                            if x >= self.rsi_lowers[0] and x < self.rsi_uppers[-1]
-                        ]
-                        fine_uppers = [
-                            x for x in range(
-                                c_upper - fine_step_upper,
-                                c_upper + fine_step_upper + 1,
-                                fine_step_upper
-                            )
-                            if x > self.rsi_lowers[0] and x <= self.rsi_uppers[-1]
-                        ]
-
-                        rsi = rsi_cache[c_period]
-                        for rsi_lower in fine_lowers:
-                            for rsi_upper in fine_uppers:
-                                if rsi_lower >= rsi_upper:
-                                    continue
-                                key = (c_period, rsi_lower, rsi_upper)
-                                if key in tested_set:
-                                    continue
-                                tested_set.add(key)
-                                fine_combos.append(
-                                    (c_period, rsi_lower, rsi_upper, rsi))
-
-                    if fine_combos:
-                        fine_count = len(fine_combos)
-                        tested_combinations += fine_count
-
-                        fine_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
-                            delayed(StrategyOptimizer._test_single_combo)(
-                                data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
-                                direction, globalConfig.BACKTEST_INIT_CASH
-                            )
-                            for rsi_period, rsi_lower, rsi_upper, rsi_series in fine_combos
-                        )
-                        assert isinstance(
-                            fine_results, list), "Parallel() returned non-list for fine grid"
-                        fine_results = cast(
-                            List[Tuple[BacktestResult, int, int, int]], fine_results)
-
-                        # Compute Z-scores within the fine pool
-                        fine_zscores = zscore.compute_stage_zscores(
-                            fine_results)
-
-                        for idx, (result, rp, rl, ru) in enumerate(fine_results):
-                            score = fine_zscores[idx]
-                            if score > best_score and result.profitable:
-                                best_score = score
-                                best_result = result
-                                logger.debug(
-                                    "🎯 %s: New best — RSI(%d, %d, %d) Z-Score: %.2f",
-                                    symbol, rp, rl, ru, score
-                                )
-
-                        logger.debug(
-                            "🔍 %s: Stage 2/2 — %d fine combos tested around top-3 candidates",
-                            symbol, fine_count
-                        )
-                    else:
-                        logger.debug(
-                            "🔍 %s: Stage 2/2 — no new fine combos to test",
-                            symbol
-                        )
-            else:
-                # Fallback: single-stage fine grid with cached RSI (Tier 1 only).
-                # Used when parameter ranges are too narrow for two-stage to help.
-                fallback_combos: List[Tuple[int, int, int, pd.Series]] = []
-                for rsi_period in self.rsi_periods:
-                    rsi = rsi_cache[rsi_period]
-                    for rsi_lower in self.rsi_lowers:
-                        for rsi_upper in self.rsi_uppers:
-                            if rsi_lower >= rsi_upper:
-                                continue
-                            fallback_combos.append(
-                                (rsi_period, rsi_lower, rsi_upper, rsi))
-
-                tested_combinations = len(fallback_combos)
-
-                if fallback_combos:
-                    fallback_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
-                        delayed(StrategyOptimizer._test_single_combo)(
-                            data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
-                            direction, globalConfig.BACKTEST_INIT_CASH
-                        )
-                        for rsi_period, rsi_lower, rsi_upper, rsi_series in fallback_combos
-                    )
-                    assert isinstance(
-                        fallback_results, list), "Parallel() returned non-list for fallback grid"
-                    fallback_results = cast(
-                        List[Tuple[BacktestResult, int, int, int]], fallback_results)
-
-                    # Compute Z-scores within the fallback pool
-                    fallback_zscores = zscore.compute_stage_zscores(
-                        fallback_results)
-
-                    for idx, (result, rp, rl, ru) in enumerate(fallback_results):
-                        score = fallback_zscores[idx]
-                        if score > best_score and result.profitable:
-                            best_score = score
-                            best_result = result
-                            logger.debug(
-                                "🎯 %s: New best — RSI(%d, %d, %d) Z-Score: %.2f",
-                                symbol, rp, rl, ru, score
-                            )
-
-            if best_result:
-                # Store the within-symbol Z-score on the winning result.
-                # (This will be overwritten by cross-symbol Z-scores later.)
-                best_result.composite_score = best_score
-                logger.debug(
-                    "✅ %s: Optimization complete — "
-                    "Best: RSI(%d, %d, %d) Z-Score: %.2f "
-                    "(α=%.2f%%, Sharpe=%.2f, Calmar=%.2f), Trades: %d (tested %d combos)",
-                    symbol, best_result.rsi_period, best_result.rsi_lower,
-                    best_result.rsi_upper, best_score,
-                    best_result.alpha * 100, best_result.sharpe_ratio,
-                    best_result.calmar_ratio,
-                    best_result.num_trades, tested_combinations
-                )
-            else:
-                logger.debug(
-                    "❌ %s: No profitable strategies found from %d combinations",
-                    symbol, tested_combinations
-                )
-
-            return best_result
-
-        except Exception as e:
-            logger.error(f"💥 Error optimizing {symbol}: {e}")
-            return None
-
-    async def optimize_universe(self, symbols: List[str], start_date: datetime, end_date: datetime) -> List[BacktestResult]:
-        """
-        Optimize RSI parameters for multiple symbols concurrently.
-
-        Args:
-            symbols: List of stock symbols
-            start_date: Backtest start date
-            end_date: Backtest end date
-
-        Returns:
-            List of BacktestResult objects
-        """
-        results = []
-        processed_count = 0
-        successful_count = 0
-        total_symbols = len(symbols)
-
-        # Track timing for progress estimates
-        import time
-        start_time = time.time()
-
-        logger.info(
-            f"🚀 Starting backtest optimization for {total_symbols} symbols")
-        logger.info(
-            f"📅 Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-        logger.info(
-            f"⚙️  RSI Parameters - Periods: {self.rsi_periods}, Lower: {self.rsi_lowers}, Upper: {self.rsi_uppers}")
-        logger.info(
-            f"📉 Short selling: {'ENABLED' if globalConfig.ENABLE_SHORT_SELLING else 'DISABLED'}")
-        logger.info("=" * 60)
-
-        # Initialize progress indicator
-        progress = ProgressIndicator(total_symbols, "🔍 Optimizing strategies")
-
-        # Use ThreadPoolExecutor for I/O bound operations
-        loop = asyncio.get_event_loop()
-
-        # Process symbols in batches to avoid overwhelming the API.
-        # When grid-level parallelism is active (n_jobs != 1), process
-        # symbols one at a time since each symbol already saturates cores.
-        effective_workers = (
-            os.cpu_count() or 4
-        ) if globalConfig.N_JOBS == -1 else globalConfig.N_JOBS
-        batch_size = 1 if effective_workers > 1 else 10
-        logger.info(
-            "⚡ Parallelism: %d joblib workers per symbol, batch_size=%d",
-            effective_workers, batch_size
-        )
-        total_batches = (total_symbols + batch_size - 1) // batch_size
-
-        for batch_num, i in enumerate(range(0, len(symbols), batch_size), 1):
-            batch = symbols[i:i + batch_size]
-            batch_start_time = time.time()
-
-            logger.info(
-                f"📊 Processing batch {batch_num}/{total_batches} ({len(batch)} symbols): {', '.join(batch)}")
-
-            tasks = []
-            for symbol in batch:
-                task = loop.run_in_executor(
-                    None,
-                    self.optimize_symbol,
-                    symbol,
-                    start_date,
-                    end_date,
-                    "long"
-                )
-                tasks.append(task)
-                if globalConfig.ENABLE_SHORT_SELLING:
-                    short_task = loop.run_in_executor(
-                        None,
-                        self.optimize_symbol,
-                        symbol,
-                        start_date,
-                        end_date,
-                        "short"
-                    )
-                    tasks.append(short_task)
-
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Group results per symbol to count progress correctly.
-            # Each symbol may have 1 (long-only) or 2 (long+short) tasks.
-            results_per_symbol = len(tasks) // len(batch)
-            batch_successful = 0
-            for sym_idx, symbol in enumerate(batch):
-                processed_count += 1
-                progress.update(1, f"Batch {batch_num}/{total_batches}")
-
-                # Collect all task results for this symbol
-                sym_start = sym_idx * results_per_symbol
-                sym_end = sym_start + results_per_symbol
-                sym_results = batch_results[sym_start:sym_end]
-
-                for result in sym_results:
-                    if isinstance(result, BacktestResult):
-                        results.append(result)
-                        successful_count += 1
-                        batch_successful += 1
-                    elif result is not None:
-                        logger.error(f"Error in batch processing: {result}")
-
-            # Calculate progress and time estimates
-            batch_time = time.time() - batch_start_time
-            total_elapsed = time.time() - start_time
-            completion_pct = (processed_count / total_symbols) * 100
-
-            if processed_count > 0:
-                avg_time_per_symbol = total_elapsed / processed_count
-                remaining_symbols = total_symbols - processed_count
-                estimated_remaining_time = avg_time_per_symbol * remaining_symbols
-
-                # Clear progress line and show batch summary
-                print()  # New line after progress bar
-                logger.info(
-                    f"✅ Batch {batch_num} complete: {batch_successful}/{len(batch)} successful (took {batch_time:.1f}s)")
-                logger.info(f"📈 Progress: {processed_count}/{total_symbols} ({completion_pct:.1f}%) | "
-                            f"Successful: {successful_count} | "
-                            f"ETA: {estimated_remaining_time/60:.1f} min")
-                logger.info("─" * 60)
-
-            # Small delay between batches
-            await asyncio.sleep(1)
-
-        # Finish progress indicator
-        progress.finish("All symbols processed!")
-
-        # Final summary
-        total_time = time.time() - start_time
-        success_rate = (successful_count / total_symbols) * \
-            100 if total_symbols > 0 else 0
-
-        logger.info("=" * 60)
-        logger.info("🎯 BACKTEST OPTIMIZATION COMPLETE!")
-        logger.info("📊 Results Summary:")
-        logger.info(
-            f"   • Total symbols processed: {processed_count}/{total_symbols}")
-        logger.info(
-            f"   • Successful optimizations: {successful_count} ({success_rate:.1f}%)")
-        logger.info(f"   • Total time: {total_time/60:.1f} minutes")
-        logger.info(
-            f"   • Average time per symbol: {total_time/total_symbols:.1f}s")
-        if successful_count > 0:
-            profitable_count = len([r for r in results if r.profitable])
-            logger.info(
-                f"   • Profitable strategies: {profitable_count}/{successful_count}")
-        logger.info("=" * 60)
-
-        # Build consolidated trades DataFrame for optional runtime use.
-        if results:
-            logger.info(
-                "📊 Building consolidated trades DataFrame for runtime use...")
-            self.last_consolidated_trades_df = self.build_consolidated_trades(
-                results)
-
-        # Compute cross-symbol Z-scores so results are comparable across symbols.
-        if results:
-            logger.info("📊 Computing cross-symbol Z-scores...")
-            import zscore  # pylint: disable=import-outside-toplevel,redefined-outer-name,reimported
-            zscore.compute_cross_symbol_zscores(results)
-
-        return [r for r in results if r is not None]
-
-    def build_consolidated_trades(self, results: List[BacktestResult]) -> pd.DataFrame:
-        """
-        Build consolidated trades DataFrame from optimization results.
-
-        Args:
-            results: List of BacktestResult objects
-
-        Returns:
-            Consolidated trades DataFrame
-        """
-        strategy = RSIStrategy(
-            14, 30, 70)  # Dummy strategy instance for the method
-        return strategy.build_consolidated_trades_df(results)
-
-    def filter_results(self, results: List[BacktestResult]) -> List[BacktestResult]:
-        """
-        Filter backtest results for trading opportunities.
-
-        Args:
-            results: List of BacktestResult objects
-
-        Returns:
-            Filtered list of profitable strategies with positive alpha
-        """
-        filtered = []
-
-        for result in results:
-            # Filter criteria from legacy get_entries function
-            if (result.alpha > 0 and
-                result.profitable and
-                result.num_trades > 0 and
-                    result.win_rate > 0.3):  # At least 30% win rate
-                filtered.append(result)
-
-        # Sort by composite score (cross-symbol Z-score, descending)
-        filtered.sort(key=lambda x: x.composite_score, reverse=True)
-
-        return filtered

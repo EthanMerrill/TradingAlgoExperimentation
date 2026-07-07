@@ -12,11 +12,13 @@ from typing import Any, Dict, List
 import cloud_storage as cloud_storage_module
 from data_provider import data_provider
 from positions import PositionsManager
-from strategy import StrategyOptimizer
+from optimizer import StrategyOptimizer
+from walk_forward import WalkForwardValidator
 from trading_engine import TradingEngine
 from utils import TradingCalendar, setup_logging
 
 from config import globalConfig  # type: ignore
+from health_server import start_health_server
 
 logger = logging.getLogger(__name__)
 TEST_MODE_UNIVERSE_LIMIT = 50
@@ -54,6 +56,9 @@ class TradingAlgorithm:
         """
         self.session_metadata['start_time'] = datetime.now()
 
+        # Clear per-cycle caches to avoid stale data
+        self.trading_engine._clear_ohlcv_cache()
+
         # Startup banner
         logger.info("🚀" * 20)
         logger.info("🚀 TRADING ALGORITHM STARTING")
@@ -64,6 +69,9 @@ class TradingAlgorithm:
         logger.info("🔄 Force Backtest: %s", force_backtest)
         logger.info("🔍 Dry Run Mode: %s", dry_run)
         logger.info("🧪 Test Mode: %s", test_mode)
+        logger.info("🪟 Walk-Forward: %s", globalConfig.WF_ENABLED)
+        logger.info("🔬 RSI Fine Tuning: %s",
+                    globalConfig.RSI_FINE_TUNING_ENABLED)
         logger.info("=" * 60)
 
         # Set dry run mode on trading engine
@@ -209,17 +217,26 @@ class TradingAlgorithm:
             "🕐 This may take 30-90 minutes depending on market conditions")
 
         # Step 3: Run optimization for all symbols
-        results = await self.optimizer.optimize_universe(symbols, start_date, end_date)
+        if globalConfig.WF_ENABLED:
+            logger.info(
+                "🪟 Walk-forward validation enabled — splitting into IS/OOS windows")
+            wf_validator = WalkForwardValidator(self.optimizer)
+            wf_results = await wf_validator.validate_universe(symbols, start_date, end_date)
+
+            # Convert WalkForwardResult → BacktestResult for downstream compatibility
+            raw_results = [r.to_backtest_result() for r in wf_results]
+        else:
+            raw_results = await self.optimizer.optimize_universe(symbols, start_date, end_date)
 
         # Step 4: Filter results
         logger.info("🔍 Filtering and analyzing results...")
-        filtered_results = self.optimizer.filter_results(results)
+        filtered_results = self.optimizer.filter_results(raw_results)
 
         logger.info("📈 Backtest analysis complete!")
-        logger.info("   • Total strategies tested: %d", len(results))
+        logger.info("   • Total strategies tested: %d", len(raw_results))
         logger.info("   • Profitable strategies: %d", len(filtered_results))
         logger.info("   • Success rate: %.1f%%",
-                    (len(filtered_results)/len(results)*100) if results else 0)
+                    (len(filtered_results)/len(raw_results)*100) if raw_results else 0)
 
         # Step 5: Save results to cloud storage
         logger.info("💾 Saving results to cloud storage...")
@@ -347,6 +364,31 @@ async def main():
 
 if __name__ == "__main__":
     result = asyncio.run(main())
+
+    # If KEEP_ALIVE is set (Coolify deployments), idle indefinitely
+    # so the container stays running for SSH access. On GCP Cloud Run,
+    # leave KEEP_ALIVE unset so the container exits and scales to zero.
+    if globalConfig.KEEP_ALIVE:
+        logger.info("🛟 KEEP_ALIVE enabled — container will idle indefinitely")
+        logger.info("   Press Ctrl+C or stop the container to exit.")
+
+        # Start a lightweight health-check HTTP server in a daemon thread.
+        # Coolify / Docker HEALTHCHECK can curl http://localhost:{globalConfig.HEALTH_PORT}/health
+        import threading
+        health_thread = threading.Thread(
+            target=start_health_server,
+            args=(globalConfig.HEALTH_PORT, result),
+            daemon=True,
+        )
+        health_thread.start()
+
+        try:
+            import time
+            while True:
+                time.sleep(60)
+        except KeyboardInterrupt:
+            logger.info("Idle loop interrupted — shutting down.")
+            sys.exit(0)
 
     # Exit with appropriate code
     if result.get('status') == 'success':

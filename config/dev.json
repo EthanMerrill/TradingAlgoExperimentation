@@ -7,7 +7,7 @@
 		"min_cash_pct": 0.05,
 		"stop_loss_pct": 0.05,
 		"take_profit_pct": 0.15,
-		"max_hold_days": 30,
+		"max_hold_days": 15,
 		"min_win_rate": 0.8,
 		"enable_short_selling": true,
 		"max_short_long_ratio": 0.3
@@ -17,29 +17,39 @@
 		"months": 12
 	},
 	"rsi_optimization": {
+		"fine_tuning_enabled": false,
 		"period_range": {
 			"start": 3,
-			"stop": 24,
-			"step": 5
+			"stop": 40,
+			"step": 6
 		},
 		"lower_range": {
 			"start": 20,
-			"stop": 60,
-			"step": 5
+			"stop": 40,
+			"step": 6
 		},
 		"upper_range": {
 			"start": 50,
-			"stop": 86,
-			"step": 5
+			"stop": 85,
+			"step": 6
 		}
 	},
 	"data_filtering": {
-		"min_volume": 60000,
-		"min_price": 8.0,
+		"min_volume": 200,
+		"max_volume": 800,
+		"min_price": 5.0,
 		"max_price": 350.0,
-		"min_market_cap": 1000000000
+		"min_market_cap": 500,
+		"max_market_cap": 9000
 	},
 	"api": {
-		"rate_limit_delay": 0.05
+		"rate_limit_delay": 0.03
+	},
+	"walk_forward": {
+		"enabled": true,
+		"is_months": 4,
+		"oos_months": 2,
+		"step_months": 2,
+		"min_windows": 3
 	}
 }

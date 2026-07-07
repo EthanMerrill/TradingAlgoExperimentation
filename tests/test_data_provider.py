@@ -240,6 +240,87 @@ class TestDataProvider(unittest.TestCase):
             self.assertIn('price', result)
             self.assertEqual(result['price'], 151.50)
 
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
+    def test_filter_symbols_by_max_volume(self, _mock_sleep, mock_config):
+        """Test universe filter excludes symbols above max volume."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+        mock_config.PAPER_TRADE = True
+        mock_config.API_RATE_LIMIT_DELAY = 0.0
+        mock_config.MIN_PRICE = 8.0
+        mock_config.MAX_PRICE = 350.0
+        mock_config.MIN_VOLUME = 20
+        mock_config.MAX_VOLUME = 2000000
+        mock_config.MAX_MARKET_CAP = None
+
+        snapshots = {
+            'AAPL': {
+                'latest_trade': {'price': 150.0},
+                'previous_daily_bar': {'volume': 2500000},
+            },
+            'MSFT': {
+                'latest_trade': {'price': 300.0},
+                'previous_daily_bar': {'volume': 1000000},
+            },
+        }
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_historical_class, \
+                patch('data_provider.TradingClient') as mock_trading_class:
+            mock_historical = Mock()
+            mock_historical.get_stock_snapshot.return_value = snapshots
+            mock_historical_class.return_value = mock_historical
+            mock_trading_class.return_value = Mock()
+
+            data_provider = DataProvider()
+            filtered = data_provider._filter_symbols_by_price(['AAPL', 'MSFT'])
+
+            self.assertEqual(filtered, ['MSFT'])
+
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
+    def test_filter_symbols_by_max_market_cap_missing_cap_passes(self, _mock_sleep, mock_config):
+        """Test market-cap filter only excludes symbols with known cap above the max."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+        mock_config.PAPER_TRADE = True
+        mock_config.API_RATE_LIMIT_DELAY = 0.0
+        mock_config.MIN_PRICE = 8.0
+        mock_config.MAX_PRICE = 350.0
+        mock_config.MIN_VOLUME = 20
+        mock_config.MAX_VOLUME = 5000000
+        mock_config.MAX_MARKET_CAP = 200000000000
+
+        snapshots = {
+            'AAPL': {
+                'latest_trade': {'price': 150.0},
+                'previous_daily_bar': {'volume': 1200000},
+            },
+            'MSFT': {
+                'latest_trade': {'price': 300.0},
+                'previous_daily_bar': {'volume': 1000000},
+            },
+            'AMD': {
+                'latest_trade': {'price': 110.0},
+                'previous_daily_bar': {'volume': 1400000},
+            },
+        }
+        symbol_market_caps = {
+            'AAPL': 250000000000,
+            'AMD': 150000000000,
+        }
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_historical_class, \
+                patch('data_provider.TradingClient') as mock_trading_class:
+            mock_historical = Mock()
+            mock_historical.get_stock_snapshot.return_value = snapshots
+            mock_historical_class.return_value = mock_historical
+            mock_trading_class.return_value = Mock()
+
+            data_provider = DataProvider()
+            filtered = data_provider._filter_symbols_by_price(
+                ['AAPL', 'MSFT', 'AMD'], symbol_market_caps=symbol_market_caps)
+
+            self.assertEqual(filtered, ['MSFT', 'AMD'])
+
 
 class TestDataProviderOrderHistory(unittest.TestCase):
     """Test cases for the DataProvider order history methods."""

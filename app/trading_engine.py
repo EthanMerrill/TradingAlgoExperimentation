@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (OrderClass, OrderSide, OrderType,
                                   QueryOrderStatus, TimeInForce)
@@ -54,6 +55,10 @@ class TradingEngine:
             cloud_storage, data_provider)
         self._last_position_update: Optional[datetime] = None
         self.dry_run: bool = False
+        # Per-cycle OHLCV cache: avoids redundant API calls when multiple
+        # methods (price, RSI, take-profit) need data for the same symbol.
+        # Keyed by symbol, cleared at the start of each run cycle.
+        self._ohlcv_cache: Dict[str, pd.DataFrame] = {}
 
     def set_dry_run_mode(self, dry_run: bool) -> None:
         """Enable or disable dry run mode."""
@@ -559,7 +564,7 @@ class TradingEngine:
             try:
                 new_position = Position(
                     symbol=opportunity.symbol,
-                    quantity=float(shares),
+                    quantity=-float(shares),  # negative = short
                     entry_price=opportunity.entry_price,
                     current_price=opportunity.entry_price,
                     current_rsi=opportunity.current_rsi,
@@ -572,7 +577,6 @@ class TradingEngine:
                     take_profit_price=opportunity.take_profit_price,
                     closed=False,
                     exit_date=None,
-                    side="short"
                 )
 
                 self._positions_manager.open_position(new_position)
@@ -654,12 +658,9 @@ class TradingEngine:
         try:
             side = getattr(position, 'side', 'long')
 
-            # Get historical data for RSI calculation
-            end_date = datetime.now() - timedelta(minutes=20)
-            start_date = end_date - timedelta(days=position.rsi_period * 3)
-
-            data = data_provider.get_single_stock_bars(
-                position.symbol, start_date, end_date)
+            # Get historical data for RSI calculation (use cache)
+            data = self._fetch_ohlcv_once(
+                position.symbol, position.rsi_period * 3)
 
             if side == "short":
                 # Short: target RSI lower bound for cover price
@@ -763,15 +764,20 @@ class TradingEngine:
                                 else position.take_profit_price)
             return default_stop, default_take
 
-    def place_oco_sell_order(self, symbol: str, shares: int, stop_loss_price: float, take_profit_price: float) -> bool:
+    def place_oco_close_order(self, symbol: str, shares: int, stop_loss_price: float, take_profit_price: float, side: str = "long") -> bool:
         """
-        Place an OCO (One Cancels Other) sell order for a symbol.
+        Place an OCO (One Cancels Other) close order for an existing position.
+
+        Supports both long and short positions:
+        - Long: places a SELL OCO (take-profit above entry, stop-loss below entry)
+        - Short: places a BUY OCO (cover at take-profit below entry, stop-loss above entry)
 
         Args:
-            symbol: Stock symbol to sell
-            shares: Number of shares to sell
-            stop_loss_price: Stop loss price (sell below this price)
-            take_profit_price: Take profit price (sell above this price)
+            symbol: Stock symbol to close
+            shares: Number of shares to close
+            stop_loss_price: Stop loss price (below entry for long, above entry for short)
+            take_profit_price: Take profit / cover price (above entry for long, below entry for short)
+            side: Position side — "long" or "short" (default: "long")
 
         Returns:
             True if order was placed successfully
@@ -779,9 +785,10 @@ class TradingEngine:
         try:
             if self.dry_run:
                 # Dry run mode - simulate order placement
+                action = "sell" if side == "long" else "buy (cover)"
                 logger.info(
-                    "🔍 DRY RUN: Would place OCO sell order for %d shares of %s",
-                    shares, symbol)
+                    "🔍 DRY RUN: Would place OCO %s order for %d shares of %s (%s)",
+                    action, shares, symbol, side)
                 logger.info("🔍 DRY RUN: Stop loss at $%.2f, Take profit at $%.2f",
                             stop_loss_price, take_profit_price)
                 return True
@@ -824,12 +831,27 @@ class TradingEngine:
                 logger.warning(
                     "Error cancelling existing orders for %s: %s", symbol, e)
 
+            # Determine order side based on position direction.
+            # Long → SELL to close; Short → BUY to cover.
+            if side == "short":
+                order_side = OrderSide.BUY
+                action_label = "buy (cover)"
+                # For buy stop-limit, limit_price must be >= stop_price
+                # (buy at limit_price or better means equal or lower)
+                stop_limit_buffer = round(stop_loss_price * 1.005, 2)
+            else:
+                order_side = OrderSide.SELL
+                action_label = "sell"
+                # For sell stop-limit, limit_price must be <= stop_price
+                # (sell at limit_price or better means equal or higher)
+                stop_limit_buffer = round(stop_loss_price * 0.995, 2)
+
             # Create OCO order according to Alpaca documentation
             # OCO orders must be limit orders with take_profit and stop_loss parameters
             oco_order = LimitOrderRequest(
                 symbol=symbol,
                 qty=shares,
-                side=OrderSide.SELL,
+                side=order_side,
                 type=OrderType.LIMIT,  # Must be limit for OCO
                 time_in_force=TimeInForce.GTC,
                 # Main order limit price (take profit)
@@ -839,7 +861,7 @@ class TradingEngine:
                 stop_loss=StopLossRequest(
                     stop_price=stop_loss_price,
                     # Stop-limit order with small buffer
-                    limit_price=round(stop_loss_price * 0.995, 2)
+                    limit_price=stop_limit_buffer
                 )
             )
 
@@ -854,14 +876,17 @@ class TradingEngine:
             logger.info("Order placed successfully: %s", order_id)
 
             logger.info(
-                "OCO sell order placed for %d shares of %s", shares, symbol)
+                "OCO %s order placed for %d shares of %s (%s)",
+                action_label, shares, symbol, side)
             logger.info("Take profit limit: $%.2f, Stop loss: $%.2f",
                         take_profit_price, stop_loss_price)
 
             return True
 
         except Exception as e:
-            error_msg = "Error placing OCO sell order for %s: %s" % (symbol, e)
+            action = "buy (cover)" if side == "short" else "sell"
+            error_msg = "Error placing OCO %s order for %s: %s" % (
+                action, symbol, e)
             if self.dry_run:
                 error_msg = "🔍 DRY RUN: " + error_msg
             logger.error(error_msg)
@@ -952,8 +977,9 @@ class TradingEngine:
                 logger.info("🔍 DRY RUN: Would update stop loss for %s to $%.2f and take profit to $%.2f",
                             position.symbol, position.stop_loss_price, position.take_profit_price)
             else:
-                # Place OCO sell order with updated stop loss and take profit
-                if self.place_oco_sell_order(position.symbol, int(abs(position.quantity)), position.stop_loss_price, position.take_profit_price):
+                # Place OCO close order with updated stop loss and take profit
+                pos_side = getattr(position, 'side', 'long')
+                if self.place_oco_close_order(position.symbol, int(abs(position.quantity)), position.stop_loss_price, position.take_profit_price, side=pos_side):
                     session_summary['orders_placed'] += 1
         return session_summary
 
@@ -1130,15 +1156,45 @@ class TradingEngine:
         """
         return self._positions_manager.get_and_reconcile_positions()
 
+    def _clear_ohlcv_cache(self) -> None:
+        """Clear the per-cycle OHLCV cache. Call at the start of each run cycle."""
+        self._ohlcv_cache.clear()
+
+    def _fetch_ohlcv_once(self, symbol: str, min_lookback_days: int) -> pd.DataFrame:
+        """Fetch OHLCV data for a symbol, caching per cycle.
+
+        Multiple methods (_get_current_price, _get_rsi_with_previous,
+        _compute_rsi_take_profit) previously made independent API calls
+        for the same symbol.  This cache eliminates those redundant fetches.
+
+        Args:
+            symbol: Stock symbol
+            min_lookback_days: Minimum calendar days of data needed
+
+        Returns:
+            DataFrame with OHLCV data (may be empty on failure)
+        """
+        cached = self._ohlcv_cache.get(symbol)
+        if cached is not None and len(cached) >= 3:
+            return cached
+
+        end_date = datetime.now() - timedelta(minutes=20)
+        start_date = end_date - timedelta(days=max(min_lookback_days, 14))
+
+        try:
+            data = data_provider.get_single_stock_bars(
+                symbol, start_date, end_date)
+            if not data.empty:
+                self._ohlcv_cache[symbol] = data
+            return data
+        except Exception as e:
+            logger.error("Error fetching OHLCV for %s: %s", symbol, e)
+            return pd.DataFrame()
+
     def _get_current_rsi(self, symbol: str, period: int) -> Optional[float]:
         """Get current RSI value for a symbol."""
         try:
-            end_date = datetime.now() - timedelta(minutes=20)
-            # Buffer for weekends/holidays
-            start_date = end_date - timedelta(days=period * 3)
-
-            data = data_provider.get_single_stock_bars(
-                symbol, start_date, end_date)
+            data = self._fetch_ohlcv_once(symbol, period * 3)
 
             if data.empty or len(data) < period:
                 return None
@@ -1158,11 +1214,7 @@ class TradingEngine:
             Tuple of (current_rsi, previous_rsi). Either may be None if unavailable.
         """
         try:
-            end_date = datetime.now() - timedelta(minutes=20)
-            start_date = end_date - timedelta(days=period * 3)
-
-            data = data_provider.get_single_stock_bars(
-                symbol, start_date, end_date)
+            data = self._fetch_ohlcv_once(symbol, period * 3)
 
             if data.empty or len(data) < period + 1:
                 return None, None
@@ -1181,12 +1233,7 @@ class TradingEngine:
     def _get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol."""
         try:
-            end_date = datetime.now() - timedelta(minutes=20)
-            # Use a longer lookback period to account for weekends and holidays
-            start_date = end_date - timedelta(days=7)
-
-            data = data_provider.get_single_stock_bars(
-                symbol, start_date, end_date)
+            data = self._fetch_ohlcv_once(symbol, 7)
 
             if data.empty:
                 return None
@@ -1216,12 +1263,7 @@ class TradingEngine:
             Take-profit price (rounded to 2 decimal places)
         """
         try:
-            end_date = datetime.now() - timedelta(minutes=20)
-            # Buffer for RSI calculation — need at least rsi_period + 1 bars
-            start_date = end_date - timedelta(days=rsi_period * 3)
-
-            data = data_provider.get_single_stock_bars(
-                symbol, start_date, end_date)
+            data = self._fetch_ohlcv_once(symbol, rsi_period * 3)
 
             if data.empty or len(data) < rsi_period + 1:
                 logger.warning(
@@ -1274,11 +1316,7 @@ class TradingEngine:
             Cover price (rounded to 2 decimal places)
         """
         try:
-            end_date = datetime.now() - timedelta(minutes=20)
-            start_date = end_date - timedelta(days=rsi_period * 3)
-
-            data = data_provider.get_single_stock_bars(
-                symbol, start_date, end_date)
+            data = self._fetch_ohlcv_once(symbol, rsi_period * 3)
 
             if data.empty or len(data) < rsi_period + 1:
                 logger.warning(

@@ -6,7 +6,7 @@ Some Experimenting with a trading algorithm for US Common Stock.
 
 ## Prerequisites
 
-- **Python 3.10+**
+- **Python 3.13+**
 - **TA-Lib** (C library — install via `brew install ta-lib` on macOS)
 - **Alpaca API keys** — sign up for free paper trading at [alpaca.markets](https://alpaca.markets)
 
@@ -45,6 +45,12 @@ export ALPACA_DEV_PAPER_SECRET=your_paper_secret
 
 # Optional: Google Cloud Storage (for data persistence)
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+
+# Optional: Keep container alive after completion (for SSH/debugging in Coolify)
+export KEEP_ALIVE=true     # default: false
+
+# Optional: Health check server port (default: 8080 - change if port is already in use)
+export HEALTH_PORT=8080    # default: 8080
 ```
 
 Environment-specific API key pairs:
@@ -136,6 +142,29 @@ make docker-build  # Build the Docker image
 make docker-run    # Run the app in Docker
 ```
 
+## Deployment
+
+### GCP Cloud Run (default behavior)
+
+On Google Cloud Run, **do not** set `KEEP_ALIVE`. The container exits after each trading cycle, allowing Cloud Run to scale to zero and save costs. Cloud Run will spin up a new container when the next scheduled job triggers.
+
+### Coolify (SSH/debugging)
+
+If you deploy via Coolify and need to SSH into the container (e.g., for debugging or checking logs), set the environment variable `KEEP_ALIVE=true`. After the trading cycle completes, the container will **idle indefinitely** instead of exiting, keeping the SSH connection open.
+
+| Platform | `KEEP_ALIVE` | Container behavior after cycle |
+|----------|---------------|-------------------------------|
+| GCP Cloud Run | unset or `false` | Exits → scale to zero (saves costs) |
+| Coolify | `true` | Sleeps indendently → stays running for SSH |
+
+### Health check port (`HEALTH_PORT`)
+
+The health server listens on port **8080** by default. If that port is already in use on your server, set `HEALTH_PORT` to a different value:
+
+```bash
+export HEALTH_PORT=9090
+```
+
 ## Processes Overview:
 
 ### Positions
@@ -146,7 +175,7 @@ make docker-run    # Run the app in Docker
 
 ### Backtest
 
-1. Filter universe of all stocks to those with large market caps and a reasonable amount of volume results in 8-1.5k securities
+1. Filter universe of all stocks to those with bounded price and volume, plus market-cap filters when available, resulting in a focused tradable set
 2. For each security in this universe, backtest RSI Strategies over the past _6 months_. These are backtested with different combinations of `rsi upper bound`, `rsi lower bound`, and `rsi period`. These three parameters are optimized for each security using grid optimization. An improved optimization strategy is on the roadmap. This operation creates a dataframe with all the securities, their optimized parameters, the strategy return, and the return of a buy and hold strategy for the given security.
 3. Every 50 strategy generations, or securities run through the backests/parameter optimization, the dataframe is appended to a locally saved version. This is saved in a format called a pickle. This is a way of reducing the amount of ram required by the program.
 4. The backtest dataframe and is saved to google cloud storage once all securities have been processed.

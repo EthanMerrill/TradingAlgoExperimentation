@@ -2,9 +2,13 @@
 Cloud storage module for persisting data and results.
 Handles Google Cloud Storage operations for backtests and positions.
 """
+import base64
 import importlib
 import io
+import json
 import logging
+import os
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
@@ -17,6 +21,10 @@ from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+# Environment variable name for JSON-based service account credentials.
+# When set, takes priority over file-based GOOGLE_APPLICATION_CREDENTIALS.
+_GCS_JSON_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS_JSON"
+
 
 class CloudStorage:
     """Google Cloud Storage handler for trading data."""
@@ -24,12 +32,86 @@ class CloudStorage:
     def __init__(self):
         try:
             storage_module = importlib.import_module("google.cloud.storage")
-            self.client = storage_module.Client()
+
+            # Step A: JSON credentials in env var (Coolify secret, etc.)
+            # Supports both raw JSON and base64-encoded JSON (for platforms
+            # like Coolify where raw JSON breaks .env parsing).
+            creds_json = os.environ.get(_GCS_JSON_CREDENTIALS_ENV)
+            if creds_json:
+                creds_info = self._parse_credentials_json(creds_json)
+                self.client = storage_module.Client.from_service_account_info(
+                    creds_info
+                )
+                logger.info("Cloud storage initialized via %s",
+                            _GCS_JSON_CREDENTIALS_ENV)
+            else:
+                # Step B: File-based credentials path (local dev)
+                creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+                if creds_path and not os.path.exists(creds_path):
+                    logger.warning(
+                        "GOOGLE_APPLICATION_CREDENTIALS=%s does not exist; "
+                        "unsetting and falling back to Application Default Credentials",
+                        creds_path,
+                    )
+                    # Unset so the GCS client falls through to ADC instead of
+                    # failing on a missing file.
+                    os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+
+                # Step C: Default ADC (metadata server, gcloud config, etc.)
+                self.client = storage_module.Client()
+
             self.bucket = self.client.bucket(globalConfig.GCS_BUCKET_NAME)
         except Exception as e:
             logger.error("Error initializing cloud storage: %s", e)
             self.client = None
             self.bucket = None
+
+    @staticmethod
+    def _parse_credentials_json(raw_value: str) -> dict:
+        """Parse GOOGLE_APPLICATION_CREDENTIALS_JSON from env var.
+
+        Tries raw JSON first, then falls back to base64 decoding.
+        Strips whitespace/newlines (Coolify .env may inject them) and
+        removes the ``type`` metadata field (it is not a credential
+        keyword and can break from_service_account_info on some versions).
+        """
+        # Sanitize: strip whitespace, newlines, and invisible chars that
+        # Coolify / .env parsers may inject around the value.
+        cleaned = raw_value.strip()
+
+        # Try raw JSON first
+        creds = None
+        try:
+            creds = json.loads(cleaned)
+            logger.debug("Parsed %s as raw JSON", _GCS_JSON_CREDENTIALS_ENV)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fall back to base64-decoded JSON
+        if creds is None:
+            try:
+                # Remove whitespace that Coolify may inject into the
+                # base64 string.
+                b64_clean = re.sub(r'[\s]', '', cleaned)
+                decoded = base64.b64decode(b64_clean).decode("utf-8")
+                creds = json.loads(decoded)
+                logger.debug("Parsed %s as base64-encoded JSON",
+                             _GCS_JSON_CREDENTIALS_ENV)
+            except Exception as e:
+                preview = cleaned[:80] if len(cleaned) > 80 else cleaned
+                raise ValueError(
+                    f"{_GCS_JSON_CREDENTIALS_ENV} is neither valid JSON "
+                    f"nor valid base64-encoded JSON: {e}. "
+                    f"Raw value preview: {preview!r}"
+                ) from e
+
+        # Strip the "type" field — it is metadata ("service_account"),
+        # not a credential parameter, and can cause:
+        #   "unexpected keyword argument 'type'"
+        # on some google-auth library versions.
+        creds.pop("type", None)
+
+        return creds
 
     def _round_floats(self, data):
         """
@@ -203,10 +285,16 @@ class CloudStorage:
 
                         realized_return = pos.realized_return
                         if realized_return is None and pos.closed and pos.entry_price:
-                            realized_return = (
-                                (exit_price - pos.entry_price) / pos.entry_price
-                                if exit_price is not None else None
-                            )
+                            if exit_price is not None:
+                                side = getattr(pos, 'side', 'long')
+                                if side == "short":
+                                    realized_return = (
+                                        pos.entry_price - exit_price) / pos.entry_price
+                                else:
+                                    realized_return = (
+                                        exit_price - pos.entry_price) / pos.entry_price
+                            else:
+                                realized_return = None
 
                         pos_dict = {
                             'symbol': pos.symbol,
@@ -224,7 +312,7 @@ class CloudStorage:
                             'closed': pos.closed,
                             'exit_date': pos.exit_date,
                             'exit_price': exit_price,
-                            'realized_return': realized_return
+                            'realized_return': realized_return,
                         }
                         positions_list.append(pos_dict)
                     positions_df = pd.DataFrame(positions_list)
@@ -417,10 +505,25 @@ class CloudStorage:
             return pd.DataFrame()
         positions_df = self.load_position_entries(latest_file)
         # Filter out closed positions
-        if not positions_df.empty and 'closed' in positions_df.columns and openPosition:
-            return positions_df[positions_df['closed'] != True]
-        elif not positions_df.empty and 'closed' in positions_df.columns and not openPosition:
-            return positions_df[positions_df['closed'] == True]
+        if 'closed' in positions_df.columns:
+            if openPosition:
+                return positions_df[positions_df['closed'] != True]
+            else:
+                return positions_df[positions_df['closed'] == True]
+        else:
+            # Legacy CSV without 'closed' column — treat all rows as open
+            if not openPosition:
+                logger.warning(
+                    "Positions file '%s' is missing 'closed' column. "
+                    "Returning empty DataFrame for closed positions query.",
+                    latest_file
+                )
+                return pd.DataFrame()
+            logger.info(
+                "Positions file '%s' is missing 'closed' column. "
+                "Treating all rows as open (legacy format).",
+                latest_file
+            )
         return positions_df
 
 

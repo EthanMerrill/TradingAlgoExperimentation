@@ -88,7 +88,7 @@ class TestPositionsManager(unittest.TestCase):
 
         self.assertEqual(len(self.manager.positions), 1)
 
-    def test_close_position_removes_from_in_memory_list(self):
+    def test_close_position_marks_closed_in_place(self):
         p = Position(
             symbol="AAPL",
             quantity=10.0,
@@ -100,6 +100,8 @@ class TestPositionsManager(unittest.TestCase):
             rsi_period=14,
             rsi_lower=30,
             rsi_upper=70,
+            stop_loss_price=95.0,
+            take_profit_price=110.0,
             closed=False,
         )
         self.manager.positions = [p]
@@ -107,12 +109,56 @@ class TestPositionsManager(unittest.TestCase):
             'symbol': ['AAPL'],
             'entry_price': [100.0],
             'current_price': [101.0],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
             'closed': [False],
         })
 
         self.manager.close_position("AAPL")
 
-        self.assertEqual(len(self.manager.positions), 0)
+        # Position stays in list but is now closed
+        self.assertEqual(len(self.manager.positions), 1)
+        self.assertTrue(self.manager.positions[0].closed)
+        self.assertIsNotNone(self.manager.positions[0].exit_price)
+        self.assertIsNotNone(self.manager.positions[0].realized_return)
+
+    def test_close_short_position_correct_realized_return(self):
+        """Short that lost money: entry=100, covered at 105 → -5% return."""
+        p = Position(
+            symbol="PDD",
+            quantity=-10.0,  # negative = short
+            entry_price=100.0,
+            current_price=110.0,
+            current_rsi=70.0,
+            entry_date=datetime.now(),
+            alpha=0.1,
+            rsi_period=14,
+            rsi_lower=30,
+            rsi_upper=70,
+            stop_loss_price=105.0,
+            take_profit_price=90.0,
+            closed=False,
+        )
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+            'symbol': ['PDD'],
+            'entry_price': [100.0],
+            'current_price': [110.0],
+            'shares': [-10.0],
+            'stop_loss_price': [105.0],
+            'take_profit_price': [90.0],
+            'closed': [False],
+        })
+
+        self.manager.close_position("PDD")
+
+        self.assertEqual(len(self.manager.positions), 1)
+        self.assertTrue(self.manager.positions[0].closed)
+        # OCO fallback: 110 is closer to 105 (stop) than 90 (take), so exit=105
+        self.assertEqual(self.manager.positions[0].exit_price, 105.0)
+        # Short: (100 - 105) / 100 = -0.05
+        self.assertAlmostEqual(
+            self.manager.positions[0].realized_return, -0.05, places=4)
 
     def test_get_and_reconcile_positions_initializes_from_alpaca_when_cloud_empty(self):
         self.data.get_current_positions_df.return_value = pd.DataFrame({
@@ -209,7 +255,12 @@ class TestPositionsManager(unittest.TestCase):
             'exit_reason': [None],
             'closed': [False],
         })
-        self.cloud.get_latest_positions_df.return_value = cloud_df
+
+        def _cloud_df_side_effect(is_open):
+            if is_open:
+                return cloud_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_df_side_effect
 
         # Mock order history: submitted_at = 2026-05-25
         entry_submitted = datetime(2026, 5, 25, 9, 30, 0)
@@ -218,7 +269,7 @@ class TestPositionsManager(unittest.TestCase):
         )
 
         # Mock StrategyOptimizer to return a known backtest result
-        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
             mock_opt = Mock()
             mock_opt_class.return_value = mock_opt
 
@@ -245,10 +296,18 @@ class TestPositionsManager(unittest.TestCase):
 
             open_positions = self.manager.get_and_reconcile_positions()
 
-        # MSFT from cloud + AAPL from Alpaca
-        self.assertEqual(len(open_positions), 2)
+        # Only AAPL should be open; MSFT is cloud-only (not in Alpaca)
+        # and should have been marked broker_closed.
+        self.assertEqual(len(open_positions), 1)
         aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
         self.assertEqual(aapl_pos.symbol, 'AAPL')
+
+        # MSFT should be in self.manager.positions as closed (broker_closed)
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
+        self.assertEqual(len(msft_positions), 1)
+        self.assertTrue(msft_positions[0].closed)
+        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
 
         # entry_date should come from order history, not datetime.now()
         self.assertEqual(aapl_pos.entry_date, entry_submitted)
@@ -287,7 +346,7 @@ class TestPositionsManager(unittest.TestCase):
         })
 
         # Return a cloud DF with a DIFFERENT symbol
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+        fallback_cloud_df = pd.DataFrame({
             'symbol': ['MSFT'],
             'shares': [5.0],
             'entry_price': [300.0],
@@ -308,11 +367,17 @@ class TestPositionsManager(unittest.TestCase):
             'closed': [False],
         })
 
+        def _fallback_cloud_df_side_effect(is_open):
+            if is_open:
+                return fallback_cloud_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _fallback_cloud_df_side_effect
+
         # Mock order history returns None (no orders found)
         self.data.get_entry_order_for_symbol.return_value = None
 
         # Mock StrategyOptimizer
-        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
             mock_opt = Mock()
             mock_opt_class.return_value = mock_opt
 
@@ -337,13 +402,21 @@ class TestPositionsManager(unittest.TestCase):
 
             open_positions = self.manager.get_and_reconcile_positions()
 
-        # MSFT from cloud + AAPL from Alpaca
-        self.assertEqual(len(open_positions), 2)
+        # Only AAPL should be open; MSFT is cloud-only (not in Alpaca)
+        # and should have been marked broker_closed.
+        self.assertEqual(len(open_positions), 1)
         aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
         self.assertEqual(aapl_pos.symbol, 'AAPL')
         self.assertEqual(aapl_pos.rsi_period, 7)
         self.assertEqual(aapl_pos.rsi_lower, 20)
         self.assertEqual(aapl_pos.rsi_upper, 80)
+
+        # MSFT should be in self.manager.positions as closed (broker_closed)
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
+        self.assertEqual(len(msft_positions), 1)
+        self.assertTrue(msft_positions[0].closed)
+        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
 
         # Verify backtest was called with the full range (default behavior)
         mock_opt.optimize_symbol.assert_called_once()
@@ -369,7 +442,7 @@ class TestPositionsManager(unittest.TestCase):
         })
 
         # Return a cloud DF with a DIFFERENT symbol
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+        stale_cloud_df = pd.DataFrame({
             'symbol': ['MSFT'],
             'shares': [5.0],
             'entry_price': [300.0],
@@ -390,21 +463,35 @@ class TestPositionsManager(unittest.TestCase):
             'closed': [False],
         })
 
+        def _stale_cloud_df_side_effect(is_open):
+            if is_open:
+                return stale_cloud_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _stale_cloud_df_side_effect
+
         # Entry submitted_at BEFORE BACKTEST_START_DATE
         # end_date = submitted_at - 1 day, which is before start
         early_date = datetime(2026, 5, 10)
         self.data.get_entry_order_for_symbol.return_value = (early_date, 145.0)
 
-        with patch('strategy.StrategyOptimizer') as mock_opt_class:
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
             mock_opt = Mock()
             mock_opt_class.return_value = mock_opt
 
             open_positions = self.manager.get_and_reconcile_positions()
 
-        # MSFT from cloud + AAPL from Alpaca
-        self.assertEqual(len(open_positions), 2)
+        # Only AAPL should be open; MSFT is cloud-only (not in Alpaca)
+        # and should have been marked broker_closed.
+        self.assertEqual(len(open_positions), 1)
         aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
         self.assertEqual(aapl_pos.symbol, 'AAPL')
+
+        # MSFT should be in self.manager.positions as closed (broker_closed)
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
+        self.assertEqual(len(msft_positions), 1)
+        self.assertTrue(msft_positions[0].closed)
+        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
 
         # Should use default RSI parameters since backtest was skipped
         self.assertEqual(aapl_pos.rsi_period, 14)
@@ -420,6 +507,413 @@ class TestPositionsManager(unittest.TestCase):
 
         # Backtest should NOT have been called
         mock_opt.optimize_symbol.assert_not_called()
+
+    @patch('positions.globalConfig')
+    def test_reconcile_alpaca_only_short_position(self, mock_config):
+        """Alpaca-only SHORT: side derived from negative qty, backtest direction='short', inverted OCO."""
+        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
+        mock_config.STOP_LOSS_PCT = 0.05
+        mock_config.TAKE_PROFIT_PCT = 0.15
+
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['SQQQ'],
+            'qty': [-50.0],  # negative = short
+            'avg_entry_price': [30.0],
+            'current_price': [28.0],
+            'market_value': [1400.0],
+        })
+
+        # Cloud has a different symbol so SQQQ triggers Alpaca-only path
+        short_cloud_df = pd.DataFrame({
+            'symbol': ['MSFT'],
+            'shares': [5.0],
+            'entry_price': [300.0],
+            'current_price': [305.0],
+            'position_value': [1525.0],
+            'current_rsi': [50.0],
+            'entry_date': [datetime(2026, 5, 10)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.0],
+            'stop_loss_price': [np.nan],
+            'take_profit_price': [np.nan],
+            'exit_date': [None],
+            'exit_price': [np.nan],
+            'realized_return': [np.nan],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _short_cloud_side_effect(is_open):
+            if is_open:
+                return short_cloud_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _short_cloud_side_effect
+
+        # Mock order history for the short
+        entry_submitted = datetime(2026, 5, 20, 9, 30, 0)
+        self.data.get_entry_order_for_symbol.return_value = (
+            entry_submitted, 30.50
+        )
+
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
+            mock_opt = Mock()
+            mock_opt_class.return_value = mock_opt
+
+            backtest_result = BacktestResult(
+                symbol='SQQQ',
+                rsi_period=10,
+                rsi_lower=40,
+                rsi_upper=60,
+                total_return=0.08,
+                buy_and_hold_return=-0.02,
+                alpha=0.10,
+                num_trades=3,
+                win_rate=0.67,
+                avg_trade_duration=5,
+                max_drawdown=0.01,
+                sharpe_ratio=2.0,
+                profitable=True,
+                current_rsi=65.0,
+                composite_score=1.8,
+                direction='short',
+            )
+            mock_opt.optimize_symbol.return_value = backtest_result
+
+            open_positions = self.manager.get_and_reconcile_positions()
+
+        # Only SQQQ should be open; MSFT marked broker_closed
+        self.assertEqual(len(open_positions), 1)
+        sqqq_pos = [p for p in open_positions if p.symbol == 'SQQQ'][0]
+        self.assertEqual(sqqq_pos.symbol, 'SQQQ')
+        self.assertEqual(sqqq_pos.side, 'short')
+        self.assertEqual(sqqq_pos.quantity, -50.0)
+
+        # entry_date/price from order history
+        self.assertEqual(sqqq_pos.entry_date, entry_submitted)
+        self.assertEqual(sqqq_pos.entry_price, 30.50)
+
+        # RSI params from backtest
+        self.assertEqual(sqqq_pos.rsi_period, 10)
+        self.assertEqual(sqqq_pos.rsi_lower, 40)
+        self.assertEqual(sqqq_pos.rsi_upper, 60)
+
+        # Short OCO: stop_loss ABOVE entry (30.50 * 1.05 = 32.025)
+        # take_profit BELOW entry (30.50 * 0.85 = 25.925)
+        self.assertAlmostEqual(sqqq_pos.stop_loss_price, 32.025, places=4)
+        self.assertAlmostEqual(sqqq_pos.take_profit_price, 25.925, places=4)
+
+        # Backtest called with direction='short'
+        mock_opt.optimize_symbol.assert_called_once()
+        call_args, call_kwargs = mock_opt.optimize_symbol.call_args
+        self.assertEqual(call_args[0], 'SQQQ')
+        self.assertEqual(call_kwargs['direction'], 'short')
+
+        # MSFT marked broker_closed
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
+        self.assertEqual(len(msft_positions), 1)
+        self.assertTrue(msft_positions[0].closed)
+        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
+
+    def test_reconcile_cloud_only_short_broker_closed(self):
+        """Cloud-only SHORT marked broker_closed with correct realized_return formula."""
+        self.data.get_current_positions_df.return_value = self._empty_positions_df()
+
+        # Short position: shares=-20, entry=50, current=48
+        short_open_df = pd.DataFrame({
+            'symbol': ['XYZ'],
+            'shares': [-20.0],
+            'entry_price': [50.0],
+            'current_price': [48.0],
+            'position_value': [960.0],
+            'current_rsi': [55.0],
+            'entry_date': [datetime(2026, 6, 1)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.05],
+            'stop_loss_price': [52.0],
+            'take_profit_price': [45.0],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _short_cloud_side_effect(is_open):
+            if is_open:
+                return short_open_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _short_cloud_side_effect
+
+        open_positions = self.manager.get_and_reconcile_positions()
+
+        # No open positions — XYZ is cloud-only, marked broker_closed
+        self.assertEqual(len(open_positions), 0)
+        closed = [p for p in self.manager.positions if p.closed]
+        self.assertEqual(len(closed), 1)
+        xyz = closed[0]
+        self.assertEqual(xyz.symbol, 'XYZ')
+        self.assertEqual(xyz.side, 'short')
+        self.assertEqual(xyz.exit_reason, 'broker_closed')
+
+        # OCO fallback: current=48, stop=52, take=45 → |48-52|=4 < |48-45|=3? No, 3 < 4
+        # take_profit is closer → exit=45
+        self.assertEqual(xyz.exit_price, 45.0)
+
+        # Short realized return: (entry - exit) / entry = (50 - 45) / 50 = 0.10
+        self.assertAlmostEqual(xyz.realized_return, 0.10, places=4)
+
+    @patch('positions.globalConfig')
+    def test_reconcile_initialized_from_alpaca_enrichment(self, mock_config):
+        """When cloud is completely empty, Alpaca positions initialize cloud and run enrichment."""
+        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
+        mock_config.STOP_LOSS_PCT = 0.05
+        mock_config.TAKE_PROFIT_PCT = 0.15
+
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [150.0],
+            'current_price': [155.0],
+            'market_value': [1550.0],
+        })
+
+        # Cloud is completely empty — triggers initialized_from_alpaca path
+        def _empty_cloud_side_effect(is_open):
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _empty_cloud_side_effect
+
+        # Mock order history for enrichment
+        entry_submitted = datetime(2026, 5, 25, 9, 30, 0)
+        self.data.get_entry_order_for_symbol.return_value = (
+            entry_submitted, 150.25
+        )
+
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
+            mock_opt = Mock()
+            mock_opt_class.return_value = mock_opt
+
+            enrich_result = BacktestResult(
+                symbol='AAPL',
+                rsi_period=14,
+                rsi_lower=25,
+                rsi_upper=75,
+                total_return=0.05,
+                buy_and_hold_return=0.03,
+                alpha=0.02,
+                num_trades=5,
+                win_rate=0.6,
+                avg_trade_duration=10,
+                max_drawdown=0.02,
+                sharpe_ratio=1.2,
+                profitable=True,
+                current_rsi=35.0,
+                composite_score=1.5,
+                direction='long',
+            )
+            mock_opt.optimize_symbol.return_value = enrich_result
+
+            open_positions = self.manager.get_and_reconcile_positions()
+
+        self.assertEqual(len(open_positions), 1)
+        aapl = open_positions[0]
+        self.assertEqual(aapl.symbol, 'AAPL')
+        self.assertFalse(aapl.closed)
+
+        # entry_date from order history
+        self.assertEqual(aapl.entry_date, entry_submitted)
+        # entry_price from order history
+        self.assertEqual(aapl.entry_price, 150.25)
+        # RSI from backtest
+        self.assertEqual(aapl.rsi_period, 14)
+        self.assertEqual(aapl.rsi_lower, 25)
+        self.assertEqual(aapl.rsi_upper, 75)
+
+        # Backtest called with constrained window
+        mock_opt.optimize_symbol.assert_called_once()
+        call_args, _ = mock_opt.optimize_symbol.call_args
+        self.assertEqual(call_args[2], entry_submitted - timedelta(days=1))
+
+    def test_reconcile_cloud_only_missing_shares_column(self):
+        """Cloud-only position without 'shares' column still marked broker_closed (no crash)."""
+        self.data.get_current_positions_df.return_value = self._empty_positions_df()
+
+        # Position missing the 'shares' column entirely
+        no_shares_df = pd.DataFrame({
+            'symbol': ['MISSING'],
+            'entry_price': [100.0],
+            'current_price': [90.0],
+            'position_value': [900.0],
+            'current_rsi': [40.0],
+            'entry_date': [datetime.now()],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.1],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'closed': [False],
+        })
+
+        def _no_shares_side_effect(is_open):
+            if is_open:
+                return no_shares_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _no_shares_side_effect
+
+        open_positions = self.manager.get_and_reconcile_positions()
+
+        # Should not crash; position should be marked broker_closed
+        self.assertEqual(len(open_positions), 0)
+        closed = [p for p in self.manager.positions if p.closed]
+        self.assertEqual(len(closed), 1)
+        self.assertEqual(closed[0].symbol, 'MISSING')
+        self.assertEqual(closed[0].exit_reason, 'broker_closed')
+        # Without shares, defaults to 0, side defaults to 'long'
+        self.assertEqual(closed[0].quantity, 0.0)
+        self.assertEqual(closed[0].side, 'long')
+
+    def test_reconcile_stale_cloud_mixed_open_closed(self):
+        """Cloud has AAPL+MSFT both open; Alpaca only has AAPL. AAPL stays open, MSFT closed."""
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [15.0],
+            'avg_entry_price': [155.0],
+            'current_price': [160.0],
+            'market_value': [2400.0],
+        })
+
+        mixed_cloud_df = pd.DataFrame({
+            'symbol': ['AAPL', 'MSFT'],
+            'shares': [10.0, 5.0],
+            'entry_price': [150.0, 300.0],
+            'current_price': [155.0, 305.0],
+            'position_value': [1550.0, 1525.0],
+            'current_rsi': [45.0, 55.0],
+            'entry_date': [datetime(2026, 5, 10), datetime(2026, 5, 10)],
+            'rsi_period': [14, 14],
+            'rsi_lower': [30, 30],
+            'rsi_upper': [70, 70],
+            'alpha': [0.1, 0.2],
+            'stop_loss_price': [142.5, 285.0],
+            'take_profit_price': [165.0, 330.0],
+            'exit_date': [None, None],
+            'exit_price': [pd.NA, pd.NA],
+            'realized_return': [pd.NA, pd.NA],
+            'exit_reason': [None, None],
+            'closed': [False, False],
+        })
+
+        def _mixed_cloud_side_effect(is_open):
+            if is_open:
+                return mixed_cloud_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _mixed_cloud_side_effect
+
+        open_positions = self.manager.get_and_reconcile_positions()
+
+        # Only AAPL should be open
+        self.assertEqual(len(open_positions), 1)
+        aapl = open_positions[0]
+        self.assertEqual(aapl.symbol, 'AAPL')
+        self.assertFalse(aapl.closed)
+
+        # AAPL updated with live Alpaca values
+        self.assertEqual(aapl.quantity, 15.0)
+        self.assertEqual(aapl.current_price, 160.0)
+        # entry_price overwritten from Alpaca because AAPL was in original cloud
+        self.assertEqual(aapl.entry_price, 155.0)
+
+        # MSFT marked broker_closed
+        msft_positions = [
+            p for p in self.manager.positions if p.symbol == 'MSFT']
+        self.assertEqual(len(msft_positions), 1)
+        self.assertTrue(msft_positions[0].closed)
+        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
+        # OCO fallback: current=305, stop=285, take=330 → stop closer → exit=285
+        self.assertEqual(msft_positions[0].exit_price, 285.0)
+        # Long realized return: (285 - 300) / 300 = -0.05
+        self.assertAlmostEqual(
+            msft_positions[0].realized_return, -0.05, places=4)
+
+    def test_reconcile_zero_quantity_alpaca_position(self):
+        """Zero-quantity Alpaca position should not crash but is added as phantom (edge case)."""
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['PHANTOM'],
+            'qty': [0.0],
+            'avg_entry_price': [50.0],
+            'current_price': [50.0],
+            'market_value': [0.0],
+        })
+
+        phantom_cloud_df = pd.DataFrame({
+            'symbol': ['MSFT'],
+            'shares': [5.0],
+            'entry_price': [300.0],
+            'current_price': [305.0],
+            'position_value': [1525.0],
+            'current_rsi': [50.0],
+            'entry_date': [datetime(2026, 5, 10)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.0],
+            'stop_loss_price': [np.nan],
+            'take_profit_price': [np.nan],
+            'exit_date': [None],
+            'exit_price': [np.nan],
+            'realized_return': [np.nan],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _phantom_cloud_side_effect(is_open):
+            if is_open:
+                return phantom_cloud_df.copy()
+            return self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _phantom_cloud_side_effect
+        self.data.get_entry_order_for_symbol.return_value = None
+
+        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
+            mock_opt = Mock()
+            mock_opt_class.return_value = mock_opt
+
+            backtest_result = BacktestResult(
+                symbol='PHANTOM',
+                rsi_period=14,
+                rsi_lower=30,
+                rsi_upper=70,
+                total_return=0.0,
+                buy_and_hold_return=0.0,
+                alpha=0.0,
+                num_trades=0,
+                win_rate=0.0,
+                avg_trade_duration=0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                profitable=False,
+                current_rsi=50.0,
+                composite_score=0.0,
+                direction='long',
+            )
+            mock_opt.optimize_symbol.return_value = backtest_result
+
+            open_positions = self.manager.get_and_reconcile_positions()
+
+        # PHANTOM appears as open with 0 shares (known limitation — does not crash)
+        # MSFT is cloud-only → broker_closed
+        phantom_positions = [
+            p for p in open_positions if p.symbol == 'PHANTOM']
+        self.assertEqual(len(phantom_positions), 1)
+        self.assertEqual(phantom_positions[0].quantity, 0.0)
+        self.assertEqual(phantom_positions[0].side, 'long')
 
 
 if __name__ == '__main__':

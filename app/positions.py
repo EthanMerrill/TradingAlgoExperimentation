@@ -1,5 +1,5 @@
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -32,7 +32,12 @@ class Position:
     realized_return: Optional[float] = None
     exit_reason: Optional[str] = None
     closed: bool = False
-    side: str = "long"
+    side: str = field(init=False, default="long")
+
+    def __post_init__(self):
+        """Derive side from quantity: negative qty = short position."""
+        if self.quantity < 0:
+            object.__setattr__(self, 'side', 'short')
 
 
 class PositionsManager:
@@ -71,6 +76,12 @@ class PositionsManager:
             len(alpaca_positions), len(
                 cloud_positions), alpaca_symbols_list, cloud_symbols_list
         )
+
+        # Capture the original cloud symbol set BEFORE any enrichment or
+        # initialization modifies the cloud DataFrame. This is used later
+        # to guard against overwriting order-history-derived entry_price
+        # with Alpaca's avg_entry_price during the live-update pass.
+        _original_cloud_symbols = set(cloud_symbols_list)
 
         # Normalize cloud schema when there is no prior snapshot but Alpaca has open positions.
         if cloud_positions.empty:
@@ -117,7 +128,7 @@ class PositionsManager:
             logger.info(
                 "Enriching initialized Alpaca positions with order history/backtests")
             try:
-                from strategy import StrategyOptimizer
+                from optimizer import StrategyOptimizer
                 optimizer = StrategyOptimizer()
             except (ImportError, AttributeError) as e:
                 logger.warning(
@@ -126,16 +137,9 @@ class PositionsManager:
 
             for idx, row in cloud_positions.iterrows():
                 symbol = row['symbol']
-                position_side = "long"
-                # Try to determine side from alpaca_positions if available
-                if 'side' in alpaca_positions.columns:
-                    try:
-                        raw_side = alpaca_positions.loc[alpaca_positions['symbol'] == symbol].iloc[0].get(
-                            'side', 'long')
-                        position_side = "short" if raw_side in (
-                            'short', 'Short') else "long"
-                    except (IndexError, KeyError, TypeError):
-                        position_side = "long"
+                # Derive side from quantity sign (negative = short)
+                qty = float(row.get('shares', 0) or 0)
+                position_side = "short" if qty < 0 else "long"
 
                 entry_date = parse_dt(
                     row.get('entry_date'), default=datetime.now())
@@ -227,7 +231,7 @@ class PositionsManager:
                 optimizer = None
                 try:
                     # Local import avoids unnecessary startup cost and potential import cycles.
-                    from strategy import StrategyOptimizer
+                    from optimizer import StrategyOptimizer
                     optimizer = StrategyOptimizer()
                 except (ImportError, AttributeError) as e:
                     logger.warning(
@@ -238,12 +242,9 @@ class PositionsManager:
                     alpaca_row = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol].iloc[0]
 
-                    # Determine side from Alpaca position data if available
-                    position_side = "long"
-                    if 'side' in alpaca_positions.columns:
-                        raw_side = alpaca_row.get('side', 'long')
-                        position_side = "short" if raw_side in (
-                            'short', 'Short') else "long"
+                    # Derive side from quantity sign (negative = short)
+                    alpaca_qty = float(alpaca_row.get('qty', 0) or 0)
+                    position_side = "short" if alpaca_qty < 0 else "long"
 
                     # Try to find the entry order from Alpaca order history
                     # to determine the real entry date and price, avoiding
@@ -341,9 +342,15 @@ class PositionsManager:
                         'alpha': alpha,
                         'composite_score': composite_score,
                         'stop_loss_price': (
-                            (entry_price * (1 - globalConfig.STOP_LOSS_PCT)) if entry_price > 0 else np.nan),
+                            (entry_price * (1 + globalConfig.STOP_LOSS_PCT))
+                            if entry_price > 0 and position_side == 'short'
+                            else (entry_price * (1 - globalConfig.STOP_LOSS_PCT))
+                            if entry_price > 0 else np.nan),
                         'take_profit_price': (
-                            (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT)) if entry_price > 0 else np.nan),
+                            (entry_price * (1 - globalConfig.TAKE_PROFIT_PCT))
+                            if entry_price > 0 and position_side == 'short'
+                            else (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT))
+                            if entry_price > 0 else np.nan),
                         'exit_date': pd.NaT,
                         'exit_price': np.nan,
                         'realized_return': np.nan,
@@ -370,13 +377,46 @@ class PositionsManager:
                 # Mark cloud-only symbols as closed
                 for symbol in cloud_only_symbols:
                     symbol_mask = cloud_positions['symbol'] == symbol
-                    # Use latest known price as exit price when position disappears from broker holdings.
-                    if 'current_price' in cloud_positions.columns:
-                        cloud_positions.loc[symbol_mask,
-                                            'exit_price'] = cloud_positions.loc[symbol_mask, 'current_price']
-                    elif 'entry_price' in cloud_positions.columns:
-                        cloud_positions.loc[symbol_mask,
-                                            'exit_price'] = cloud_positions.loc[symbol_mask, 'entry_price']
+
+                    # Determine position side from quantity sign (negative = short)
+                    cloud_qty = float(cloud_positions.loc[symbol_mask, 'shares'].values[0]) \
+                        if 'shares' in cloud_positions.columns else 0.0
+                    position_side = "short" if cloud_qty < 0 else "long"
+
+                    # Determine exit price: try OCO targets first, then fall back
+                    stop_loss = cloud_positions.loc[symbol_mask, 'stop_loss_price'].values[0] \
+                        if 'stop_loss_price' in cloud_positions.columns else np.nan
+                    take_profit = cloud_positions.loc[symbol_mask, 'take_profit_price'].values[0] \
+                        if 'take_profit_price' in cloud_positions.columns else np.nan
+                    current_price = cloud_positions.loc[symbol_mask, 'current_price'].values[0] \
+                        if 'current_price' in cloud_positions.columns else np.nan
+                    entry_price = cloud_positions.loc[symbol_mask, 'entry_price'].values[0] \
+                        if 'entry_price' in cloud_positions.columns else np.nan
+
+                    # OCO target fallback with logging
+                    if (pd.notna(stop_loss) and pd.notna(take_profit)
+                            and pd.notna(current_price) and current_price > 0):
+                        if abs(current_price - stop_loss) <= abs(current_price - take_profit):
+                            chosen = "stop_loss"
+                            exit_price_val = stop_loss
+                        else:
+                            chosen = "take_profit"
+                            exit_price_val = take_profit
+                        logger.info(
+                            "Reconcile OCO-fallback for %s: using %s=%.2f "
+                            "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
+                            symbol, chosen, exit_price_val, stop_loss, take_profit,
+                            current_price, entry_price
+                        )
+                    elif pd.notna(current_price) and current_price > 0:
+                        exit_price_val = current_price
+                    elif pd.notna(entry_price) and entry_price > 0:
+                        exit_price_val = entry_price
+                    else:
+                        exit_price_val = 0.0
+
+                    cloud_positions.loc[symbol_mask,
+                                        'exit_price'] = exit_price_val
 
                     if 'exit_date' not in cloud_positions.columns:
                         cloud_positions['exit_date'] = pd.NaT
@@ -388,14 +428,19 @@ class PositionsManager:
                             cloud_positions['realized_return'] = np.nan
                         entry_prices = pd.to_numeric(
                             cloud_positions.loc[symbol_mask, 'entry_price'], errors='coerce')
-                        exit_prices = pd.to_numeric(
-                            cloud_positions.loc[symbol_mask, 'exit_price'], errors='coerce')
                         valid_mask = entry_prices > 0
-                        cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
-                            valid_mask,
-                            (exit_prices - entry_prices) / entry_prices,
-                            np.nan
-                        )
+                        if position_side == "short":
+                            cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
+                                valid_mask,
+                                (entry_prices - exit_price_val) / entry_prices,
+                                np.nan
+                            )
+                        else:
+                            cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
+                                valid_mask,
+                                (exit_price_val - entry_prices) / entry_prices,
+                                np.nan
+                            )
 
                     cloud_positions.loc[cloud_positions['symbol']
                                         == symbol, 'closed'] = True
@@ -424,10 +469,11 @@ class PositionsManager:
                     cloud_positions.at[index, 'position_value'] = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol, 'market_value'].values[0]
                     # Only overwrite entry_price if this symbol existed in the
-                    # original cloud snapshot. For Alpaca-only symbols we want
-                    # to preserve entry_price discovered via order history.
+                    # original cloud snapshot. For Alpaca-only symbols and
+                    # initialized-from-Alpaca symbols we preserve the
+                    # entry_price discovered via order history.
                     try:
-                        if 'cloud_symbols' in locals() and symbol in cloud_symbols:
+                        if '_original_cloud_symbols' in locals() and symbol in _original_cloud_symbols:
                             cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
                                 alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
                     except (IndexError, KeyError, ValueError):
@@ -437,9 +483,11 @@ class PositionsManager:
                     # overwriting values coming from Alpaca.
                     if 'entry_date' in cloud_positions.columns:
                         try:
-                            parsed = parse_dt(cloud_positions.at[index, 'entry_date'])
+                            parsed = parse_dt(
+                                cloud_positions.at[index, 'entry_date'])
                             if parsed is not None:
-                                cloud_positions.at[index, 'entry_date'] = pd.Timestamp(parsed).floor('s')
+                                cloud_positions.at[index, 'entry_date'] = pd.Timestamp(
+                                    parsed).floor('s')
                         except (ValueError, TypeError):
                             # Fall back to leaving the existing value if parsing fails
                             pass
@@ -482,8 +530,6 @@ class PositionsManager:
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=parse_dt(
                         row['exit_date'], default=None),
-                    side=str(row['side']) if 'side' in row and pd.notna(
-                        row['side']) else "long"
                 )
                 self.positions.append(position)
 
@@ -523,8 +569,6 @@ class PositionsManager:
                     closed=row['closed'] if 'closed' in row else False,
                     exit_date=parse_dt(
                         row['exit_date'], default=None),
-                    side=str(row['side']) if 'side' in row and pd.notna(
-                        row['side']) else "long"
                 )
                 self.positions.append(position)
 
@@ -562,8 +606,6 @@ class PositionsManager:
                     closed=True,
                     exit_date=parse_dt(
                         row['exit_date'], default=datetime.now()),
-                    side=str(row['side']) if 'side' in row and pd.notna(
-                        row['side']) else "long"
                 )
                 self.positions.append(position)
 
@@ -577,50 +619,180 @@ class PositionsManager:
 
     def close_position(self, symbol: str):
         """
-        Removes a position by symbol.
-        Args:
-            symbol (str): The symbol of the position to remove.
+        Close a position by symbol.
+
+        Marks the position as closed in-place (no longer removes from the list)
+        so the realized return is preserved for subsequent cloud saves.
         """
-        # Find and remove the position from self.positions
+        # Find the position in self.positions
         position_found = False
+        target_position = None
         for i, position in enumerate(self.positions):
-            if position.symbol == symbol:
-                self.positions.pop(i)
+            if position.symbol == symbol and not position.closed:
+                target_position = position
                 position_found = True
                 break
 
         if not position_found:
             logger.warning(
-                "Position with symbol %s not found in current positions.", symbol)
+                "Position with symbol %s not found in current open positions.", symbol)
             return
-        # Get current cloud positions to mark as closed
+
+        position_side = target_position.side
+
+        # Determine which order side represents the close:
+        #   Long positions  are closed with sell orders
+        #   Short positions are closed with buy  orders (cover)
+        close_order_side = "sell" if position_side == "long" else "buy"
+
+        # Try to get the actual filled close price from Alpaca order history
+        filled_exit_price = None
+        try:
+            orders_df = self.data_provider.get_filled_orders_for_symbol(
+                symbol, limit=50)
+            if not orders_df.empty and 'side' in orders_df.columns:
+                close_orders = orders_df[orders_df['side'] == close_order_side]
+                close_orders = close_orders[close_orders['filled_qty'] > 0]
+                if not close_orders.empty:
+                    latest_close = close_orders.iloc[0]
+                    filled_exit_price = latest_close['filled_avg_price']
+                    logger.info(
+                        "Found filled close order for %s (side=%s): price=%.2f, qty=%.2f",
+                        symbol, close_order_side, filled_exit_price,
+                        latest_close['filled_qty']
+                    )
+        except Exception as e:
+            logger.warning(
+                "Could not fetch filled close price for %s: %s. Will use fallback.",
+                symbol, e
+            )
+
+        # Determine exit_price:
+        #   1. Actual fill from Alpaca order history (best)
+        #   2. OCO target (stop_loss or take_profit) closest to current_price
+        #   3. current_price
+        #   4. entry_price (last resort)
+        if filled_exit_price is not None:
+            exit_price = filled_exit_price
+        else:
+            exit_price = self._determine_exit_price_for_position(
+                target_position, symbol
+            )
+
+        # Calculate realized return — formula differs for longs vs shorts.
+        #   Long:  (exit - entry) / entry  → profit when exit > entry
+        #   Short: (entry - exit) / entry  → profit when exit < entry (covered lower)
+        if target_position.entry_price and target_position.entry_price > 0:
+            if position_side == "short":
+                realized_return = (
+                    target_position.entry_price - exit_price
+                ) / target_position.entry_price
+            else:
+                realized_return = (
+                    exit_price - target_position.entry_price
+                ) / target_position.entry_price
+        else:
+            realized_return = None
+
+        # Mark the position closed in-place (keep in self.positions so
+        # the end-of-session save picks up the realized return).
+        target_position.closed = True
+        target_position.exit_date = datetime.now()
+        target_position.exit_price = exit_price
+        target_position.realized_return = realized_return
+        target_position.exit_reason = target_position.exit_reason or "manual"
+
+        # Update cloud positions snapshot and persist immediately.
         cloud_positions = self.cloud_storage.get_latest_positions_df(True)
         if not cloud_positions.empty and 'symbol' in cloud_positions.columns:
             symbol_mask = cloud_positions['symbol'] == symbol
-            if 'current_price' in cloud_positions.columns:
-                cloud_positions.loc[symbol_mask,
-                                    'exit_price'] = cloud_positions.loc[symbol_mask, 'current_price']
-            elif 'entry_price' in cloud_positions.columns:
-                cloud_positions.loc[symbol_mask,
-                                    'exit_price'] = cloud_positions.loc[symbol_mask, 'entry_price']
+
+            cloud_positions.loc[symbol_mask, 'exit_price'] = exit_price
+            cloud_positions.loc[symbol_mask, 'exit_date'] = datetime.now()
+            cloud_positions.loc[symbol_mask, 'closed'] = True
+            cloud_positions['closed'] = cloud_positions['closed'].astype(bool)
 
             if 'entry_price' in cloud_positions.columns:
                 entry_prices = pd.to_numeric(
                     cloud_positions.loc[symbol_mask, 'entry_price'], errors='coerce')
-                exit_prices = pd.to_numeric(
-                    cloud_positions.loc[symbol_mask, 'exit_price'], errors='coerce')
-                cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
-                    entry_prices > 0,
-                    (exit_prices - entry_prices) / entry_prices,
-                    np.nan
-                )
+                if position_side == "short":
+                    cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
+                        entry_prices > 0,
+                        (entry_prices - exit_price) / entry_prices,
+                        np.nan
+                    )
+                else:
+                    cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
+                        entry_prices > 0,
+                        (exit_price - entry_prices) / entry_prices,
+                        np.nan
+                    )
 
-            cloud_positions.loc[symbol_mask, 'exit_date'] = datetime.now()
-            cloud_positions.loc[symbol_mask, 'closed'] = True
-            cloud_positions['closed'] = cloud_positions['closed'].astype(bool)
-            # self.cloud_storage.save_positions(cloud_positions) SAVE AT END
-        # Log the removal
-        logger.info("Removed position for %s.", symbol)
+            if 'exit_reason' not in cloud_positions.columns:
+                cloud_positions['exit_reason'] = None
+            cloud_positions.loc[symbol_mask,
+                                'exit_reason'] = target_position.exit_reason
+
+            self.cloud_storage.save_positions(cloud_positions)
+
+        logger.info(
+            "Closed %s position for %s: exit=%.2f, realized_return=%.4f",
+            position_side, symbol, exit_price,
+            realized_return if realized_return is not None else 0.0
+        )
+
+    def _determine_exit_price_for_position(self, position, symbol: str) -> float:
+        """
+        Determine the most likely exit price when the actual fill cannot
+        be fetched from Alpaca order history.
+
+        Tries OCO targets (stop_loss / take_profit) first — picking whichever
+        is closer to current_price — then falls back to current_price or entry_price.
+        """
+        stop_loss = position.stop_loss_price
+        take_profit = position.take_profit_price
+        current_price = position.current_price
+        entry_price = position.entry_price
+
+        # Try OCO target approximation
+        if (stop_loss is not None and take_profit is not None
+                and current_price is not None and current_price > 0):
+            dist_to_stop = abs(current_price - stop_loss)
+            dist_to_take = abs(current_price - take_profit)
+            if dist_to_stop <= dist_to_take:
+                chosen = "stop_loss"
+                exit_price = stop_loss
+            else:
+                chosen = "take_profit"
+                exit_price = take_profit
+            logger.info(
+                "OCO-fallback exit price for %s: using %s=%.2f "
+                "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
+                symbol, chosen, exit_price, stop_loss, take_profit,
+                current_price, entry_price
+            )
+            return exit_price
+
+        # Fall back to current_price or entry_price
+        if current_price is not None and current_price > 0:
+            logger.info(
+                "Fallback exit price for %s: using current_price=%.2f "
+                "(no OCO targets available)",
+                symbol, current_price
+            )
+            return current_price
+        elif entry_price is not None and entry_price > 0:
+            logger.warning(
+                "Fallback exit price for %s: using entry_price=%.2f "
+                "(last resort — may report 0%% return)",
+                symbol, entry_price
+            )
+            return entry_price
+        else:
+            logger.error(
+                "Could not determine any exit price for %s", symbol
+            )
+            return 0.0
 
     def open_position(self, position: Position):
         """

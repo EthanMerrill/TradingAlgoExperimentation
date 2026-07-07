@@ -65,6 +65,7 @@ The application is organized into several modular components:
    export MAX_POSITIONS=10
    export POSITION_SIZE_PCT=0.1
    export GCS_BUCKET_NAME=your-bucket-name
+   export HEALTH_PORT=9090    # Health server port (default: 8080)
    ```
 
 ## Usage
@@ -144,8 +145,20 @@ All parameters can be configured via environment variables:
 | `MAX_HOLD_DAYS`     | 30      | Maximum holding period          |
 | `BACKTEST_MONTHS`   | 6       | Backtest lookback period        |
 | `MIN_VOLUME`        | 1000000 | Minimum daily volume filter     |
+| `MAX_VOLUME`        | null    | Maximum daily volume filter     |
 | `MIN_PRICE`         | 15.0    | Minimum stock price             |
 | `MAX_PRICE`         | 200.0   | Maximum stock price             |
+| `MAX_MARKET_CAP`    | null    | Maximum market cap (if available) |
+| `KEEP_ALIVE`        | false   | Keep container idling after completion (see below) |
+
+### `KEEP_ALIVE` — Container lifecycle control
+
+When `KEEP_ALIVE=true`, the container does not exit after the trading cycle finishes. Instead, it enters an infinite sleep loop. This is useful on **Coolify** where the container must stay running for SSH access. On **GCP Cloud Run**, leave this unset — the container will exit normally and scale to zero to save costs.
+
+| Platform | `KEEP_ALIVE` | Behavior |
+|----------|---------------|----------|
+| GCP Cloud Run | unset / `false` | Exits after cycle → scales to zero |
+| Coolify | `true` | Idles indefinitely → stays running for SSH |
 
 ## Data Storage
 

@@ -1,5 +1,5 @@
-# Modern Docker image for Python app with TA-Lib using Ubuntu base
-FROM ubuntu:22.04
+# Docker image for Python 3.13 app with TA-Lib
+FROM python:3.13-slim
 
 # Set timezone to avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
@@ -24,16 +24,11 @@ RUN apt-get clean && \
             curl \
             unzip \
             git \
-            python3 \
-            python3-pip \
-            python3-dev \
             ca-certificates \
         && break || sleep 10; \
     done && \
     apt-get clean && \
-    rm -rf /var/lib/apt/lists/* && \
-    ln -sf python3 /usr/bin/python && \
-    ln -sf pip3 /usr/bin/pip
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /tmp
@@ -43,7 +38,7 @@ RUN cd /tmp && \
     git clone https://github.com/TA-Lib/ta-lib.git && \
     cd ta-lib && \
     autoreconf -fiv && \
-    ./configure --prefix=/usr/local --build=aarch64-unknown-linux-gnu --enable-shared --enable-static && \
+    ./configure --prefix=/usr/local --enable-shared --enable-static && \
     make clean && \
     make -j$(nproc) && \
     make install && \
@@ -100,6 +95,7 @@ RUN python -c "import talib; print('TA-Lib imported successfully')" || \
 # Set the default command to run the main application
 ENTRYPOINT ["python", "app/main.py"]
 
-# Health check
+# Health check — curls the keep-alive health server when KEEP_ALIVE=true.
+# Falls back to a basic liveness check for normal (non-keep-alive) runs.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
+    CMD curl -sf http://localhost:${HEALTH_PORT:-8080}/health || python -c "import sys; sys.exit(0)"
