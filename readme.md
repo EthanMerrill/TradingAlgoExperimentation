@@ -48,6 +48,9 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
 
 # Optional: Keep container alive after completion (for SSH/debugging in Coolify)
 export KEEP_ALIVE=true     # default: false
+
+# Optional: Health check server port (default: 8080 - change if port is already in use)
+export HEALTH_PORT=8080    # default: 8080
 ```
 
 Environment-specific API key pairs:
@@ -153,6 +156,14 @@ If you deploy via Coolify and need to SSH into the container (e.g., for debuggin
 |----------|---------------|-------------------------------|
 | GCP Cloud Run | unset or `false` | Exits → scale to zero (saves costs) |
 | Coolify | `true` | Sleeps indendently → stays running for SSH |
+
+### Health check port (`HEALTH_PORT`)
+
+The health server listens on port **8080** by default. If that port is already in use on your server, set `HEALTH_PORT` to a different value:
+
+```bash
+export HEALTH_PORT=9090
+```
 
 ## Processes Overview:
 

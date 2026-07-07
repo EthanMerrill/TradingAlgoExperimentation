@@ -65,6 +65,7 @@ The application is organized into several modular components:
    export MAX_POSITIONS=10
    export POSITION_SIZE_PCT=0.1
    export GCS_BUCKET_NAME=your-bucket-name
+   export HEALTH_PORT=9090    # Health server port (default: 8080)
    ```
 
 ## Usage

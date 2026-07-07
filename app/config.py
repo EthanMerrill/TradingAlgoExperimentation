@@ -196,6 +196,11 @@ class Config:
         self.ENABLE_SHORT_SELLING = False
         self.MAX_SHORT_LONG_RATIO = 0.30  # Max 30% short notional exposure
 
+        # Keep-alive & health server defaults
+        self.KEEP_ALIVE = os.getenv(
+            'KEEP_ALIVE', 'false').lower() in ('true', '1', 'yes')
+        self.HEALTH_PORT = int(os.getenv('HEALTH_PORT', '8080'))
+
     def setup_backtesting_parameters(self):
         """Set up backtesting parameters (fallback method)."""
         self.BACKTEST_INIT_CASH = 10000

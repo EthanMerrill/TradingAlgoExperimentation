@@ -373,7 +373,7 @@ if __name__ == "__main__":
         logger.info("   Press Ctrl+C or stop the container to exit.")
 
         # Start a lightweight health-check HTTP server in a daemon thread.
-        # Coolify / Docker HEALTHCHECK can curl http://localhost:8080/health
+        # Coolify / Docker HEALTHCHECK can curl http://localhost:{globalConfig.HEALTH_PORT}/health
         import threading
         health_thread = threading.Thread(
             target=start_health_server,
