@@ -16,8 +16,8 @@ from alpaca.trading.enums import (OrderClass, OrderSide, OrderType,
 from alpaca.trading.requests import (GetOrdersRequest, LimitOrderRequest,
                                      MarketOrderRequest, StopLossRequest,
                                      TakeProfitRequest)
-from cloud_storage import cloud_storage
 from data_provider import TechnicalIndicators, data_provider
+from storage import storage
 from positions import Position, PositionsManager
 from strategy import BacktestResult, RSIStrategy
 
@@ -52,7 +52,7 @@ class TradingEngine:
     def __init__(self):
         self.trading_client: Optional[TradingClient] = data_provider.trading_client
         self._positions_manager: PositionsManager = PositionsManager(
-            cloud_storage, data_provider)
+            storage, data_provider)
         self._last_position_update: Optional[datetime] = None
         self.dry_run: bool = False
         # Per-cycle OHLCV cache: avoids redundant API calls when multiple
@@ -1116,7 +1116,7 @@ class TradingEngine:
 
             # save updated positions to cloud storage
             if not self.dry_run:
-                cloud_storage.save_positions(self._positions_manager.positions)
+                storage.save_positions(self._positions_manager.positions)
             else:
                 logger.info(
                     "Dry run mode: Skipping positions save to cloud storage")
@@ -1128,7 +1128,7 @@ class TradingEngine:
             logger.error(error_msg)
             # save updated positions to cloud storage
             if not self.dry_run:
-                cloud_storage.save_positions(self._positions_manager.positions)
+                storage.save_positions(self._positions_manager.positions)
             else:
                 logger.info(
                     "Dry run mode: Skipping positions save to cloud storage")

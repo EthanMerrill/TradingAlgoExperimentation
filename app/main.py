@@ -9,8 +9,8 @@ import sys
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
-import cloud_storage as cloud_storage_module
 from data_provider import data_provider
+from storage import storage
 from positions import PositionsManager
 from optimizer import StrategyOptimizer
 from walk_forward import WalkForwardValidator
@@ -32,7 +32,7 @@ class TradingAlgorithm:
         self.trading_engine = TradingEngine()
         self.trading_calendar = TradingCalendar()
         self.positions_manager = PositionsManager(
-            cloud_storage_module.cloud_storage, data_provider
+            storage, data_provider
         )
         self.session_metadata = {
             'start_time': None,
@@ -241,7 +241,7 @@ class TradingAlgorithm:
         # Step 5: Save results to cloud storage
         logger.info("💾 Saving results to cloud storage...")
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        cloud_storage_module.cloud_storage.save_backtest_results(
+        storage.save_backtest_results(
             filtered_results, timestamp)
 
         return filtered_results
@@ -249,7 +249,7 @@ class TradingAlgorithm:
     def _load_recent_backtest_results(self) -> List:
         """Load recent backtest results from cloud storage."""
         try:
-            backtest_files = cloud_storage_module.cloud_storage.list_backtest_files()
+            backtest_files = storage.list_backtest_files()
 
             if not backtest_files:
                 return []
@@ -271,7 +271,7 @@ class TradingAlgorithm:
                     f"{date_part}_{time_part}", '%Y%m%d_%H%M%S')
 
                 if (datetime.now() - file_datetime).total_seconds() < 24 * 3600:
-                    return cloud_storage_module.cloud_storage.load_backtest_results(most_recent)
+                    return storage.load_backtest_results(most_recent)
             except (IndexError, ValueError):
                 pass
 
@@ -299,7 +299,7 @@ class TradingAlgorithm:
             for key, value in trading_summary.items():
                 self.session_metadata[f'trading_{key}'] = value
 
-            cloud_storage_module.cloud_storage.save_metadata(
+            storage.save_metadata(
                 self.session_metadata, timestamp)
 
         except (ValueError, TypeError, KeyError) as e:

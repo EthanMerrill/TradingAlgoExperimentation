@@ -45,6 +45,7 @@
 	"api": {
 		"rate_limit_delay": 0.1
 	},
+	"storage_backend": "gcs",
 	"walk_forward": {
 		"enabled": false,
 		"is_months": 6,

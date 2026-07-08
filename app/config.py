@@ -61,8 +61,11 @@ class Config:
         # GOOGLE_APPLICATION_CREDENTIALS_JSON: GCS service account JSON or base64-encoded JSON
         #   - Raw JSON works on platforms that support it
         #   - Base64 encode (e.g. `base64 -w0 key.json`) for Coolify/.env files
+        # DATABASE_URL: Postgres connection string (required when STORAGE_BACKEND=postgres)
+        #   Format: postgresql://user:password@host:port/dbname
         optional_vars = ['GOOGLE_APPLICATION_CREDENTIALS',
-                         'GOOGLE_APPLICATION_CREDENTIALS_JSON']
+                         'GOOGLE_APPLICATION_CREDENTIALS_JSON',
+                         'DATABASE_URL']
         for var in optional_vars:
             if not os.getenv(var):
                 print(f"Info: Optional environment variable {var} not set.")
@@ -147,6 +150,9 @@ class Config:
             api = config_data.get('api', {})
             self.API_RATE_LIMIT_DELAY = api.get('rate_limit_delay', 0.1)
 
+            # Storage backend selection
+            self.STORAGE_BACKEND = config_data.get('storage_backend', 'gcs')
+
             # Walk-forward validation parameters
             walk_forward = config_data.get('walk_forward', {})
             self.WF_ENABLED = walk_forward.get('enabled', False)
@@ -223,9 +229,13 @@ class Config:
 
     def setup_data_parameters(self):
         """Set up data filtering parameters (fallback handled in load_json_config)."""
+        # Storage backend
+        self.STORAGE_BACKEND = 'gcs'
         # Google Cloud Storage
         self.GCS_BUCKET_NAME = os.getenv(
             'GCS_BUCKET_NAME', 'trading-algo-data')
+        # Postgres connection string (used when STORAGE_BACKEND=postgres)
+        self.DATABASE_URL = os.getenv('DATABASE_URL', '')
 
     def get_alpaca_config(self) -> Dict[str, str]:
         """
@@ -280,6 +290,7 @@ class Config:
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary for logging."""
         return {
+            'storage_backend': self.STORAGE_BACKEND,
             'paper_trade': self.PAPER_TRADE,
             'max_positions': self.MAX_POSITIONS,
             'max_new_positions_per_day': self.MAX_NEW_POSITIONS_PER_DAY,

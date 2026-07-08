@@ -47,8 +47,8 @@ class PositionsManager:
     and providing methods to retrieve and analyze position data.
     """
 
-    def __init__(self, cloud_storage_instance, data_provider_instance):
-        self.cloud_storage = cloud_storage_instance
+    def __init__(self, storage_backend, data_provider_instance):
+        self.storage_backend = storage_backend
         self.data_provider = data_provider_instance
         # Initialize as empty list of Position objects
         self.positions: List[Position] = []
@@ -60,7 +60,7 @@ class PositionsManager:
         """
 
         alpaca_positions = self.data_provider.get_current_positions_df()
-        cloud_positions = self.cloud_storage.get_latest_positions_df(True)
+        cloud_positions = self.storage_backend.get_latest_positions_df(True)
         alpaca_symbols_list = (
             sorted(alpaca_positions['symbol'].astype(str).tolist())
             if not alpaca_positions.empty and 'symbol' in alpaca_positions.columns
@@ -534,7 +534,7 @@ class PositionsManager:
                 self.positions.append(position)
 
         # add the closed positions
-        closed_positions = self.cloud_storage.get_latest_positions_df(False)
+        closed_positions = self.storage_backend.get_latest_positions_df(False)
         if not closed_positions.empty:
             for _, row in closed_positions.iterrows():
                 position = Position(
@@ -703,7 +703,7 @@ class PositionsManager:
         target_position.exit_reason = target_position.exit_reason or "manual"
 
         # Update cloud positions snapshot and persist immediately.
-        cloud_positions = self.cloud_storage.get_latest_positions_df(True)
+        cloud_positions = self.storage_backend.get_latest_positions_df(True)
         if not cloud_positions.empty and 'symbol' in cloud_positions.columns:
             symbol_mask = cloud_positions['symbol'] == symbol
 
@@ -733,7 +733,7 @@ class PositionsManager:
             cloud_positions.loc[symbol_mask,
                                 'exit_reason'] = target_position.exit_reason
 
-            self.cloud_storage.save_positions(cloud_positions)
+            self.storage_backend.save_positions(cloud_positions)
 
         logger.info(
             "Closed %s position for %s: exit=%.2f, realized_return=%.4f",
@@ -810,6 +810,6 @@ class PositionsManager:
         # Add the new position
         self.positions.append(position)
         # Save the updated positions to cloud storage
-        # self.cloud_storage.save_positions(self.positions) SAVE AT END
+        # self.storage_backend.save_positions(self.positions) SAVE AT END
         logger.info(
             "Opened new position for %s. Full saved positions: %s", position.symbol, self.positions)

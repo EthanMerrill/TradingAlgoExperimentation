@@ -38,7 +38,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
             'data_provider',
             'strategy',
             'positions',
-            'cloud_storage',
+            'storage.gcs',
             'trading_engine'
         ]
 
@@ -203,7 +203,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
     def test_cloud_storage_integration(self):
         """Test cloud storage integration."""
         # Mock cloud storage operations
-        with patch('cloud_storage.CloudStorage') as mock_storage_class:
+        with patch('storage.gcs.GcsStorage') as mock_storage_class:
             mock_storage = Mock()
             mock_storage.upload_backtest_results.return_value = True
             mock_storage.upload_position_entries.return_value = True

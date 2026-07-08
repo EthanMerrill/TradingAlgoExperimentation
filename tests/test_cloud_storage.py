@@ -13,19 +13,22 @@ import pandas as pd
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
-from cloud_storage import CloudStorage  # noqa: E402
+from storage.gcs import GcsStorage  # noqa: E402
+
+# Legacy alias for backward compatibility
+CloudStorage = GcsStorage
 
 
 class TestCloudStorage(unittest.TestCase):
-    """Test cases for the CloudStorage class."""
+    """Test cases for the GcsStorage (CloudStorage) class."""
 
     def setUp(self):
         """Set up test fixtures."""
         self.mock_config = Mock()
         self.mock_config.GCS_BUCKET_NAME = 'test-bucket'
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_cloud_storage_init_success(self, mock_import_module, mock_config):
         """Test CloudStorage initialization with valid credentials."""
         mock_config.GCS_BUCKET_NAME = 'test-bucket'
@@ -36,7 +39,7 @@ class TestCloudStorage(unittest.TestCase):
         mock_storage_module.Client.return_value = mock_client
         mock_import_module.import_module.return_value = mock_storage_module
 
-        cloud_storage = CloudStorage()
+        cloud_storage = GcsStorage()
 
         self.assertIsNotNone(cloud_storage.client)
         self.assertIsNotNone(cloud_storage.bucket)
@@ -44,15 +47,15 @@ class TestCloudStorage(unittest.TestCase):
             "google.cloud.storage")
         mock_client.bucket.assert_called_once_with('test-bucket')
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_cloud_storage_init_failure(self, mock_import_module, mock_config):
         """Test CloudStorage initialization with invalid credentials."""
         mock_config.GCS_BUCKET_NAME = 'test-bucket'
         mock_import_module.import_module.side_effect = Exception(
             "Authentication failed")
 
-        with patch('cloud_storage.logger') as mock_logger:
+        with patch('storage.gcs.logger') as mock_logger:
             cloud_storage = CloudStorage()
 
             self.assertIsNone(cloud_storage.client)
@@ -105,8 +108,8 @@ class TestCloudStorage(unittest.TestCase):
         self.assertEqual(result[0]['value'], 1.23)
         self.assertEqual(result[1]['value'], 2.35)
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_upload_backtest_results_success(self, mock_import_module, mock_config):
         """Test successful backtest results upload."""
         # Setup mocks
@@ -142,8 +145,8 @@ class TestCloudStorage(unittest.TestCase):
         self.assertTrue(success)
         mock_blob.upload_from_string.assert_called()
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_upload_backtest_results_no_client(self, mock_import_module, mock_config):
         """Test backtest results upload when client is None."""
         mock_config.GCS_BUCKET_NAME = 'test-bucket'
@@ -155,8 +158,8 @@ class TestCloudStorage(unittest.TestCase):
 
         self.assertFalse(success)
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_upload_position_entries_success(self, mock_import_module, mock_config):
         """Test successful position entries upload."""
         # Setup mocks
@@ -194,8 +197,8 @@ class TestCloudStorage(unittest.TestCase):
         self.assertTrue(success)
         mock_blob.upload_from_string.assert_called()
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_list_backtest_files_success(self, mock_import_module, mock_config):
         """Test successful listing of backtest files."""
         # Setup mocks
@@ -221,8 +224,8 @@ class TestCloudStorage(unittest.TestCase):
         self.assertIn('backtest_20250614.csv', files)
         self.assertIn('backtest_20250613.csv', files)
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_list_backtest_files_no_client(self, mock_import_module, mock_config):
         """Test listing backtest files when client is None."""
         mock_config.GCS_BUCKET_NAME = 'test-bucket'
@@ -234,8 +237,8 @@ class TestCloudStorage(unittest.TestCase):
 
         self.assertEqual(files, [])
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_list_position_files_success(self, mock_import_module, mock_config):
         """Test successful listing of position files."""
         # Setup mocks
@@ -261,8 +264,8 @@ class TestCloudStorage(unittest.TestCase):
         self.assertIn('positions_20250614.csv', files)
         self.assertIn('positions_20250613.csv', files)
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_load_backtest_results_success(self, mock_import_module, mock_config):
         """Test successful loading of backtest results."""
         # Setup mocks
@@ -298,8 +301,8 @@ class TestCloudStorage(unittest.TestCase):
         self.assertEqual(results[1].symbol, 'TSLA')
         self.assertEqual(results[0].total_return, 0.15)
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_load_backtest_results_file_not_found(self, mock_import_module, mock_config):
         """Test loading backtest results when file doesn't exist."""
         # Setup mocks
@@ -316,7 +319,7 @@ class TestCloudStorage(unittest.TestCase):
         # Mock file not found
         mock_blob.download_as_text.side_effect = Exception("File not found")
 
-        with patch('cloud_storage.logger') as mock_logger:
+        with patch('storage.gcs.logger') as mock_logger:
             cloud_storage = CloudStorage()
 
             results = cloud_storage.load_backtest_results(
@@ -325,8 +328,8 @@ class TestCloudStorage(unittest.TestCase):
             self.assertEqual(results, [])
             mock_logger.error.assert_called()
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_load_position_entries_success(self, mock_import_module, mock_config):
         """Test successful loading of position entries."""
         # Setup mocks
@@ -353,8 +356,8 @@ class TestCloudStorage(unittest.TestCase):
         self.assertEqual(result.iloc[0]['symbol'], 'AAPL')
         self.assertEqual(result.iloc[1]['symbol'], 'TSLA')
 
-    @patch('cloud_storage.globalConfig')
-    @patch('cloud_storage.importlib')
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
     def test_load_position_entries_parses_dates(self, mock_import_module, mock_config):
         """Regression: load_position_entries must parse entry_date/exit_date as datetime,
         not leave them as strings — otherwise ``datetime - entry_date`` raises TypeError."""

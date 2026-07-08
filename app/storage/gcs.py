@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, List, Optional
 import numpy as np
 # pylint: disable=broad-exception-caught
 import pandas as pd
+from storage.backend import StorageBackend
 from strategy import BacktestResult
 
 from config import globalConfig  # type: ignore
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 _GCS_JSON_CREDENTIALS_ENV = "GOOGLE_APPLICATION_CREDENTIALS_JSON"
 
 
-class CloudStorage:
+class GcsStorage(StorageBackend):
     """Google Cloud Storage handler for trading data."""
 
     def __init__(self):
@@ -524,8 +525,6 @@ class CloudStorage:
                 "Treating all rows as open (legacy format).",
                 latest_file
             )
-        return positions_df
+            return positions_df
 
 
-# Global cloud storage instance
-cloud_storage = CloudStorage()

@@ -100,8 +100,8 @@ class TestMainModule(unittest.TestCase):
                     TradingAlgorithm()
 
     @patch('optimizer.StrategyOptimizer')
-    @patch('main.cloud_storage')
-    async def test_run_backtests_function(self, mock_cloud_storage, mock_optimizer_class):
+    @patch('main.storage')
+    async def test_run_backtests_function(self, mock_storage, mock_optimizer_class):
         """Test the backtest functionality in TradingAlgorithm."""
         # Mock optimizer
         mock_optimizer = Mock()
@@ -112,7 +112,7 @@ class TestMainModule(unittest.TestCase):
         mock_optimizer_class.return_value = mock_optimizer
 
         # Mock cloud storage upload
-        mock_cloud_storage.save_backtest_results.return_value = True
+        mock_storage.save_backtest_results.return_value = True
 
         with patch('main.data_provider') as mock_data_provider:
             mock_universe_df = Mock()
@@ -128,7 +128,7 @@ class TestMainModule(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertTrue(results[0].profitable)
-            mock_cloud_storage.save_backtest_results.assert_called()
+            mock_storage.save_backtest_results.assert_called()
 
     @patch('main.TradingEngine')
     async def test_execute_trades_function(self, mock_trading_engine_class):
