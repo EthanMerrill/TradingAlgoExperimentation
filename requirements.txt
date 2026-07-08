@@ -28,6 +28,9 @@ python-dotenv>=1.0.0
 # Logging and monitoring
 structlog>=23.1.0
 
+# Postgres (for STORAGE_BACKEND=postgres)
+asyncpg>=0.29.0
+
 # Postgres async driver (for PostgresStorage backend)
 asyncpg>=0.29.0
 
