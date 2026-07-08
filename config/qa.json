@@ -20,7 +20,7 @@
 		"fine_tuning_enabled": false,
 		"period_range": {
 			"start": 3,
-			"stop": 40,
+			"stop": 30,
 			"step": 6
 		},
 		"lower_range": {

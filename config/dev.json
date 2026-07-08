@@ -19,8 +19,8 @@
 	"rsi_optimization": {
 		"fine_tuning_enabled": false,
 		"period_range": {
-			"start": 3,
-			"stop": 40,
+			"start": 2,
+			"stop": 20,
 			"step": 6
 		},
 		"lower_range": {
