@@ -281,13 +281,13 @@ class TradingEngine:
 
             cash = account_info['cash']
             equity = account_info['equity']
-            logger.info("Cash available: $%.2f, Equity: $%.2f", cash, equity)
+            buying_power = account_info.get('buying_power', 0)
+            logger.info(
+                "Cash available: $%.2f, Equity: $%.2f, Buying Power: $%.2f", cash, equity, buying_power)
 
-            # Check if we have enough cash to trade
-            cash_pct = cash / equity if equity > 0 else 0
-            if cash_pct < globalConfig.MIN_CASH_PCT:
-                logger.info("Insufficient cash percentage: %.2f%%",
-                            cash_pct * 100)
+            # Check if we have enough buying power to trade
+            if buying_power <= 0:
+                logger.info("Insufficient buying power available")
                 return []
 
             # Calculate how many new positions we can take

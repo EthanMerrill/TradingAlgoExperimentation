@@ -9,8 +9,9 @@ Requires DATABASE_URL env var when STORAGE_BACKEND=postgres.
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
+import asyncpg
 import pandas as pd
 
 from storage.backend import StorageBackend
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Synchronous bridge helpers
 # ---------------------------------------------------------------------------
+
 
 def _sync(coro):
     """Run an async coroutine and return its result synchronously."""
@@ -140,7 +142,8 @@ class PostgresStorage(StorageBackend):
     """Storage backend backed by a Postgres database via asyncpg."""
 
     def __init__(self, database_url: Optional[str] = None):
-        from config import globalConfig  # type: ignore # pylint: disable=import-outside-toplevel
+        # type: ignore # pylint: disable=import-outside-toplevel
+        from config import globalConfig
 
         self._dsn = database_url or getattr(globalConfig, "DATABASE_URL", "")
         self._env = globalConfig.ENVIRONMENT
@@ -157,13 +160,14 @@ class PostgresStorage(StorageBackend):
         try:
             _sync(self._init_pool_and_schema())
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.error("Failed to initialise Postgres pool / schema: %s", exc)
+            logger.error(
+                "Failed to initialise Postgres pool / schema: %s", exc)
             self._connected = False
 
     # -- pool & schema -------------------------------------------------------
 
     async def _init_pool_and_schema(self) -> None:
-        import asyncpg  # pylint: disable=import-outside-toplevel
+        # import asyncpg  # pylint: disable=import-outside-toplevel
 
         self._pool = await asyncpg.create_pool(
             self._dsn,
@@ -174,7 +178,8 @@ class PostgresStorage(StorageBackend):
         async with self._pool.acquire() as conn:
             await conn.execute(_ALL_DDL)
         self._connected = True
-        logger.info("Postgres pool connected & schema ensured (env=%s)", self._env)
+        logger.info(
+            "Postgres pool connected & schema ensured (env=%s)", self._env)
 
     async def _fetch(self, query: str, *args) -> List[asyncpg.Record]:
         if not self._connected or self._pool is None:
@@ -194,7 +199,8 @@ class PostgresStorage(StorageBackend):
         self, results: "List[BacktestResult]", timestamp: Optional[str] = None
     ) -> bool:
         if not self._connected:
-            logger.error("Postgres not connected — cannot save backtest results")
+            logger.error(
+                "Postgres not connected — cannot save backtest results")
             return False
 
         if timestamp is None:
@@ -206,11 +212,13 @@ class PostgresStorage(StorageBackend):
                 timestamp, self._env, r.symbol,
                 r.rsi_period, r.rsi_lower, r.rsi_upper,
                 round(r.total_return, 2) if r.total_return is not None else None,
-                round(r.buy_and_hold_return, 2) if r.buy_and_hold_return is not None else None,
+                round(r.buy_and_hold_return,
+                      2) if r.buy_and_hold_return is not None else None,
                 round(r.alpha, 2) if r.alpha is not None else None,
                 r.num_trades,
                 round(r.win_rate, 2) if r.win_rate is not None else None,
-                round(r.avg_trade_duration, 2) if r.avg_trade_duration is not None else None,
+                round(r.avg_trade_duration,
+                      2) if r.avg_trade_duration is not None else None,
                 round(r.max_drawdown, 2) if r.max_drawdown is not None else None,
                 round(r.sharpe_ratio, 2) if r.sharpe_ratio is not None else None,
                 round(r.calmar_ratio, 2),
@@ -232,7 +240,8 @@ class PostgresStorage(StorageBackend):
         try:
             _sync(self._execute_many(sql, rows))
             logger.info(
-                "Saved %d backtest results to Postgres (run=%s)", len(results), timestamp
+                "Saved %d backtest results to Postgres (run=%s)", len(
+                    results), timestamp
             )
             return True
         except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -249,7 +258,8 @@ class PostgresStorage(StorageBackend):
 
     def load_backtest_results(self, filename: str) -> "List[BacktestResult]":
         if not self._connected:
-            logger.error("Postgres not connected — cannot load backtest results")
+            logger.error(
+                "Postgres not connected — cannot load backtest results")
             return []
 
         ts = _filename_to_timestamp(filename)
@@ -262,7 +272,8 @@ class PostgresStorage(StorageBackend):
         try:
             rows = _sync(self._fetch(sql, ts, self._env))
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.error("Error loading backtest results from Postgres: %s", exc)
+            logger.error(
+                "Error loading backtest results from Postgres: %s", exc)
             return []
 
         if not rows:
@@ -279,22 +290,31 @@ class PostgresStorage(StorageBackend):
                 rsi_period=int(row["rsi_period"]),
                 rsi_lower=int(row["rsi_lower"]),
                 rsi_upper=int(row["rsi_upper"]),
-                total_return=float(row["total_return"]) if row["total_return"] is not None else 0.0,
-                buy_and_hold_return=float(row["buy_and_hold_return"]) if row["buy_and_hold_return"] is not None else 0.0,
+                total_return=float(
+                    row["total_return"]) if row["total_return"] is not None else 0.0,
+                buy_and_hold_return=float(
+                    row["buy_and_hold_return"]) if row["buy_and_hold_return"] is not None else 0.0,
                 alpha=float(row["alpha"]) if row["alpha"] is not None else 0.0,
-                num_trades=int(row["num_trades"]) if row["num_trades"] is not None else 0,
-                win_rate=float(row["win_rate"]) if row["win_rate"] is not None else 0.0,
-                avg_trade_duration=float(row["avg_trade_duration"]) if row["avg_trade_duration"] is not None else 0.0,
-                max_drawdown=float(row["max_drawdown"]) if row["max_drawdown"] is not None else 0.0,
-                sharpe_ratio=float(row["sharpe_ratio"]) if row["sharpe_ratio"] is not None else 0.0,
+                num_trades=int(row["num_trades"]
+                               ) if row["num_trades"] is not None else 0,
+                win_rate=float(
+                    row["win_rate"]) if row["win_rate"] is not None else 0.0,
+                avg_trade_duration=float(
+                    row["avg_trade_duration"]) if row["avg_trade_duration"] is not None else 0.0,
+                max_drawdown=float(
+                    row["max_drawdown"]) if row["max_drawdown"] is not None else 0.0,
+                sharpe_ratio=float(
+                    row["sharpe_ratio"]) if row["sharpe_ratio"] is not None else 0.0,
                 calmar_ratio=float(row.get("calmar_ratio", 0)),
                 composite_score=float(row.get("composite_score", 0)),
                 direction=str(row.get("direction", "long")),
                 profitable=bool(row["profitable"]),
-                current_rsi=float(current_rsi) if current_rsi is not None else None,
+                current_rsi=float(
+                    current_rsi) if current_rsi is not None else None,
             ))
 
-        logger.info("Loaded %d backtest results from Postgres (run=%s)", len(results), ts)
+        logger.info(
+            "Loaded %d backtest results from Postgres (run=%s)", len(results), ts)
         return results
 
     # -- save_positions ------------------------------------------------------
@@ -324,9 +344,11 @@ class PostgresStorage(StorageBackend):
                     if exit_price is not None:
                         side = getattr(pos, "side", "long")
                         if side == "short":
-                            realized_return = (pos.entry_price - exit_price) / pos.entry_price
+                            realized_return = (
+                                pos.entry_price - exit_price) / pos.entry_price
                         else:
-                            realized_return = (exit_price - pos.entry_price) / pos.entry_price
+                            realized_return = (
+                                exit_price - pos.entry_price) / pos.entry_price
 
                 rows_list.append({
                     "symbol": pos.symbol,
@@ -348,11 +370,12 @@ class PostgresStorage(StorageBackend):
                     "side": getattr(pos, "side", "long"),
                 })
         elif isinstance(positions_data, pd.DataFrame):
-            rows_list = positions_data.where(
+            rows_list = cast(List[Dict[str, Any]], positions_data.where(
                 pd.notna(positions_data), None
-            ).to_dict(orient="records")
+            ).to_dict(orient="records"))
         else:
-            logger.error("Unsupported positions_data type: %s", type(positions_data))
+            logger.error("Unsupported positions_data type: %s",
+                         type(positions_data))
             return False
 
         if not rows_list:
@@ -383,7 +406,8 @@ class PostgresStorage(StorageBackend):
 
         try:
             _sync(self._execute_many(sql, tuples))
-            logger.info("Saved %d positions to Postgres (snapshot=%s)", len(tuples), timestamp)
+            logger.info("Saved %d positions to Postgres (snapshot=%s)",
+                        len(tuples), timestamp)
             return True
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error saving positions to Postgres: %s", exc)
@@ -412,7 +436,8 @@ class PostgresStorage(StorageBackend):
                 "VALUES ($1, $2, $3)",
                 timestamp, self._env, json.dumps(clean),
             ))
-            logger.info("Saved session metadata to Postgres (ts=%s)", timestamp)
+            logger.info(
+                "Saved session metadata to Postgres (ts=%s)", timestamp)
             return True
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error saving metadata to Postgres: %s", exc)
@@ -470,7 +495,8 @@ class PostgresStorage(StorageBackend):
         try:
             rows = _sync(self._fetch(sql, ts, self._env))
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.error("Error loading position entries from Postgres: %s", exc)
+            logger.error(
+                "Error loading position entries from Postgres: %s", exc)
             return pd.DataFrame()
 
         if not rows:
@@ -483,7 +509,8 @@ class PostgresStorage(StorageBackend):
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], utc=True, errors="coerce")
 
-        logger.info("Loaded %d position entries from Postgres (snapshot=%s)", len(df), ts)
+        logger.info(
+            "Loaded %d position entries from Postgres (snapshot=%s)", len(df), ts)
         return df
 
     # -- get_latest_position_file --------------------------------------------

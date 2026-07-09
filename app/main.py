@@ -115,21 +115,20 @@ class TradingAlgorithm:
                         len(self.positions_manager.positions))
             logger.info("─" * 40)
 
-            # Check if we have enough cash to potentially trade
-            cash_pct = account_info.get(
-                'cash', 0) / account_info.get('equity', 1)
+            # Check if we have enough buying power to potentially trade
+            buying_power = account_info.get('buying_power', 0)
 
             # Initialize backtest_results to avoid UnboundLocalError
             backtest_results = []
 
-            if cash_pct > globalConfig.MIN_CASH_PCT or force_backtest:
+            if buying_power > 0 or force_backtest:
                 # Step 2: Get or run backtests
                 backtest_results = await self._get_backtest_results(force_backtest, test_mode)
             else:
                 logger.warning(
-                    "Insufficient cash available for purchases. Minimum required: %.1f%%", globalConfig.MIN_CASH_PCT * 100)
+                    "Insufficient buying power available for purchases")
                 logger.info(
-                    "Skipping backtest due to insufficient cash - will only process existing positions")
+                    "Skipping backtest due to insufficient buying power - will only process existing positions")
 
             if not backtest_results:
                 logger.warning(
