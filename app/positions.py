@@ -53,6 +53,36 @@ class PositionsManager:
         # Initialize as empty list of Position objects
         self.positions: List[Position] = []
 
+    def _persist_positions(self, positions_df: pd.DataFrame):
+        """Save a positions DataFrame while preserving historical closed rows.
+
+        Each ``save_positions`` call in this class originally wrote only
+        open + newly-closed positions, silently dropping every closed
+        position from all prior cycles.  This wrapper loads the existing
+        closed rows from the latest file and merges them in so the full
+        history survives.
+        """
+        historical_closed = self.storage_backend.get_latest_positions_df(False)
+        if not historical_closed.empty:
+            # Only keep columns that exist in the incoming DataFrame so
+            # schema changes don't cause concat mismatches.
+            common_cols = [
+                c for c in positions_df.columns if c in historical_closed.columns]
+            # Drop rows already present in positions_df (by symbol) to
+            # avoid duplicating positions that just closed this cycle.
+            if 'symbol' in common_cols and not positions_df.empty:
+                incoming_symbols = set(positions_df['symbol'].astype(str))
+                historical_closed = historical_closed[
+                    ~historical_closed['symbol'].astype(
+                        str).isin(incoming_symbols)
+                ]
+            if not historical_closed.empty:
+                positions_df = pd.concat(
+                    [positions_df, historical_closed[common_cols]],
+                    ignore_index=True,
+                )
+        self.storage_backend.save_positions(positions_df)
+
     def get_and_reconcile_positions(self) -> List[Position]:
         """
         Retrieves positions from cloud storage and alpaca and updates prices
@@ -733,7 +763,7 @@ class PositionsManager:
             cloud_positions.loc[symbol_mask,
                                 'exit_reason'] = target_position.exit_reason
 
-            self.storage_backend.save_positions(cloud_positions)
+            self._persist_positions(cloud_positions)
 
         logger.info(
             "Closed %s position for %s: exit=%.2f, realized_return=%.4f",

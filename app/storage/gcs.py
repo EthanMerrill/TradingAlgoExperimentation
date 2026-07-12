@@ -469,7 +469,22 @@ class GcsStorage(StorageBackend):
             except ValueError:
                 df = pd.read_csv(io.StringIO(csv_string))
 
-            logger.info("Loaded position entries from %s", filename)
+            # Normalize 'closed' from CSV strings ("True"/"False") to real
+            # booleans so downstream comparisons (== True / != True) work.
+            if 'closed' in df.columns:
+                df['closed'] = df['closed'].apply(
+                    lambda x: str(x).strip().lower() in ('true', '1')
+                )
+
+            logger.info(
+                "load_position_entries(%s): %d rows, columns=%s, "
+                "closed_counts: open=%d closed=%d",
+                filename, len(df), list(df.columns),
+                int((~df['closed'].astype(bool)).sum()
+                    ) if 'closed' in df.columns else -1,
+                int(df['closed'].astype(bool).sum()
+                    ) if 'closed' in df.columns else -1,
+            )
             return df
 
         except Exception as e:
@@ -489,6 +504,10 @@ class GcsStorage(StorageBackend):
 
         # Sort files by name (assumes YYYYMMDD format) and get the most recent
         position_files.sort(reverse=True)
+        logger.debug(
+            "get_latest_position_file: %d total files, picked %s "
+            "(top 5: %s)", len(position_files), position_files[0],
+            position_files[:5])
         return position_files[0]
 
     def get_latest_positions_df(self, openPosition=True) -> pd.DataFrame:
@@ -526,5 +545,3 @@ class GcsStorage(StorageBackend):
                 latest_file
             )
             return positions_df
-
-

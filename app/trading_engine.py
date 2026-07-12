@@ -854,9 +854,11 @@ class TradingEngine:
                 side=order_side,
                 type=OrderType.LIMIT,  # Must be limit for OCO
                 time_in_force=TimeInForce.GTC,
-                # Main order limit price (take profit)
-                limit_price=take_profit_price,
                 order_class=OrderClass.OCO,
+                # For OCO orders, the take-profit leg's limit_price IS the
+                # primary limit; do NOT set a top-level limit_price or the
+                # API will treat this as a plain limit order and drop the
+                # stop-loss leg.
                 take_profit=TakeProfitRequest(limit_price=take_profit_price),
                 stop_loss=StopLossRequest(
                     stop_price=stop_loss_price,

@@ -760,6 +760,129 @@ class DataProvider:
             logger.error("Error getting current price for %s: %s", symbol, e)
             return None
 
+    def get_open_orders(self) -> pd.DataFrame:
+        """
+        Get all currently open orders from Alpaca.
+
+        Classifies every open order by its type field into a stop-loss or
+        take-profit leg.  Does NOT filter by order_class — bracket legs
+        become ``simple`` orders after the parent executes, and orders in
+        ``held`` / ``accepted`` status must still be visible.
+
+        Returns:
+            DataFrame with columns: symbol, order_id, order_type, side, qty,
+            limit_price, stop_price, status, created_at, leg_type
+        """
+        try:
+            if self.trading_client is None:
+                logger.error(
+                    "Trading client not available — cannot fetch open orders")
+                return pd.DataFrame()
+
+            from alpaca.trading.requests import GetOrdersRequest
+
+            # Use status='all' to include HELD orders (orders submitted
+            # while the market is closed).  We filter out closed/cancelled/
+            # rejected orders client-side.
+            request = GetOrdersRequest(
+                status='all',
+                limit=500,
+                direction='desc',
+            )
+            orders = self.trading_client.get_orders(filter=request)
+
+            # Keep only orders that are still active (not fully resolved)
+            _terminal_statuses = {'filled', 'canceled', 'cancelled', 'expired',
+                                  'rejected', 'suspended', 'pending_cancel'}
+            active_orders = []
+            for o in (orders or []):
+                _raw = getattr(o, 'status', None)
+                if _raw is not None:
+                    if hasattr(_raw, 'value'):
+                        s = str(_raw.value).lower()
+                    else:
+                        s = str(_raw).lower()
+                else:
+                    s = ''
+                if s not in _terminal_statuses:
+                    active_orders.append(o)
+
+            if not active_orders:
+                logger.debug("No active orders found")
+                return pd.DataFrame()
+
+            order_data = []
+            for order in active_orders:
+                # Extract the raw order type — Alpaca SDK enums have .value
+                # (e.g. OrderType.LIMIT.value == "limit"), but str() on the enum
+                # returns "OrderType.LIMIT" which never matches our strings below.
+                _raw_type = getattr(order, 'type', None)
+                if _raw_type is not None:
+                    if hasattr(_raw_type, 'value'):
+                        order_type = str(_raw_type.value).lower()
+                    else:
+                        order_type = str(_raw_type).lower()
+                else:
+                    order_type = ''
+                _raw_side = getattr(order, 'side', None)
+                if _raw_side is not None:
+                    if hasattr(_raw_side, 'value'):
+                        side = str(_raw_side.value).lower()
+                    else:
+                        side = str(_raw_side).lower()
+                else:
+                    side = ''
+
+                # Classify the leg purely by order type — bracket legs
+                # become ``simple`` orders after the parent fills, so
+                # order_class is NOT a reliable filter.
+                leg_type = None
+                if order_type in ('stop', 'stop_limit'):
+                    leg_type = 'stop_loss'
+                elif order_type == 'limit':
+                    # A limit order on a symbol we already hold is almost
+                    # certainly a take-profit leg (or cover for shorts).
+                    leg_type = 'take_profit'
+
+                if leg_type is None:
+                    continue  # Skip market orders, bracket parents, etc.
+
+                created_at = getattr(order, 'created_at', None)
+                if created_at is not None and hasattr(created_at, 'isoformat'):
+                    created_at = created_at.isoformat()
+
+                # Also normalize the status enum: OrderStatus.ACCEPTED → "accepted"
+                _raw_status = getattr(order, 'status', None)
+                if _raw_status is not None:
+                    if hasattr(_raw_status, 'value'):
+                        status = str(_raw_status.value).lower()
+                    else:
+                        status = str(_raw_status).lower()
+                else:
+                    status = ''
+
+                order_data.append({
+                    'symbol': getattr(order, 'symbol', None),
+                    'order_id': getattr(order, 'id', None),
+                    'order_type': order_type,
+                    'side': side,
+                    'qty': float(getattr(order, 'qty', 0) or 0),
+                    'limit_price': float(getattr(order, 'limit_price', 0) or 0) or None,
+                    'stop_price': float(getattr(order, 'stop_price', 0) or 0) or None,
+                    'status': status,
+                    'created_at': created_at,
+                    'leg_type': leg_type,
+                })
+
+            df = pd.DataFrame(order_data)
+            logger.info(
+                "Fetched %d open SL/TP orders from Alpaca (all statuses)", len(df))
+            return df
+
+        except Exception as e:
+            logger.error("Error fetching open orders: %s", e)
+            return pd.DataFrame()
+
 
 class TechnicalIndicators:
     """Technical analysis indicators."""

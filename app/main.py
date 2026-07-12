@@ -340,11 +340,32 @@ async def main():
         # Initialize and run the trading algorithm
         algorithm = TradingAlgorithm()
 
+        # If KEEP_ALIVE is set, start the dashboard server immediately
+        # so you can watch progress while the backtest runs.
+        shared_state = None
+        if globalConfig.KEEP_ALIVE:
+            import threading
+            shared_state: dict = {'last_result': None}
+            health_thread = threading.Thread(
+                target=start_health_server,
+                args=(globalConfig.HEALTH_PORT, shared_state, storage, data_provider),
+                daemon=True,
+            )
+            health_thread.start()
+            logger.info(
+                "🛟 Dashboard server started on port %d — visit http://localhost:%d/",
+                globalConfig.HEALTH_PORT, globalConfig.HEALTH_PORT,
+            )
+
         session_result = await algorithm.run_full_cycle(
             force_backtest=args.force_backtest,
             dry_run=args.dry_run,
             test_mode=args.test_mode,
         )
+
+        # Expose the completed result to the health server
+        if shared_state is not None:
+            shared_state['last_result'] = session_result
 
         logger.info("=" * 50)
         logger.info("Trading Algorithm Complete")
@@ -364,23 +385,10 @@ async def main():
 if __name__ == "__main__":
     result = asyncio.run(main())
 
-    # If KEEP_ALIVE is set (Coolify deployments), idle indefinitely
-    # so the container stays running for SSH access. On GCP Cloud Run,
-    # leave KEEP_ALIVE unset so the container exits and scales to zero.
+    # If KEEP_ALIVE is set, the server was already started inside main()
+    # before the backtest ran.  Just idle so the container stays alive.
     if globalConfig.KEEP_ALIVE:
-        logger.info("🛟 KEEP_ALIVE enabled — container will idle indefinitely")
-        logger.info("   Press Ctrl+C or stop the container to exit.")
-
-        # Start a lightweight health-check HTTP server in a daemon thread.
-        # Coolify / Docker HEALTHCHECK can curl http://localhost:{globalConfig.HEALTH_PORT}/health
-        import threading
-        health_thread = threading.Thread(
-            target=start_health_server,
-            args=(globalConfig.HEALTH_PORT, result),
-            daemon=True,
-        )
-        health_thread.start()
-
+        logger.info("🛟 KEEP_ALIVE — container idling. Press Ctrl+C to exit.")
         try:
             import time
             while True:
