@@ -13,30 +13,7 @@ import pandas as pd
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
-from data_provider import BarData, DataProvider, TechnicalIndicators  # noqa: E402
-
-
-class TestBarData(unittest.TestCase):
-    """Test cases for the BarData dataclass."""
-
-    def test_bar_data_creation(self):
-        """Test creating a BarData object."""
-        bar_data = BarData(
-            symbol="AAPL",
-            timestamp=datetime(2025, 6, 14, 10, 30, 0),
-            open=150.00,
-            high=152.50,
-            low=149.50,
-            close=151.00,
-            volume=1000000
-        )
-
-        self.assertEqual(bar_data.symbol, "AAPL")
-        self.assertEqual(bar_data.open, 150.00)
-        self.assertEqual(bar_data.high, 152.50)
-        self.assertEqual(bar_data.low, 149.50)
-        self.assertEqual(bar_data.close, 151.00)
-        self.assertEqual(bar_data.volume, 1000000)
+from data_provider import DataProvider, TechnicalIndicators  # noqa: E402
 
 
 class TestDataProvider(unittest.TestCase):

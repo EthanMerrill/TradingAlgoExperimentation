@@ -83,6 +83,49 @@ class PositionsManager:
                 )
         self.storage_backend.save_positions(positions_df)
 
+    @staticmethod
+    def _df_row_to_position(row: pd.Series, closed: bool = None,
+                            exit_date_default=None) -> Position:
+        """Convert a single DataFrame row (from cloud / closed / newly_closed) to a Position.
+
+        Args:
+            row: DataFrame row with position columns.
+            closed: Override for closed status. If None (default), reads from row.
+            exit_date_default: Default value for exit_date (passed to parse_dt).
+        """
+        if closed is None:
+            closed = row['closed'] if 'closed' in row else False
+        exit_date = parse_dt(row['exit_date'], default=exit_date_default)
+
+        return Position(
+            symbol=row['symbol'],
+            quantity=float(row['shares']) if 'shares' in row else 0,
+            entry_price=float(row['entry_price']
+                              ) if 'entry_price' in row else 0,
+            current_price=float(row['current_price']
+                                ) if 'current_price' in row else 0,
+            entry_date=parse_dt(row['entry_date'], default=datetime.now()),
+            current_rsi=float(row['current_rsi']
+                              ) if 'current_rsi' in row else 0.0,
+            rsi_period=int(row['rsi_period']) if 'rsi_period' in row else 14,
+            rsi_lower=int(row['rsi_lower']) if 'rsi_lower' in row else 30,
+            rsi_upper=int(row['rsi_upper']) if 'rsi_upper' in row else 70,
+            alpha=float(row['alpha']) if 'alpha' in row and pd.notna(
+                row['alpha']) else 0.0,
+            stop_loss_price=float(row['stop_loss_price']) if 'stop_loss_price' in row and pd.notna(
+                row['stop_loss_price']) else None,
+            take_profit_price=float(row['take_profit_price']) if 'take_profit_price' in row and pd.notna(
+                row['take_profit_price']) else None,
+            exit_price=float(row['exit_price']) if 'exit_price' in row and pd.notna(
+                row['exit_price']) else None,
+            realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
+                row['realized_return']) else None,
+            exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
+                row['exit_reason']) and row['exit_reason'] is not None else None,
+            closed=closed,
+            exit_date=exit_date,
+        )
+
     def get_and_reconcile_positions(self) -> List[Position]:
         """
         Retrieves positions from cloud storage and alpaca and updates prices
@@ -527,117 +570,18 @@ class PositionsManager:
             for _, row in cloud_positions.iterrows():
                 if 'closed' in row and row['closed']:
                     continue  # Skip closed positions
-
-                position = Position(
-                    symbol=row['symbol'],
-                    quantity=float(row['shares']) if 'shares' in row else 0,
-                    entry_price=float(row['entry_price']
-                                      ) if 'entry_price' in row else 0,
-                    current_price=float(
-                        row['current_price']) if 'current_price' in row else 0,
-                    entry_date=parse_dt(
-                        row['entry_date'], default=datetime.now()),
-                    current_rsi=float(row['current_rsi']
-                                      ) if 'current_rsi' in row else 0.0,
-                    rsi_period=int(row['rsi_period']
-                                   ) if 'rsi_period' in row else 14,
-                    rsi_lower=int(row['rsi_lower']
-                                  ) if 'rsi_lower' in row else 30,
-                    rsi_upper=int(row['rsi_upper']
-                                  ) if 'rsi_upper' in row else 70,
-                    alpha=float(row['alpha']) if 'alpha' in row and pd.notna(
-                        row['alpha']) else 0.0,
-                    stop_loss_price=float(row['stop_loss_price']) if 'stop_loss_price' in row and pd.notna(
-                        row['stop_loss_price']) else None,
-                    take_profit_price=float(row['take_profit_price']) if 'take_profit_price' in row and pd.notna(
-                        row['take_profit_price']) else None,
-                    exit_price=float(row['exit_price']) if 'exit_price' in row and pd.notna(
-                        row['exit_price']) else None,
-                    realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
-                        row['realized_return']) else None,
-                    exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
-                        row['exit_reason']) and row['exit_reason'] is not None else None,
-                    closed=row['closed'] if 'closed' in row else False,
-                    exit_date=parse_dt(
-                        row['exit_date'], default=None),
-                )
-                self.positions.append(position)
+                self.positions.append(self._df_row_to_position(row))
 
         # add the closed positions
         closed_positions = self.storage_backend.get_latest_positions_df(False)
         if not closed_positions.empty:
             for _, row in closed_positions.iterrows():
-                position = Position(
-                    symbol=row['symbol'],
-                    quantity=float(row['shares']) if 'shares' in row else 0,
-                    entry_price=float(row['entry_price']
-                                      ) if 'entry_price' in row else 0,
-                    current_price=float(
-                        row['current_price']) if 'current_price' in row else 0,
-                    entry_date=parse_dt(
-                        row['entry_date'], default=datetime.now()),
-                    current_rsi=float(row['current_rsi']
-                                      ) if 'current_rsi' in row else 0.0,
-                    rsi_period=int(row['rsi_period']
-                                   ) if 'rsi_period' in row else 14,
-                    rsi_lower=int(row['rsi_lower']
-                                  ) if 'rsi_lower' in row else 30,
-                    rsi_upper=int(row['rsi_upper']
-                                  ) if 'rsi_upper' in row else 70,
-                    alpha=float(row['alpha']) if 'alpha' in row and pd.notna(
-                        row['alpha']) else 0.0,
-                    stop_loss_price=float(row['stop_loss_price']) if 'stop_loss_price' in row and pd.notna(
-                        row['stop_loss_price']) else None,
-                    take_profit_price=float(row['take_profit_price']) if 'take_profit_price' in row and pd.notna(
-                        row['take_profit_price']) else None,
-                    exit_price=float(row['exit_price']) if 'exit_price' in row and pd.notna(
-                        row['exit_price']) else None,
-                    realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
-                        row['realized_return']) else None,
-                    exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
-                        row['exit_reason']) and row['exit_reason'] is not None else None,
-                    closed=row['closed'] if 'closed' in row else False,
-                    exit_date=parse_dt(
-                        row['exit_date'], default=None),
-                )
-                self.positions.append(position)
+                self.positions.append(self._df_row_to_position(row))
 
         if not newly_closed_positions.empty:
             for _, row in newly_closed_positions.iterrows():
-                position = Position(
-                    symbol=row['symbol'],
-                    quantity=float(row['shares']) if 'shares' in row else 0,
-                    entry_price=float(row['entry_price']
-                                      ) if 'entry_price' in row else 0,
-                    current_price=float(
-                        row['current_price']) if 'current_price' in row else 0,
-                    entry_date=parse_dt(
-                        row['entry_date'], default=datetime.now()),
-                    current_rsi=float(row['current_rsi']
-                                      ) if 'current_rsi' in row else 0.0,
-                    rsi_period=int(row['rsi_period']
-                                   ) if 'rsi_period' in row else 14,
-                    rsi_lower=int(row['rsi_lower']
-                                  ) if 'rsi_lower' in row else 30,
-                    rsi_upper=int(row['rsi_upper']
-                                  ) if 'rsi_upper' in row else 70,
-                    alpha=float(row['alpha']) if 'alpha' in row and pd.notna(
-                        row['alpha']) else 0.0,
-                    stop_loss_price=float(row['stop_loss_price']) if 'stop_loss_price' in row and pd.notna(
-                        row['stop_loss_price']) else None,
-                    take_profit_price=float(row['take_profit_price']) if 'take_profit_price' in row and pd.notna(
-                        row['take_profit_price']) else None,
-                    exit_price=float(row['exit_price']) if 'exit_price' in row and pd.notna(
-                        row['exit_price']) else None,
-                    realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
-                        row['realized_return']) else None,
-                    exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
-                        row['exit_reason']) and row['exit_reason'] is not None else None,
-                    closed=True,
-                    exit_date=parse_dt(
-                        row['exit_date'], default=datetime.now()),
-                )
-                self.positions.append(position)
+                self.positions.append(self._df_row_to_position(
+                    row, closed=True, exit_date_default=datetime.now()))
 
         open_positions = [pos for pos in self.positions if not pos.closed]
         closed_positions_count = len(self.positions) - len(open_positions)

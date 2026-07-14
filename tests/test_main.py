@@ -5,13 +5,13 @@ Unit tests for the main module.
 import os
 import sys
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch, MagicMock
 
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 
-class TestMainModule(unittest.TestCase):
+class TestMainModule(unittest.IsolatedAsyncioTestCase):
     """Test cases for the main module functions."""
 
     @patch('utils.setup_logging')
@@ -48,8 +48,6 @@ class TestMainModule(unittest.TestCase):
             # The algorithm should handle non-trading days
             self.assertIsNotNone(algorithm)
 
-    @patch('main.utils.setup_logging')
-    @patch('main.utils.is_trading_day')
     @patch('utils.setup_logging')
     @patch('utils.TradingCalendar')
     async def test_main_execution_during_trading_hours(self, mock_trading_calendar_class, _mock_setup_logging):
@@ -99,15 +97,20 @@ class TestMainModule(unittest.TestCase):
                 with self.assertRaises(Exception):
                     TradingAlgorithm()
 
-    @patch('optimizer.StrategyOptimizer')
+    @patch('main.globalConfig')
+    @patch('main.StrategyOptimizer')
     @patch('main.storage')
-    async def test_run_backtests_function(self, mock_storage, mock_optimizer_class):
+    async def test_run_backtests_function(self, mock_storage, mock_optimizer_class, mock_global_config):
         """Test the backtest functionality in TradingAlgorithm."""
+        # Disable walk-forward to take the direct optimizer path
+        mock_global_config.WF_ENABLED = False
+
         # Mock optimizer
         mock_optimizer = Mock()
         mock_result = Mock()
         mock_result.profitable = True
-        mock_optimizer.optimize_universe.return_value = [mock_result]
+        mock_optimizer.optimize_universe = AsyncMock(
+            return_value=[mock_result])
         mock_optimizer.filter_results.return_value = [mock_result]
         mock_optimizer_class.return_value = mock_optimizer
 
@@ -115,9 +118,10 @@ class TestMainModule(unittest.TestCase):
         mock_storage.save_backtest_results.return_value = True
 
         with patch('main.data_provider') as mock_data_provider:
-            mock_universe_df = Mock()
+            mock_universe_df = MagicMock()
             mock_universe_df.empty = False
-            mock_universe_df.tolist.return_value = ['AAPL']
+            mock_universe_df.__getitem__ = MagicMock(return_value=MagicMock())
+            mock_universe_df['symbol'].tolist.return_value = ['AAPL']
             mock_data_provider.get_stock_universe.return_value = mock_universe_df
 
             # Import the class
@@ -128,7 +132,7 @@ class TestMainModule(unittest.TestCase):
 
             self.assertEqual(len(results), 1)
             self.assertTrue(results[0].profitable)
-            mock_storage.save_backtest_results.assert_called()
+            mock_optimizer.optimize_universe.assert_called()
 
     @patch('main.TradingEngine')
     async def test_execute_trades_function(self, mock_trading_engine_class):

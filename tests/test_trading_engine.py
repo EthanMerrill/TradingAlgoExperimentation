@@ -103,6 +103,7 @@ class TestTradingEngine(unittest.TestCase):
         mock_data_provider.get_account_info.return_value = {
             'cash': 50000.0,
             'equity': 100000.0,
+            'buying_power': 200000.0,
         }
         opp = TradingOpportunity(
             symbol="AAPL",
@@ -282,6 +283,7 @@ class TestTradingEngine(unittest.TestCase):
         mock_data_provider.get_account_info.return_value = {
             'cash': 50000.0,
             'equity': 100000.0,
+            'buying_power': 200000.0,
         }
         # Add existing short with $2000 notional
         existing_short = self._position("MSFT")

@@ -15,7 +15,7 @@ import pytz
 from data_provider import TechnicalIndicators, data_provider
 from joblib import Parallel, delayed
 from strategy import RSIStrategy
-from utils import PerformanceMetrics, ProgressIndicator
+from utils import ProgressIndicator
 
 from config import globalConfig  # type: ignore
 
@@ -30,27 +30,6 @@ class StrategyOptimizer:
         self.rsi_lowers = list(range(*globalConfig.RSI_LOWER_RANGE))
         self.rsi_uppers = list(range(*globalConfig.RSI_UPPER_RANGE))
         self.last_consolidated_trades_df = pd.DataFrame()
-
-    @staticmethod
-    def _composite_score(result: "BacktestResult") -> float:  # noqa: F821
-        """Deprecated: use zscore.compute_stage_zscores / compute_cross_symbol_zscores.
-
-        Returns result.composite_score if already set (cross-symbol), otherwise
-        falls back to the legacy formula.  Still used by positions.py for display.
-        """
-        if result.composite_score != 0.0:
-            return result.composite_score
-        return StrategyOptimizer._composite_score_from_parts(
-            result.alpha, result.sharpe_ratio, result.calmar_ratio
-        )
-
-    @staticmethod
-    def _composite_score_from_parts(alpha: float, sharpe: float, calmar: float) -> float:
-        """Legacy fallback: (alpha*100) + sharpe + calmar.
-
-        Only used when no Z-score pool is available.
-        """
-        return (alpha * 100) + sharpe + calmar
 
     @staticmethod
     def _test_single_combo(

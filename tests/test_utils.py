@@ -12,13 +12,8 @@ import pandas as pd
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from utils import (  # noqa: E402
-    DataValidator,
     PerformanceMetrics,
     ProgressIndicator,
-    RiskManager,
-    TradingCalendar,
-    format_currency,
-    format_percentage,
     is_trading_day,
     parse_dt,
     setup_logging,
@@ -28,8 +23,8 @@ from utils import (  # noqa: E402
 class TestUtilityFunctions(unittest.TestCase):
     """Tests for module-level utility functions."""
 
-    @patch('utils.Path.mkdir')
-    @patch('utils.logging.basicConfig')
+    @patch('utils.logging_.Path.mkdir')
+    @patch('utils.logging_.logging.basicConfig')
     def test_setup_logging(self, mock_basic_config, mock_mkdir):
         logs_dir = os.path.join(os.path.dirname(__file__), 'logs')
         os.makedirs(logs_dir, exist_ok=True)
@@ -38,7 +33,7 @@ class TestUtilityFunctions(unittest.TestCase):
         mock_mkdir.assert_called_once_with(exist_ok=True)
         mock_basic_config.assert_called_once()
 
-    @patch('utils.importlib.import_module')
+    @patch('utils.datetime_.importlib.import_module')
     def test_is_trading_day_weekday(self, mock_import_module):
         mock_holidays_module = Mock()
         mock_holidays_module.country_holidays.return_value = set()
@@ -47,7 +42,7 @@ class TestUtilityFunctions(unittest.TestCase):
         result = is_trading_day(datetime(2025, 6, 11))  # Wednesday
         self.assertTrue(result)
 
-    @patch('utils.importlib.import_module')
+    @patch('utils.datetime_.importlib.import_module')
     def test_is_trading_day_weekend(self, mock_import_module):
         mock_holidays_module = Mock()
         mock_holidays_module.country_holidays.return_value = set()
@@ -56,7 +51,7 @@ class TestUtilityFunctions(unittest.TestCase):
         result = is_trading_day(datetime(2025, 6, 14))  # Saturday
         self.assertFalse(result)
 
-    @patch('utils.importlib.import_module')
+    @patch('utils.datetime_.importlib.import_module')
     def test_is_trading_day_holiday(self, mock_import_module):
         mock_holidays_module = Mock()
         mock_holidays_module.country_holidays.return_value = {
@@ -66,92 +61,14 @@ class TestUtilityFunctions(unittest.TestCase):
         result = is_trading_day(datetime(2025, 7, 4))
         self.assertFalse(result)
 
-    def test_format_currency(self):
-        self.assertEqual(format_currency(1234.56), "$1,234.56")
-        # Current implementation uses "$-1,234.56" style.
-        self.assertEqual(format_currency(-1234.56), "$-1,234.56")
-        self.assertEqual(format_currency(0), "$0.00")
-
-    def test_format_percentage(self):
-        self.assertEqual(format_percentage(0.1234), "12.34%")
-        self.assertEqual(format_percentage(-0.1234), "-12.34%")
-        self.assertEqual(format_percentage(0), "0.00%")
-
-
-class TestTradingCalendar(unittest.TestCase):
-    """Tests for TradingCalendar class."""
-
-    def setUp(self):
-        self.calendar = TradingCalendar()
-
-    @patch('utils.is_trading_day', return_value=True)
-    def test_is_market_open_true(self, _):
-        dt = datetime(2025, 6, 11, 10, 0, 0)  # Wednesday 10:00 ET-naive
-        self.assertTrue(self.calendar.is_market_open(dt))
-
-    @patch('utils.is_trading_day', return_value=True)
-    def test_is_market_open_false(self, _):
-        dt = datetime(2025, 6, 11, 8, 0, 0)  # Before open
-        self.assertFalse(self.calendar.is_market_open(dt))
-
 
 class TestPerformanceMetrics(unittest.TestCase):
     """Tests for PerformanceMetrics helpers."""
-
-    def test_calculate_sharpe_ratio(self):
-        returns = pd.Series([0.01, -0.02, 0.03, -0.01, 0.02])
-        sharpe = PerformanceMetrics.calculate_sharpe_ratio(returns)
-        self.assertIsInstance(sharpe, float)
 
     def test_calculate_max_drawdown(self):
         values = pd.Series([100, 110, 105, 120, 90, 95])
         dd = PerformanceMetrics.calculate_max_drawdown(values)
         self.assertGreaterEqual(dd, 0.0)
-
-
-class TestDataValidator(unittest.TestCase):
-    """Tests for data quality helpers."""
-
-    def test_validate_price_data_valid(self):
-        df = pd.DataFrame({
-            'o': [100, 101],
-            'h': [105, 106],
-            'l': [99, 100],
-            'c': [102, 104],
-            'v': [1000, 1200],
-        })
-        self.assertTrue(DataValidator.validate_price_data(df))
-
-    def test_validate_price_data_invalid_schema(self):
-        df = pd.DataFrame({'close': [1, 2, 3]})
-        self.assertFalse(DataValidator.validate_price_data(df))
-
-    def test_detect_outliers(self):
-        s = pd.Series([1, 1, 1, 100])
-        outliers = DataValidator.detect_outliers(s, threshold=1.0)
-        self.assertEqual(len(outliers), len(s))
-        self.assertTrue(outliers.iloc[-1])
-
-
-class TestRiskManager(unittest.TestCase):
-    """Tests for RiskManager helpers."""
-
-    def test_calculate_position_size(self):
-        size = RiskManager.calculate_position_size(
-            account_value=100000,
-            risk_per_trade=0.02,
-            entry_price=100,
-            stop_loss_price=95,
-        )
-        self.assertEqual(size, 400)
-
-    def test_check_correlation(self):
-        r1 = pd.Series([0.01, 0.02, -0.01, 0.03])
-        r2 = pd.Series([0.02, 0.01, -0.02, 0.04])
-        corr = RiskManager.check_correlation(r1, r2)
-        self.assertIsInstance(corr, float)
-        self.assertLessEqual(corr, 1.0)
-        self.assertGreaterEqual(corr, -1.0)
 
 
 class TestProgressIndicator(unittest.TestCase):
@@ -163,8 +80,8 @@ class TestProgressIndicator(unittest.TestCase):
         self.assertEqual(progress.description, "Test")
         self.assertEqual(progress.current, 0)
 
-    @patch('utils.sys.stdout.write')
-    @patch('utils.sys.stdout.flush')
+    @patch('utils.progress.sys.stdout.write')
+    @patch('utils.progress.sys.stdout.flush')
     def test_progress_indicator_update(self, mock_flush, mock_write):
         progress = ProgressIndicator(total=100, description="Test")
         progress.update(25)
@@ -172,8 +89,8 @@ class TestProgressIndicator(unittest.TestCase):
         mock_write.assert_called()
         mock_flush.assert_called()
 
-    @patch('utils.sys.stdout.write')
-    @patch('utils.sys.stdout.flush')
+    @patch('utils.progress.sys.stdout.write')
+    @patch('utils.progress.sys.stdout.flush')
     def test_progress_indicator_finish(self, mock_flush, mock_write):
         progress = ProgressIndicator(total=100, description="Test")
         progress.finish("Done")

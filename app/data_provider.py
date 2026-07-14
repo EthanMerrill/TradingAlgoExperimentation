@@ -4,7 +4,6 @@ Replaces the legacy networking.py with modern async/await patterns.
 """
 import logging
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, cast
 
@@ -19,18 +18,6 @@ from alpaca.data.enums import Adjustment
 from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class BarData:
-    """Data class for stock bar information."""
-    symbol: str
-    timestamp: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
 
 
 class DataProvider:

@@ -132,11 +132,13 @@ class TestCloudStorage(unittest.TestCase):
                  rsi_period=14, rsi_lower=30, rsi_upper=70,
                  buy_and_hold_return=0.10, num_trades=5, win_rate=0.6,
                  avg_trade_duration=10.5, max_drawdown=0.08, sharpe_ratio=1.2,
+                 calmar_ratio=2.0, composite_score=5.0, direction='long',
                  profitable=True, current_rsi=45.0),
             Mock(symbol='TSLA', total_return=0.20, alpha=0.08,
                  rsi_period=14, rsi_lower=30, rsi_upper=70,
                  buy_and_hold_return=0.12, num_trades=3, win_rate=0.67,
                  avg_trade_duration=7.0, max_drawdown=0.10, sharpe_ratio=0.9,
+                 calmar_ratio=1.5, composite_score=4.0, direction='long',
                  profitable=True, current_rsi=40.0)
         ]
 

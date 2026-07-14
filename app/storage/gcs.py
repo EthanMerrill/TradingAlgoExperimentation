@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, List, Optional
 import numpy as np
 # pylint: disable=broad-exception-caught
 import pandas as pd
-from storage.backend import StorageBackend
+from storage.backend import StorageBackend, backtest_result_to_dict, dict_to_backtest_result, normalize_position_for_save
 from strategy import BacktestResult
 
 from config import globalConfig  # type: ignore
@@ -150,30 +150,9 @@ class GcsStorage(StorageBackend):
             return False
 
         try:
-            # Convert results to DataFrame
-            results_data = []
-            for result in results:
-                result_dict = {
-                    'symbol': result.symbol,
-                    'rsi_period': result.rsi_period,
-                    'rsi_lower': result.rsi_lower,
-                    'rsi_upper': result.rsi_upper,
-                    'total_return': result.total_return,
-                    'buy_and_hold_return': result.buy_and_hold_return,
-                    'alpha': result.alpha,
-                    'num_trades': result.num_trades,
-                    'win_rate': result.win_rate,
-                    'avg_trade_duration': result.avg_trade_duration,
-                    'max_drawdown': result.max_drawdown,
-                    'sharpe_ratio': result.sharpe_ratio,
-                    'calmar_ratio': result.calmar_ratio,
-                    'composite_score': result.composite_score,
-                    'direction': result.direction,
-                    'profitable': result.profitable,
-                    'current_rsi': result.current_rsi
-                }
-                results_data.append(self._round_floats(result_dict))
-
+            # Convert results to DataFrame using shared serialization helper
+            results_data = [backtest_result_to_dict(r) for r in results]
+            results_data = [self._round_floats(d) for d in results_data]
             df = pd.DataFrame(results_data)
 
             # Generate filename with timestamp
@@ -224,26 +203,8 @@ class GcsStorage(StorageBackend):
             # Convert DataFrame back to BacktestResult objects
             results = []
             for _, row in df.iterrows():
-                result = BacktestResult(
-                    symbol=row['symbol'],
-                    rsi_period=int(row['rsi_period']),
-                    rsi_lower=int(row['rsi_lower']),
-                    rsi_upper=int(row['rsi_upper']),
-                    total_return=float(row['total_return']),
-                    buy_and_hold_return=float(row['buy_and_hold_return']),
-                    alpha=float(row['alpha']),
-                    num_trades=int(row['num_trades']),
-                    win_rate=float(row['win_rate']),
-                    avg_trade_duration=float(row['avg_trade_duration']),
-                    max_drawdown=float(row['max_drawdown']),
-                    sharpe_ratio=float(row['sharpe_ratio']),
-                    calmar_ratio=float(row.get('calmar_ratio', 0)),
-                    composite_score=float(row.get('composite_score', 0)),
-                    direction=str(row.get('direction', 'long')),
-                    profitable=bool(row['profitable']),
-                    current_rsi=float(row['current_rsi']) if 'current_rsi' in row and pd.notna(
-                        row['current_rsi']) else None
-                )
+                row_dict = row.to_dict()
+                result = dict_to_backtest_result(row_dict)
                 results.append(result)
 
             logger.info("Loaded %d backtest results from %s",
@@ -277,44 +238,10 @@ class GcsStorage(StorageBackend):
                     # Empty list, create empty DataFrame
                     positions_df = pd.DataFrame()
                 else:
-                    # Convert Position objects to dict format
+                    # Convert Position objects to dict format using shared helper
                     positions_list = []
                     for pos in positions_data:
-                        exit_price = pos.exit_price
-                        if exit_price is None and pos.closed:
-                            exit_price = pos.current_price
-
-                        realized_return = pos.realized_return
-                        if realized_return is None and pos.closed and pos.entry_price:
-                            if exit_price is not None:
-                                side = getattr(pos, 'side', 'long')
-                                if side == "short":
-                                    realized_return = (
-                                        pos.entry_price - exit_price) / pos.entry_price
-                                else:
-                                    realized_return = (
-                                        exit_price - pos.entry_price) / pos.entry_price
-                            else:
-                                realized_return = None
-
-                        pos_dict = {
-                            'symbol': pos.symbol,
-                            'shares': pos.quantity,
-                            'entry_price': pos.entry_price,
-                            'current_price': pos.current_price,
-                            'current_rsi': pos.current_rsi,
-                            'entry_date': pos.entry_date,
-                            'rsi_period': pos.rsi_period,
-                            'rsi_lower': pos.rsi_lower,
-                            'rsi_upper': pos.rsi_upper,
-                            'alpha': pos.alpha,
-                            'stop_loss_price': pos.stop_loss_price,
-                            'take_profit_price': pos.take_profit_price,
-                            'closed': pos.closed,
-                            'exit_date': pos.exit_date,
-                            'exit_price': exit_price,
-                            'realized_return': realized_return,
-                        }
+                        pos_dict = normalize_position_for_save(pos)
                         positions_list.append(pos_dict)
                     positions_df = pd.DataFrame(positions_list)
             else:

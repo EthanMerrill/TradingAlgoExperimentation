@@ -181,6 +181,49 @@ python tests/test_positions_manager.py
 | `test_utils.py` | Trading calendar, logging, date parsing |
 | `test_main.py` | Full orchestration — backtest → filter → trade → save cycle |
 | `test_integration.py` | End-to-end data flow, error handling, risk management, cloud storage |
+| `test_order_integration.py` | **Live Alpaca paper-trading** — order placement, cancellation, liquidation, storage validation |
+
+### Order Integration Tests (`test_order_integration.py`)
+
+These tests connect to the **dev Alpaca paper trading** account and validate the
+production order-placement code paths (`TradingEngine.place_buy_order()`,
+`TradingEngine.place_market_sell_order()`) against Alpaca's API ground truth.
+
+**Prerequisites:**
+
+```bash
+export ALPACA_DEV_PAPER_KEY=your_dev_paper_key
+export ALPACA_DEV_PAPER_SECRET=your_dev_paper_secret
+# Optional: override the test symbol (default: F — Ford, ~$12)
+export TEST_SYMBOL=F
+```
+
+**Run:**
+
+```bash
+# Via make (auto-loads credentials from .env if present)
+make test-integration
+
+# Or manually
+export $(grep -v '^#' .env | grep ALPACA_DEV_PAPER | xargs)
+.venv/bin/python -m pytest tests/test_order_integration.py -v
+```
+
+Tests are automatically skipped when credentials are missing.
+
+| Test Class | What It Validates |
+|-----------|-------------------|
+| `TestAlpacaConnectivity` | Paper trading client reaches Alpaca; account fields present |
+| `TestPlaceBuyOrder` | `engine.place_buy_order()` → order visible in Alpaca; cleanup via cancel or `place_market_sell_order()` liquidation |
+| `TestFullOrderLifecycle` | Self-contained end-to-end: place → verify → cleanup |
+| `TestStorageValidation` | Spies on `open_position()` to capture the `Position` object, then cross-validates against Alpaca's order API, positions API, and `normalize_position_for_save()` output (all `POSITION_FIELDS` present) |
+
+**Design:**
+
+- 1 share per order on `F` (or `$TEST_SYMBOL`) — minimal paper account impact
+- All tests clean up after themselves (cancel unfilled orders, liquidate filled positions)
+- Handles variable order statuses based on market open/closed
+- Not part of `make test` / `tests/run_tests.py` — intended for explicit CI or manual runs
 
 ### Test Features
 

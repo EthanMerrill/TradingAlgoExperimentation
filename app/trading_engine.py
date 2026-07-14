@@ -69,151 +69,62 @@ class TradingEngine:
         else:
             logger.info("🚀 LIVE TRADING MODE ENABLED - Orders will be placed")
 
-    def identify_buying_opportunities(self, backtest_results: List[BacktestResult]) -> List[TradingOpportunity]:
-        """
-        Identify current buying opportunities based on backtest results.
+    def _identify_opportunities(
+        self, backtest_results: List[BacktestResult], direction: str
+    ) -> List[TradingOpportunity]:
+        """Unified opportunity identification for long and short directions.
 
         Args:
-            backtest_results: List of profitable backtest results
+            backtest_results: List of backtest results
+            direction: "long" or "short"
 
         Returns:
-            List of current trading opportunities
+            List of trading opportunities sorted by composite_score desc.
         """
-        opportunities = []
+        is_long = direction == "long"
+        opportunities: List[TradingOpportunity] = []
 
         for result in backtest_results:
             try:
-                # Get current and previous RSI for cross-detection (backtest parity).
-                # The backtest requires RSI to cross below rsi_lower (i.e., was above,
-                # now below), not just be below it.
+                # Direction filter
+                if not is_long and result.direction != "short":
+                    continue
+
                 current_rsi, previous_rsi = self._get_rsi_with_previous(
                     result.symbol, result.rsi_period)
                 if current_rsi is None:
                     continue
 
-                # Cross-below check: current RSI must be below rsi_lower AND
-                # previous RSI must have been at or above rsi_lower.
-                # Falls back to level check if previous RSI is unavailable.
-                is_cross_below = current_rsi < result.rsi_lower and (
-                    previous_rsi is None or previous_rsi >= result.rsi_lower
-                )
+                # Cross-detection
+                if is_long:
+                    is_cross = current_rsi < result.rsi_lower and (
+                        previous_rsi is None or previous_rsi >= result.rsi_lower
+                    )
+                else:
+                    is_cross = current_rsi > result.rsi_upper and (
+                        previous_rsi is None or previous_rsi <= result.rsi_upper
+                    )
+
                 if previous_rsi is None:
                     logger.debug(
                         "Previous RSI unavailable for %s; using level check as fallback", result.symbol)
 
-                if is_cross_below:
-                    # Get current price
-                    current_price = self._get_current_price(result.symbol)
-
-                    if current_price is None:
-                        continue
-
-                    # Calculate stop loss and take profit prices once for initial entry.
-                    entry_price = round(current_price, 2)
-                    stop_loss_price = round(
-                        entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
-
-                    # Compute RSI-implied take-profit price for backtest/live parity.
-                    # Uses the same calculate_price_for_target_rsi() as the backtest.
-                    take_profit_price = self._compute_rsi_take_profit(
-                        result.symbol, result.rsi_upper, result.rsi_period, entry_price
-                    )
-
-                    opportunity = TradingOpportunity(
-                        symbol=result.symbol,
-                        current_rsi=round(current_rsi, 2),
-                        target_rsi_lower=result.rsi_lower,
-                        target_rsi_upper=result.rsi_upper,
-                        rsi_period=result.rsi_period,
-                        backtest_return=round(result.total_return, 2),
-                        alpha=round(result.alpha, 2),
-                        win_rate=round(result.win_rate, 2),
-                        entry_price=entry_price,
-                        stop_loss_price=stop_loss_price,
-                        take_profit_price=take_profit_price,
-                        num_trades=result.num_trades,
-                        composite_score=round(result.composite_score, 2)
-                    )
-
-                    opportunities.append(opportunity)
-
-            except Exception as e:
-                logger.error(
-                    "Error evaluating opportunity for %s: %s", result.symbol, e)
-                continue
-        # Opportunity filtering and sorting
-        # Sort by composite score (cross-symbol Z-score, best opportunities first)
-        opportunities.sort(key=lambda x: x.composite_score, reverse=True)
-        # Filter out opportunities with negative alpha
-        opportunities = [op for op in opportunities if op.alpha > 0]
-        # Filter out opportunities with low win rate
-        opportunities = [
-            op for op in opportunities if op.win_rate >= globalConfig.MIN_WIN_RATE]
-        # Filter opportunities with less than 2 trades (needs to be at least _slightly_ repeatable)
-        opportunities = [
-            op for op in opportunities if op.num_trades >= globalConfig.MIN_NUM_TRADES]
-        # Remove symbols that are already in current positions
-        # current_positions = self.refresh_positions()  # Refresh once at the start in main
-        current_symbols = {
-            pos.symbol for pos in self._positions_manager.positions if not pos.closed}
-        opportunities = [
-            op for op in opportunities if op.symbol not in current_symbols]
-
-        return opportunities
-
-    def identify_shorting_opportunities(self, backtest_results: List[BacktestResult]) -> List[TradingOpportunity]:
-        """
-        Identify current short-selling opportunities based on backtest results.
-
-        Mirrors identify_buying_opportunities but:
-        - Filters results with direction="short"
-        - Entry signal: RSI cross-ABOVE rsi_upper (current > rsi_upper AND previous <= rsi_upper)
-        - stop_loss_price = entry * (1 + STOP_LOSS_PCT) (inverted)
-        - take_profit_price = _compute_rsi_cover_price(...) (cover below entry)
-        - Excludes symbols that already have an open SHORT position
-
-        Args:
-            backtest_results: List of backtest results (may include both directions)
-
-        Returns:
-            List of short trading opportunities
-        """
-        opportunities = []
-
-        for result in backtest_results:
-            try:
-                # Only consider short-direction results
-                if result.direction != "short":
-                    continue
-
-                # Get current and previous RSI for cross-detection.
-                current_rsi, previous_rsi = self._get_rsi_with_previous(
-                    result.symbol, result.rsi_period)
-                if current_rsi is None:
-                    continue
-
-                # Cross-above check: current RSI must be above rsi_upper AND
-                # previous RSI must have been at or below rsi_upper.
-                is_cross_above = current_rsi > result.rsi_upper and (
-                    previous_rsi is None or previous_rsi <= result.rsi_upper
-                )
-                if previous_rsi is None:
-                    logger.debug(
-                        "Previous RSI unavailable for %s; using level check as fallback", result.symbol)
-
-                if is_cross_above:
+                if is_cross:
                     current_price = self._get_current_price(result.symbol)
                     if current_price is None:
                         continue
 
                     entry_price = round(current_price, 2)
-                    # Short stop-loss: price rises above entry * (1 + STOP_LOSS_PCT)
-                    stop_loss_price = round(
-                        entry_price * (1 + globalConfig.STOP_LOSS_PCT), 2)
-                    # Cover price: RSI-implied target at rsi_lower (must be below entry)
-                    take_profit_price = self._compute_rsi_cover_price(
-                        result.symbol, result.rsi_lower, result.rsi_period, entry_price
-                    )
+                    if is_long:
+                        stop_loss_price = round(
+                            entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
+                        take_profit_price = self._compute_rsi_take_profit(
+                            result.symbol, result.rsi_upper, result.rsi_period, entry_price)
+                    else:
+                        stop_loss_price = round(
+                            entry_price * (1 + globalConfig.STOP_LOSS_PCT), 2)
+                        take_profit_price = self._compute_rsi_cover_price(
+                            result.symbol, result.rsi_lower, result.rsi_period, entry_price)
 
                     opportunity = TradingOpportunity(
                         symbol=result.symbol,
@@ -229,35 +140,43 @@ class TradingEngine:
                         take_profit_price=take_profit_price,
                         num_trades=result.num_trades,
                         composite_score=round(result.composite_score, 2),
-                        direction="short"
+                        **({} if is_long else {"direction": "short"})
                     )
-
                     opportunities.append(opportunity)
 
             except Exception as e:
-                logger.error(
-                    "Error evaluating short opportunity for %s: %s", result.symbol, e)
+                logger.error("Error evaluating %s opportunity for %s: %s",
+                             direction, result.symbol, e)
                 continue
 
-        # Sort by composite score (cross-symbol Z-score, best opportunities first)
+        # Shared post-loop filtering
         opportunities.sort(key=lambda x: x.composite_score, reverse=True)
-        # Filter out opportunities with negative alpha
         opportunities = [op for op in opportunities if op.alpha > 0]
-        # Filter out opportunities with low win rate
         opportunities = [
             op for op in opportunities if op.win_rate >= globalConfig.MIN_WIN_RATE]
-        # Filter opportunities with less than minimum trades
         opportunities = [
             op for op in opportunities if op.num_trades >= globalConfig.MIN_NUM_TRADES]
-        # Remove symbols that already have an open SHORT position
-        current_short_symbols = {
-            pos.symbol for pos in self._positions_manager.positions
-            if not pos.closed and getattr(pos, 'side', 'long') == 'short'
-        }
+
+        # Existing-position dedup
+        if is_long:
+            current_symbols = {
+                pos.symbol for pos in self._positions_manager.positions if not pos.closed}
+        else:
+            current_symbols = {
+                pos.symbol for pos in self._positions_manager.positions
+                if not pos.closed and getattr(pos, 'side', 'long') == 'short'}
         opportunities = [
-            op for op in opportunities if op.symbol not in current_short_symbols]
+            op for op in opportunities if op.symbol not in current_symbols]
 
         return opportunities
+
+    def identify_buying_opportunities(self, backtest_results: List[BacktestResult]) -> List[TradingOpportunity]:
+        """Identify current buying opportunities based on backtest results."""
+        return self._identify_opportunities(backtest_results, "long")
+
+    def identify_shorting_opportunities(self, backtest_results: List[BacktestResult]) -> List[TradingOpportunity]:
+        """Identify current short-selling opportunities based on backtest results."""
+        return self._identify_opportunities(backtest_results, "short")
 
     def calculate_position_sizes(self, opportunities: List[TradingOpportunity]) -> List[Tuple[TradingOpportunity, int]]:
         """
@@ -412,13 +331,17 @@ class TradingEngine:
             logger.error("Error calculating short position sizes: %s", e)
             return []
 
-    def place_buy_order(self, opportunity: TradingOpportunity, shares: int) -> bool:
-        """
-        Place a buy order for a trading opportunity.
+    def _place_order(self, opportunity: TradingOpportunity, shares: int, side: OrderSide, quantity_sign: int,
+                     label: str, profit_label: str) -> bool:
+        """Unified order placement for long (buy) and short (sell) orders.
 
         Args:
             opportunity: Trading opportunity
-            shares: Number of shares to buy
+            shares: Number of shares
+            side: OrderSide.BUY or OrderSide.SELL
+            quantity_sign: 1 for long, -1 for short
+            label: Human-readable label (e.g. "buy", "SHORT")
+            profit_label: Human-readable profit label (e.g. "Take profit", "Cover target")
 
         Returns:
             True if order was placed successfully
@@ -426,26 +349,23 @@ class TradingEngine:
         order_success = False
         try:
             if self.dry_run:
-                # Dry run mode - simulate order placement
-                logger.info("🔍 DRY RUN: Would place buy order for %d shares of %s at $%.2f",
-                            shares, opportunity.symbol, opportunity.entry_price)
-                logger.info("🔍 DRY RUN: Stop loss: $%.2f, Take profit: $%.2f",
-                            opportunity.stop_loss_price, opportunity.take_profit_price)
+                logger.info("🔍 DRY RUN: Would place %s order for %d shares of %s at $%.2f",
+                            label, shares, opportunity.symbol, opportunity.entry_price)
+                logger.info("🔍 DRY RUN: Stop loss: $%.2f, %s: $%.2f",
+                            opportunity.stop_loss_price, profit_label, opportunity.take_profit_price)
                 logger.info("🔍 DRY RUN: Position value: $%.2f",
                             shares * opportunity.entry_price)
                 order_success = False
             else:
-                # Check if trading client is available
                 if self.trading_client is None:
                     logger.error(
                         "Trading client not available - cannot place order")
                     return False
 
-                # Create bracket order (buy with stop loss and take profit)
                 order_request = MarketOrderRequest(
                     symbol=opportunity.symbol,
                     qty=shares,
-                    side=OrderSide.BUY,
+                    side=side,
                     time_in_force=TimeInForce.DAY,
                     order_class=OrderClass.BRACKET,
                     stop_loss=StopLossRequest(
@@ -457,29 +377,27 @@ class TradingEngine:
                 order = self.trading_client.submit_order(order_request)
                 order_id = getattr(order, 'id', 'Unknown')
                 logger.info("Order placed successfully: %s", order_id)
-
-                logger.info("Buy order placed for %d shares of %s at $%.2f",
-                            shares, opportunity.symbol, opportunity.entry_price)
-                logger.info("Stop loss: $%.2f, Take profit: $%.2f",
-                            opportunity.stop_loss_price, opportunity.take_profit_price)
+                logger.info("%s order for %d shares of %s at $%.2f",
+                            label.title(), shares, opportunity.symbol, opportunity.entry_price)
+                logger.info("Stop loss: $%.2f, %s: $%.2f",
+                            opportunity.stop_loss_price, profit_label, opportunity.take_profit_price)
 
                 order_success = True
 
         except Exception as e:
-            error_msg = "Error placing buy order for %s: %s" % (
-                opportunity.symbol, e)
+            error_msg = "Error placing %s order for %s: %s" % (
+                label, opportunity.symbol, e)
             if self.dry_run:
                 error_msg = "🔍 DRY RUN: " + error_msg
             logger.error(error_msg)
 
-        # If order was successful, add position to positions manager
         if order_success:
             try:
                 new_position = Position(
                     symbol=opportunity.symbol,
-                    quantity=float(shares),
+                    quantity=float(shares) * quantity_sign,
                     entry_price=opportunity.entry_price,
-                    current_price=opportunity.entry_price,  # Initial current price
+                    current_price=opportunity.entry_price,
                     current_rsi=opportunity.current_rsi,
                     entry_date=datetime.now(),
                     alpha=opportunity.alpha,
@@ -494,98 +412,18 @@ class TradingEngine:
 
                 self._positions_manager.open_position(new_position)
             except Exception as e:
-                logger.error(
-                    "Error adding position to positions manager for %s: %s",
-                    opportunity.symbol, e)
+                logger.error("Error adding position to positions manager for %s: %s",
+                             opportunity.symbol, e)
 
         return order_success
+
+    def place_buy_order(self, opportunity: TradingOpportunity, shares: int) -> bool:
+        """Place a buy order for a trading opportunity."""
+        return self._place_order(opportunity, shares, OrderSide.BUY, 1, "buy", "Take profit")
 
     def place_short_order(self, opportunity: TradingOpportunity, shares: int) -> bool:
-        """
-        Place a short-sell order for a trading opportunity.
-
-        Args:
-            opportunity: Short trading opportunity
-            shares: Number of shares to short
-
-        Returns:
-            True if order was placed successfully
-        """
-        order_success = False
-        try:
-            if self.dry_run:
-                logger.info("🔍 DRY RUN: Would place SHORT order for %d shares of %s at $%.2f",
-                            shares, opportunity.symbol, opportunity.entry_price)
-                logger.info("🔍 DRY RUN: Short stop loss: $%.2f, Cover target: $%.2f",
-                            opportunity.stop_loss_price, opportunity.take_profit_price)
-                logger.info("🔍 DRY RUN: Position notional: $%.2f",
-                            shares * opportunity.entry_price)
-                order_success = False
-            else:
-                if self.trading_client is None:
-                    logger.error(
-                        "Trading client not available - cannot place short order")
-                    return False
-
-                # Create bracket order (sell-short with stop loss and cover target).
-                # For shorts: take_profit is a buy-to-cover BELOW entry,
-                # stop_loss is a buy-to-cover ABOVE entry.
-                order_request = MarketOrderRequest(
-                    symbol=opportunity.symbol,
-                    qty=shares,
-                    side=OrderSide.SELL,
-                    time_in_force=TimeInForce.DAY,
-                    order_class=OrderClass.BRACKET,
-                    stop_loss=StopLossRequest(
-                        stop_price=opportunity.stop_loss_price),
-                    take_profit=TakeProfitRequest(
-                        limit_price=opportunity.take_profit_price)
-                )
-
-                order = self.trading_client.submit_order(order_request)
-                order_id = getattr(order, 'id', 'Unknown')
-                logger.info("Short order placed successfully: %s", order_id)
-
-                logger.info("Short order for %d shares of %s at $%.2f",
-                            shares, opportunity.symbol, opportunity.entry_price)
-                logger.info("Stop loss: $%.2f, Cover target: $%.2f",
-                            opportunity.stop_loss_price, opportunity.take_profit_price)
-
-                order_success = True
-
-        except Exception as e:
-            error_msg = "Error placing short order for %s: %s" % (
-                opportunity.symbol, e)
-            if self.dry_run:
-                error_msg = "🔍 DRY RUN: " + error_msg
-            logger.error(error_msg)
-
-        if order_success:
-            try:
-                new_position = Position(
-                    symbol=opportunity.symbol,
-                    quantity=-float(shares),  # negative = short
-                    entry_price=opportunity.entry_price,
-                    current_price=opportunity.entry_price,
-                    current_rsi=opportunity.current_rsi,
-                    entry_date=datetime.now(),
-                    alpha=opportunity.alpha,
-                    rsi_period=opportunity.rsi_period,
-                    rsi_lower=opportunity.target_rsi_lower,
-                    rsi_upper=opportunity.target_rsi_upper,
-                    stop_loss_price=opportunity.stop_loss_price,
-                    take_profit_price=opportunity.take_profit_price,
-                    closed=False,
-                    exit_date=None,
-                )
-
-                self._positions_manager.open_position(new_position)
-            except Exception as e:
-                logger.error(
-                    "Error adding short position to positions manager for %s: %s",
-                    opportunity.symbol, e)
-
-        return order_success
+        """Place a short-sell order for a trading opportunity."""
+        return self._place_order(opportunity, shares, OrderSide.SELL, -1, "SHORT", "Cover target")
 
     def _close_conflicting_position(self, symbol: str, new_direction: str) -> bool:
         """
@@ -1089,7 +927,7 @@ class TradingEngine:
         try:
             logger.info("Starting trading session...")
             # Refresh positions once at the beginning of the session
-            positions = self.refresh_positions()
+            positions = self._positions_manager.get_and_reconcile_positions()
 
             if not positions:
                 logger.info("No current positions found")
@@ -1138,26 +976,6 @@ class TradingEngine:
 
         return session_summary
 
-    def get_current_positions(self) -> List[Position]:
-        """
-        Get current positions from the positions manager.
-        Note: This returns the cached positions list. Call refresh_positions()
-        first if you need the latest data from broker/cloud storage.
-
-        Returns:
-            List of current Position objects
-        """
-        return self._positions_manager.positions
-
-    def refresh_positions(self) -> List[Position]:
-        """
-        Refresh positions from broker and cloud storage, then return the updated list.
-
-        Returns:
-            Updated list of Position objects
-        """
-        return self._positions_manager.get_and_reconcile_positions()
-
     def _clear_ohlcv_cache(self) -> None:
         """Clear the per-cycle OHLCV cache. Call at the start of each run cycle."""
         self._ohlcv_cache.clear()
@@ -1192,21 +1010,6 @@ class TradingEngine:
         except Exception as e:
             logger.error("Error fetching OHLCV for %s: %s", symbol, e)
             return pd.DataFrame()
-
-    def _get_current_rsi(self, symbol: str, period: int) -> Optional[float]:
-        """Get current RSI value for a symbol."""
-        try:
-            data = self._fetch_ohlcv_once(symbol, period * 3)
-
-            if data.empty or len(data) < period:
-                return None
-
-            rsi = TechnicalIndicators.calculate_rsi(data, period)
-            return rsi.iloc[-1] if not rsi.empty else None
-
-        except Exception as e:
-            logger.error("Error getting RSI for %s: %s", symbol, e)
-            return None
 
     def _get_rsi_with_previous(self, symbol: str, period: int) -> Tuple[Optional[float], Optional[float]]:
         """
@@ -1247,108 +1050,70 @@ class TradingEngine:
             logger.error("Error getting current price for %s: %s", symbol, e)
             return None
 
-    def _compute_rsi_take_profit(self, symbol: str, rsi_upper: int, rsi_period: int, entry_price: float) -> float:
+    def _compute_rsi_target_price(self, symbol: str, rsi_target: int, rsi_period: int, entry_price: float, direction: str) -> float:
         """
-        Compute RSI-implied take-profit price for backtest/live parity.
+        Compute RSI-implied target price for backtest/live parity.
 
-        Uses the same calculate_price_for_target_rsi() as the backtest's
-        _generate_signals(). Falls back to the fixed TAKE_PROFIT_PCT percentage
-        if the RSI calculation cannot produce a valid target.
+        For longs (direction="long"): target must be ABOVE entry; fallback = entry * (1 + PCT).
+        For shorts (direction="short"): target must be BELOW entry; fallback = entry * (1 - PCT).
 
         Args:
             symbol: Stock symbol
-            rsi_upper: Target RSI upper threshold
+            rsi_target: Target RSI threshold (rsi_upper for longs, rsi_lower for shorts)
             rsi_period: RSI calculation period
             entry_price: Current entry price (used as fallback basis)
+            direction: "long" or "short"
 
         Returns:
-            Take-profit price (rounded to 2 decimal places)
+            Target price (rounded to 2 decimal places)
         """
+        is_long = direction == "long"
+        label = "take-profit" if is_long else "cover"
+        fallback_mult = 1 + globalConfig.TAKE_PROFIT_PCT if is_long else 1 - \
+            globalConfig.TAKE_PROFIT_PCT
+        validation_ok = (lambda tp: tp > entry_price) if is_long else (
+            lambda tp: tp < entry_price)
+        fallback_label = f"fixed {globalConfig.TAKE_PROFIT_PCT * 100:.1f}%" + (
+            " take-profit" if is_long else " below entry")
+
         try:
             data = self._fetch_ohlcv_once(symbol, rsi_period * 3)
 
             if data.empty or len(data) < rsi_period + 1:
                 logger.warning(
-                    "Insufficient data for RSI take-profit calculation for %s. "
-                    "Falling back to fixed %.1f%% take-profit.",
-                    symbol, globalConfig.TAKE_PROFIT_PCT * 100
+                    "Insufficient data for RSI %s calculation for %s. Falling back to %s.",
+                    label, symbol, fallback_label
                 )
-                return round(entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
+                return round(entry_price * fallback_mult, 2)
 
             target_price = RSIStrategy.calculate_price_for_target_rsi(
-                data, rsi_upper, rsi_period
+                data, rsi_target, rsi_period
             )
 
-            if target_price is None or target_price <= entry_price:
+            if target_price is None or not validation_ok(target_price):
                 logger.info(
-                    "RSI-implied take-profit for %s (target RSI=%d) is at or below entry. "
-                    "Falling back to fixed %.1f%% take-profit.",
-                    symbol, rsi_upper, globalConfig.TAKE_PROFIT_PCT * 100
+                    "RSI-implied %s for %s (target RSI=%d) invalid vs entry. Falling back to %s.",
+                    label, symbol, rsi_target, fallback_label
                 )
-                return round(entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
+                return round(entry_price * fallback_mult, 2)
 
             logger.info(
-                "RSI-implied take-profit for %s: $%.2f (RSI target: %d, entry: $%.2f)",
-                symbol, target_price, rsi_upper, entry_price
+                "RSI-implied %s for %s: $%.2f (RSI target: %d, entry: $%.2f)",
+                label, symbol, target_price, rsi_target, entry_price
             )
             return round(target_price, 2)
 
         except Exception as e:
             logger.error(
-                "Error computing RSI take-profit for %s: %s. Falling back to fixed percentage.",
-                symbol, e
+                "Error computing RSI %s for %s: %s. Falling back to fixed percentage.",
+                label, symbol, e
             )
-            return round(entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
+            return round(entry_price * fallback_mult, 2)
+
+    def _compute_rsi_take_profit(self, symbol: str, rsi_upper: int, rsi_period: int, entry_price: float) -> float:
+        """RSI-implied take-profit for long positions (entry → target above entry)."""
+        return self._compute_rsi_target_price(symbol, rsi_upper, rsi_period, entry_price, "long")
 
     def _compute_rsi_cover_price(self, symbol: str, rsi_lower: int, rsi_period: int, entry_price: float) -> float:
-        """
-        Compute RSI-implied cover price for short positions (backtest/live parity).
-
-        Uses calculate_price_for_target_rsi() targeting rsi_lower (the oversold
-        threshold at which RSI would trigger a cover). The cover price must be
-        BELOW entry_price for a profitable short. Falls back to fixed percentage.
-
-        Args:
-            symbol: Stock symbol
-            rsi_lower: Target RSI lower threshold (cover trigger)
-            rsi_period: RSI calculation period
-            entry_price: Short entry price (used as fallback basis)
-
-        Returns:
-            Cover price (rounded to 2 decimal places)
-        """
-        try:
-            data = self._fetch_ohlcv_once(symbol, rsi_period * 3)
-
-            if data.empty or len(data) < rsi_period + 1:
-                logger.warning(
-                    "Insufficient data for RSI cover-price calculation for %s. "
-                    "Falling back to fixed %.1f%% below entry.",
-                    symbol, globalConfig.TAKE_PROFIT_PCT * 100
-                )
-                return round(entry_price * (1 - globalConfig.TAKE_PROFIT_PCT), 2)
-
-            target_price = RSIStrategy.calculate_price_for_target_rsi(
-                data, rsi_lower, rsi_period
-            )
-
-            if target_price is None or target_price >= entry_price:
-                logger.info(
-                    "RSI-implied cover for %s (target RSI=%d) is at or above entry. "
-                    "Falling back to fixed %.1f%% below entry.",
-                    symbol, rsi_lower, globalConfig.TAKE_PROFIT_PCT * 100
-                )
-                return round(entry_price * (1 - globalConfig.TAKE_PROFIT_PCT), 2)
-
-            logger.info(
-                "RSI-implied cover for %s: $%.2f (RSI target: %d, entry: $%.2f)",
-                symbol, target_price, rsi_lower, entry_price
-            )
-            return round(target_price, 2)
-
-        except Exception as e:
-            logger.error(
-                "Error computing RSI cover for %s: %s. Falling back to fixed percentage.",
-                symbol, e
-            )
-            return round(entry_price * (1 - globalConfig.TAKE_PROFIT_PCT), 2)
+        """RSI-implied cover price for short positions (entry → target below entry)."""
+        return self._compute_rsi_target_price(symbol, rsi_lower, rsi_period, entry_price, "short")

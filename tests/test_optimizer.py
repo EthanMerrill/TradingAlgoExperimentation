@@ -33,61 +33,6 @@ class TestStrategyOptimizer(unittest.TestCase):
         self.assertIsInstance(
             self.optimizer.last_consolidated_trades_df, pd.DataFrame)
 
-    def test_composite_score_from_parts(self):
-        """Test legacy composite score formula."""
-        score = StrategyOptimizer._composite_score_from_parts(
-            alpha=0.05, sharpe=1.2, calmar=2.0
-        )
-        expected = (0.05 * 100) + 1.2 + 2.0  # = 8.2
-        self.assertAlmostEqual(score, expected, places=2)
-
-    def test_composite_score_uses_stored_value(self):
-        """Test that _composite_score returns stored composite_score if non-zero."""
-        result = BacktestResult(
-            symbol="AAPL",
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
-            total_return=0.15,
-            buy_and_hold_return=0.10,
-            alpha=0.05,
-            num_trades=5,
-            win_rate=0.6,
-            avg_trade_duration=10.5,
-            max_drawdown=0.08,
-            sharpe_ratio=1.2,
-            calmar_ratio=2.0,
-            profitable=True,
-        )
-        result.composite_score = 5.5
-
-        score = StrategyOptimizer._composite_score(result)
-        self.assertEqual(score, 5.5)
-
-    def test_composite_score_falls_back_to_legacy(self):
-        """Test that _composite_score uses legacy formula when composite_score is 0."""
-        result = BacktestResult(
-            symbol="AAPL",
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
-            total_return=0.15,
-            buy_and_hold_return=0.10,
-            alpha=0.05,
-            num_trades=5,
-            win_rate=0.6,
-            avg_trade_duration=10.5,
-            max_drawdown=0.08,
-            sharpe_ratio=1.2,
-            calmar_ratio=2.0,
-            profitable=True,
-        )
-        result.composite_score = 0.0
-
-        score = StrategyOptimizer._composite_score(result)
-        expected = (0.05 * 100) + 1.2 + 2.0
-        self.assertAlmostEqual(score, expected, places=2)
-
     def test_filter_results_filters_unprofitable(self):
         """Test that filter_results removes unprofitable results."""
         results = [

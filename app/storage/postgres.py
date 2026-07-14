@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 import asyncpg
 import pandas as pd
 
-from storage.backend import StorageBackend
+from storage.backend import StorageBackend, backtest_result_to_dict, dict_to_backtest_result, normalize_position_for_save
 
 if TYPE_CHECKING:
     from config import Config
@@ -208,24 +208,17 @@ class PostgresStorage(StorageBackend):
 
         rows: List[tuple] = []
         for r in results:
+            d = backtest_result_to_dict(r)
             rows.append((
-                timestamp, self._env, r.symbol,
-                r.rsi_period, r.rsi_lower, r.rsi_upper,
-                round(r.total_return, 2) if r.total_return is not None else None,
-                round(r.buy_and_hold_return,
-                      2) if r.buy_and_hold_return is not None else None,
-                round(r.alpha, 2) if r.alpha is not None else None,
-                r.num_trades,
-                round(r.win_rate, 2) if r.win_rate is not None else None,
-                round(r.avg_trade_duration,
-                      2) if r.avg_trade_duration is not None else None,
-                round(r.max_drawdown, 2) if r.max_drawdown is not None else None,
-                round(r.sharpe_ratio, 2) if r.sharpe_ratio is not None else None,
-                round(r.calmar_ratio, 2),
-                round(r.composite_score, 2),
-                r.direction,
-                r.profitable,
-                round(r.current_rsi, 2) if r.current_rsi is not None else None,
+                timestamp, self._env,
+                d["symbol"],
+                d["rsi_period"], d["rsi_lower"], d["rsi_upper"],
+                d["total_return"], d["buy_and_hold_return"],
+                d["alpha"], d["num_trades"], d["win_rate"],
+                d["avg_trade_duration"], d["max_drawdown"],
+                d["sharpe_ratio"], d["calmar_ratio"],
+                d["composite_score"], d["direction"], d["profitable"],
+                d["current_rsi"],
             ))
 
         col_placeholders = ", ".join(
@@ -280,38 +273,9 @@ class PostgresStorage(StorageBackend):
             logger.error("No backtest results found for timestamp %s", ts)
             return []
 
-        from strategy import BacktestResult  # pylint: disable=import-outside-toplevel
-
         results: List[BacktestResult] = []
         for row in rows:
-            current_rsi = row["current_rsi"]
-            results.append(BacktestResult(
-                symbol=row["symbol"],
-                rsi_period=int(row["rsi_period"]),
-                rsi_lower=int(row["rsi_lower"]),
-                rsi_upper=int(row["rsi_upper"]),
-                total_return=float(
-                    row["total_return"]) if row["total_return"] is not None else 0.0,
-                buy_and_hold_return=float(
-                    row["buy_and_hold_return"]) if row["buy_and_hold_return"] is not None else 0.0,
-                alpha=float(row["alpha"]) if row["alpha"] is not None else 0.0,
-                num_trades=int(row["num_trades"]
-                               ) if row["num_trades"] is not None else 0,
-                win_rate=float(
-                    row["win_rate"]) if row["win_rate"] is not None else 0.0,
-                avg_trade_duration=float(
-                    row["avg_trade_duration"]) if row["avg_trade_duration"] is not None else 0.0,
-                max_drawdown=float(
-                    row["max_drawdown"]) if row["max_drawdown"] is not None else 0.0,
-                sharpe_ratio=float(
-                    row["sharpe_ratio"]) if row["sharpe_ratio"] is not None else 0.0,
-                calmar_ratio=float(row.get("calmar_ratio", 0)),
-                composite_score=float(row.get("composite_score", 0)),
-                direction=str(row.get("direction", "long")),
-                profitable=bool(row["profitable"]),
-                current_rsi=float(
-                    current_rsi) if current_rsi is not None else None,
-            ))
+            results.append(dict_to_backtest_result(dict(row)))
 
         logger.info(
             "Loaded %d backtest results from Postgres (run=%s)", len(results), ts)
@@ -333,42 +297,9 @@ class PostgresStorage(StorageBackend):
         if isinstance(positions_data, list):
             if not positions_data:
                 return True  # Nothing to save
-            rows_list: List[Dict[str, Any]] = []
-            for pos in positions_data:
-                exit_price = pos.exit_price
-                if exit_price is None and pos.closed:
-                    exit_price = pos.current_price
-
-                realized_return = pos.realized_return
-                if realized_return is None and pos.closed and pos.entry_price:
-                    if exit_price is not None:
-                        side = getattr(pos, "side", "long")
-                        if side == "short":
-                            realized_return = (
-                                pos.entry_price - exit_price) / pos.entry_price
-                        else:
-                            realized_return = (
-                                exit_price - pos.entry_price) / pos.entry_price
-
-                rows_list.append({
-                    "symbol": pos.symbol,
-                    "shares": pos.quantity,
-                    "entry_price": pos.entry_price,
-                    "current_price": pos.current_price,
-                    "current_rsi": pos.current_rsi,
-                    "entry_date": _to_utc(pos.entry_date),
-                    "rsi_period": pos.rsi_period,
-                    "rsi_lower": pos.rsi_lower,
-                    "rsi_upper": pos.rsi_upper,
-                    "alpha": pos.alpha,
-                    "stop_loss_price": pos.stop_loss_price,
-                    "take_profit_price": pos.take_profit_price,
-                    "closed": pos.closed,
-                    "exit_date": _to_utc(pos.exit_date),
-                    "exit_price": exit_price,
-                    "realized_return": realized_return,
-                    "side": getattr(pos, "side", "long"),
-                })
+            rows_list: List[Dict[str, Any]] = [
+                normalize_position_for_save(pos) for pos in positions_data
+            ]
         elif isinstance(positions_data, pd.DataFrame):
             rows_list = cast(List[Dict[str, Any]], positions_data.where(
                 pd.notna(positions_data), None

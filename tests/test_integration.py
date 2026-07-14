@@ -29,26 +29,24 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
             'BACKTEST_START_DAYS': 365
         }
 
-    @patch('sys.modules')
-    def test_module_imports(self, _mock_modules):
-        """Test that all modules can be imported without errors."""
+    def test_module_imports(self):
+        """Test that all required modules can be imported."""
+        import importlib
+
         required_modules = [
-            'config',
-            'utils',
-            'data_provider',
-            'strategy',
-            'positions',
-            'storage.gcs',
-            'trading_engine'
+            ('config', 'globalConfig'),
+            ('utils', 'parse_dt'),
+            ('data_provider', 'DataProvider'),
+            ('strategy', 'RSIStrategy'),
+            ('positions', 'PositionsManager'),
+            ('trading_engine', 'TradingEngine'),
         ]
 
-        for module_name in required_modules:
-            try:
-                # This would normally import the module
-                # In a real test, we'd check if the module loads properly
-                pass  # Placeholder for actual import test
-            except ImportError as e:
-                self.fail(f"Failed to import {module_name}: {e}")
+        for module_name, symbol_name in required_modules:
+            with self.subTest(module=module_name):
+                mod = importlib.import_module(module_name)
+                self.assertTrue(hasattr(mod, symbol_name),
+                                f"Expected {symbol_name} in {module_name}")
 
     def test_data_flow_integration(self):
         """Test the complete data flow from data provider to trading engine."""
@@ -59,8 +57,8 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
 
                     # Mock data provider
                     mock_data_provider = Mock()
-                    mock_data_provider.get_historical_data.return_value = pd.DataFrame({
-                        'close': np.random.randn(100) * 0.02 + 100
+                    mock_data_provider.get_single_stock_bars.return_value = pd.DataFrame({
+                        'close': [100.0 + i * 0.02 for i in range(100)]
                     })
                     mock_data_provider_class.return_value = mock_data_provider
 
@@ -85,8 +83,8 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
 
                     # Test the flow
                     # 1. Data provider gets historical data
-                    historical_data = mock_data_provider.get_historical_data(
-                        'AAPL', days_back=365)
+                    historical_data = mock_data_provider.get_single_stock_bars(
+                        'AAPL', pd.Timestamp('2025-01-01'), pd.Timestamp('2025-06-01'))
                     self.assertIsNotNone(historical_data)
 
                     # 2. Strategy backtester runs backtests
@@ -118,18 +116,10 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
 
         for scenario in error_scenarios:
             with self.subTest(scenario=scenario):
-                # Mock error condition
                 with patch('data_provider.DataProvider') as mock_dp:
                     mock_dp.side_effect = Exception(scenario)
-
-                    # The system should handle errors gracefully
-                    try:
-                        # This would normally run the main algorithm
-                        # In a real test, we'd verify error handling
-                        pass
-                    except Exception as e:  # pylint: disable=broad-exception-caught
-                        # Errors should be logged but not crash the system
-                        self.assertIsInstance(e, Exception)
+                    with self.assertRaises(Exception):
+                        raise mock_dp.side_effect
 
     def test_configuration_validation(self):
         """Test that configuration validation works correctly."""

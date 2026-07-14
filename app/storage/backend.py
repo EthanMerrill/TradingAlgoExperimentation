@@ -4,7 +4,8 @@ All persistence operations (GCS, Postgres, etc.) must implement this ABC.
 """
 import logging
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, List, Optional
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -13,6 +14,154 @@ if TYPE_CHECKING:
     from strategy import BacktestResult
 
 logger = logging.getLogger(__name__)
+
+# Ordered field list shared by both GCS and Postgres backends.
+BACKTEST_FIELDS = [
+    "symbol",
+    "rsi_period",
+    "rsi_lower",
+    "rsi_upper",
+    "total_return",
+    "buy_and_hold_return",
+    "alpha",
+    "num_trades",
+    "win_rate",
+    "avg_trade_duration",
+    "max_drawdown",
+    "sharpe_ratio",
+    "calmar_ratio",
+    "composite_score",
+    "direction",
+    "profitable",
+    "current_rsi",
+]
+
+POSITION_FIELDS = [
+    "symbol",
+    "shares",
+    "entry_price",
+    "current_price",
+    "current_rsi",
+    "entry_date",
+    "rsi_period",
+    "rsi_lower",
+    "rsi_upper",
+    "alpha",
+    "stop_loss_price",
+    "take_profit_price",
+    "closed",
+    "exit_date",
+    "exit_price",
+    "realized_return",
+    "side",
+]
+
+
+def _safe_round(value: Any, ndigits: int = 2) -> Any:
+    """Round a numeric value safely (passes through non-numerics like Mock)."""
+    if value is None:
+        return None
+    try:
+        return round(float(value), ndigits)
+    except (TypeError, ValueError):
+        return value
+
+
+def backtest_result_to_dict(result: "BacktestResult") -> Dict[str, Any]:
+    """Convert a BacktestResult to a flat, rounded dict for serialization."""
+    return {
+        "symbol": result.symbol,
+        "rsi_period": result.rsi_period,
+        "rsi_lower": result.rsi_lower,
+        "rsi_upper": result.rsi_upper,
+        "total_return": _safe_round(result.total_return),
+        "buy_and_hold_return": _safe_round(result.buy_and_hold_return),
+        "alpha": _safe_round(result.alpha),
+        "num_trades": result.num_trades,
+        "win_rate": _safe_round(result.win_rate),
+        "avg_trade_duration": _safe_round(result.avg_trade_duration),
+        "max_drawdown": _safe_round(result.max_drawdown),
+        "sharpe_ratio": _safe_round(result.sharpe_ratio),
+        "calmar_ratio": _safe_round(result.calmar_ratio),
+        "composite_score": _safe_round(result.composite_score),
+        "direction": result.direction,
+        "profitable": result.profitable,
+        "current_rsi": _safe_round(result.current_rsi),
+    }
+
+
+def dict_to_backtest_result(d: Dict[str, Any]) -> "BacktestResult":
+    """Reconstruct a BacktestResult from a flat dict (CSV row / DB row)."""
+    from strategy import BacktestResult  # pylint: disable=import-outside-toplevel
+
+    return BacktestResult(
+        symbol=str(d["symbol"]),
+        rsi_period=int(d["rsi_period"]),
+        rsi_lower=int(d["rsi_lower"]),
+        rsi_upper=int(d["rsi_upper"]),
+        total_return=float(d["total_return"]) if d.get(
+            "total_return") is not None else 0.0,
+        buy_and_hold_return=float(d["buy_and_hold_return"]) if d.get(
+            "buy_and_hold_return") is not None else 0.0,
+        alpha=float(d["alpha"]) if d.get("alpha") is not None else 0.0,
+        num_trades=int(d["num_trades"]) if d.get(
+            "num_trades") is not None else 0,
+        win_rate=float(d["win_rate"]) if d.get(
+            "win_rate") is not None else 0.0,
+        avg_trade_duration=float(d["avg_trade_duration"]) if d.get(
+            "avg_trade_duration") is not None else 0.0,
+        max_drawdown=float(d["max_drawdown"]) if d.get(
+            "max_drawdown") is not None else 0.0,
+        sharpe_ratio=float(d["sharpe_ratio"]) if d.get(
+            "sharpe_ratio") is not None else 0.0,
+        calmar_ratio=float(d.get("calmar_ratio", 0)),
+        composite_score=float(d.get("composite_score", 0)),
+        direction=str(d.get("direction", "long")),
+        profitable=bool(d["profitable"]),
+        current_rsi=float(d["current_rsi"]) if d.get("current_rsi") is not None and not (
+            isinstance(d.get("current_rsi"), float) and pd.isna(d["current_rsi"])) else None,
+    )
+
+
+def normalize_position_for_save(pos: Any) -> Dict[str, Any]:
+    """Normalize a single Position object into a flat dict for serialization.
+
+    Computes exit_price and realized_return when the position is closed,
+    and returns all POSITION_FIELDS populated.
+    """
+    exit_price = getattr(pos, "exit_price", None)
+    if exit_price is None and getattr(pos, "closed", False):
+        exit_price = getattr(pos, "current_price", None)
+
+    realized_return = getattr(pos, "realized_return", None)
+    if realized_return is None and getattr(pos, "closed", False) and getattr(pos, "entry_price", None):
+        if exit_price is not None:
+            ep = pos.entry_price
+            side = getattr(pos, "side", "long")
+            if side == "short":
+                realized_return = (ep - exit_price) / ep
+            else:
+                realized_return = (exit_price - ep) / ep
+
+    return {
+        "symbol": pos.symbol,
+        "shares": pos.quantity,
+        "entry_price": pos.entry_price,
+        "current_price": pos.current_price,
+        "current_rsi": pos.current_rsi,
+        "entry_date": pos.entry_date if isinstance(pos.entry_date, datetime) else pos.entry_date,
+        "rsi_period": pos.rsi_period,
+        "rsi_lower": pos.rsi_lower,
+        "rsi_upper": pos.rsi_upper,
+        "alpha": pos.alpha,
+        "stop_loss_price": pos.stop_loss_price,
+        "take_profit_price": pos.take_profit_price,
+        "closed": getattr(pos, "closed", False),
+        "exit_date": pos.exit_date if isinstance(getattr(pos, "exit_date", None), datetime) else getattr(pos, "exit_date", None),
+        "exit_price": exit_price,
+        "realized_return": realized_return,
+        "side": getattr(pos, "side", "long"),
+    }
 
 
 class StorageBackend(ABC):

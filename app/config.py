@@ -320,7 +320,5 @@ class Config:
 
 
 # Global configuration instance
-globalConfig = None
-
 # Only instantiate after class definition is complete
 globalConfig = Config()

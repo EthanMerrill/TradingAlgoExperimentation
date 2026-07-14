@@ -348,7 +348,8 @@ async def main():
             shared_state: dict = {'last_result': None}
             health_thread = threading.Thread(
                 target=start_health_server,
-                args=(globalConfig.HEALTH_PORT, shared_state, storage, data_provider),
+                args=(globalConfig.HEALTH_PORT,
+                      shared_state, storage, data_provider),
                 daemon=True,
             )
             health_thread.start()
@@ -388,7 +389,9 @@ if __name__ == "__main__":
     # If KEEP_ALIVE is set, the server was already started inside main()
     # before the backtest ran.  Just idle so the container stays alive.
     if globalConfig.KEEP_ALIVE:
-        logger.info("🛟 KEEP_ALIVE — container idling. Press Ctrl+C to exit.")
+        logger.info(
+            "🛟 KEEP_ALIVE — container idling. Dashboard at http://localhost:%d/. Press Ctrl+C to exit.",
+            globalConfig.HEALTH_PORT)
         try:
             import time
             while True:
