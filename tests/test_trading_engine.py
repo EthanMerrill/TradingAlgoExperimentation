@@ -48,6 +48,20 @@ class TestTradingEngine(unittest.TestCase):
         self.engine._positions_manager.open_position = Mock()
         self.engine._positions_manager.close_position = Mock()
 
+    def test_positions_manager_starts_none(self):
+        """Before injection, _positions_manager is None."""
+        with patch('trading_engine.data_provider'):
+            engine = TradingEngine()
+        self.assertIsNone(engine._positions_manager)
+
+    def test_set_positions_manager_injects_shared_instance(self):
+        """set_positions_manager injects a shared PositionsManager instance."""
+        with patch('trading_engine.data_provider'):
+            engine = TradingEngine()
+        mock_manager = Mock()
+        engine.set_positions_manager(mock_manager)
+        self.assertIs(engine._positions_manager, mock_manager)
+
     def _result(self, symbol, alpha=0.1, win_rate=0.9, num_trades=10):
         r = Mock()
         r.symbol = symbol

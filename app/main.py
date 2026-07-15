@@ -29,11 +29,14 @@ class TradingAlgorithm:
 
     def __init__(self):
         self.optimizer = StrategyOptimizer()
-        self.trading_engine = TradingEngine()
         self.trading_calendar = TradingCalendar()
         self.positions_manager = PositionsManager(
             storage, data_provider
         )
+        self.trading_engine = TradingEngine()
+        # Inject shared PositionsManager so TradingAlgorithm and
+        # TradingEngine operate on a single source of position state.
+        self.trading_engine.set_positions_manager(self.positions_manager)
         self.session_metadata = {
             'start_time': None,
             'end_time': None,

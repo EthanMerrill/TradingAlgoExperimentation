@@ -51,14 +51,20 @@ class TradingEngine:
 
     def __init__(self):
         self.trading_client: Optional[TradingClient] = data_provider.trading_client
-        self._positions_manager: PositionsManager = PositionsManager(
-            storage, data_provider)
+        # PositionsManager is injected after construction via
+        # set_positions_manager() so that TradingAlgorithm and
+        # TradingEngine share a single source of position state.
+        self._positions_manager: Optional[PositionsManager] = None
         self._last_position_update: Optional[datetime] = None
         self.dry_run: bool = False
         # Per-cycle OHLCV cache: avoids redundant API calls when multiple
         # methods (price, RSI, take-profit) need data for the same symbol.
         # Keyed by symbol, cleared at the start of each run cycle.
         self._ohlcv_cache: Dict[str, pd.DataFrame] = {}
+
+    def set_positions_manager(self, manager: PositionsManager) -> None:
+        """Inject a shared PositionsManager instance (single source of state)."""
+        self._positions_manager = manager
 
     def set_dry_run_mode(self, dry_run: bool) -> None:
         """Enable or disable dry run mode."""
@@ -414,6 +420,9 @@ class TradingEngine:
             except Exception as e:
                 logger.error("Error adding position to positions manager for %s: %s",
                              opportunity.symbol, e)
+        elif not self.dry_run:
+            logger.warning(
+                "Order for %s did not succeed — position NOT added to manager", opportunity.symbol)
 
         return order_success
 

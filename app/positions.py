@@ -47,11 +47,19 @@ class PositionsManager:
     and providing methods to retrieve and analyze position data.
     """
 
+    # Seconds before a fresh reconciliation is forced.  Calls to
+    # get_and_reconcile_positions() within this window return a cached
+    # result, avoiding duplicate Alpaca API calls within the same cycle.
+    RECONCILIATION_CACHE_TTL_SECONDS = 60
+
     def __init__(self, storage_backend, data_provider_instance):
         self.storage_backend = storage_backend
         self.data_provider = data_provider_instance
         # Initialize as empty list of Position objects
         self.positions: List[Position] = []
+        # Reconciliation cache to avoid duplicate API calls within a cycle
+        self._reconciled_at: Optional[float] = None
+        self._cached_open_positions: Optional[List[Position]] = None
 
     def _persist_positions(self, positions_df: pd.DataFrame):
         """Save a positions DataFrame while preserving historical closed rows.
@@ -132,6 +140,20 @@ class PositionsManager:
         Returns a list of open Position objects.
         """
 
+        # Short-circuit: return cached result if reconciliation was done
+        # recently (avoids duplicate Alpaca API calls within a cycle).
+        now = datetime.now().timestamp()
+        if (
+            self._reconciled_at is not None
+            and self._cached_open_positions is not None
+            and (now - self._reconciled_at) < self.RECONCILIATION_CACHE_TTL_SECONDS
+        ):
+            logger.debug(
+                "Reconciliation cache hit — returning %d cached open positions (%.1fs ago)",
+                len(self._cached_open_positions), now - self._reconciled_at,
+            )
+            return self._cached_open_positions
+
         alpaca_positions = self.data_provider.get_current_positions_df()
         cloud_positions = self.storage_backend.get_latest_positions_df(True)
         alpaca_symbols_list = (
@@ -149,12 +171,6 @@ class PositionsManager:
             len(alpaca_positions), len(
                 cloud_positions), alpaca_symbols_list, cloud_symbols_list
         )
-
-        # Capture the original cloud symbol set BEFORE any enrichment or
-        # initialization modifies the cloud DataFrame. This is used later
-        # to guard against overwriting order-history-derived entry_price
-        # with Alpaca's avg_entry_price during the live-update pass.
-        _original_cloud_symbols = set(cloud_symbols_list)
 
         # Normalize cloud schema when there is no prior snapshot but Alpaca has open positions.
         if cloud_positions.empty:
@@ -455,8 +471,10 @@ class PositionsManager:
                     cloud_qty = float(cloud_positions.loc[symbol_mask, 'shares'].values[0]) \
                         if 'shares' in cloud_positions.columns else 0.0
                     position_side = "short" if cloud_qty < 0 else "long"
+                    # Close-order side: long→sell, short→buy
+                    close_order_side = "sell" if position_side == "long" else "buy"
+                    entry_order_side = "buy" if position_side == "long" else "sell"
 
-                    # Determine exit price: try OCO targets first, then fall back
                     stop_loss = cloud_positions.loc[symbol_mask, 'stop_loss_price'].values[0] \
                         if 'stop_loss_price' in cloud_positions.columns else np.nan
                     take_profit = cloud_positions.loc[symbol_mask, 'take_profit_price'].values[0] \
@@ -466,27 +484,92 @@ class PositionsManager:
                     entry_price = cloud_positions.loc[symbol_mask, 'entry_price'].values[0] \
                         if 'entry_price' in cloud_positions.columns else np.nan
 
-                    # OCO target fallback with logging
-                    if (pd.notna(stop_loss) and pd.notna(take_profit)
-                            and pd.notna(current_price) and current_price > 0):
-                        if abs(current_price - stop_loss) <= abs(current_price - take_profit):
-                            chosen = "stop_loss"
-                            exit_price_val = stop_loss
+                    exit_price_val = None
+                    exit_date_val = None
+                    exit_reason_val = None
+
+                    # --- Step 1: Check Alpaca order history for a real fill ---
+                    try:
+                        orders_df = self.data_provider.get_filled_orders_for_symbol(
+                            symbol, limit=20)
+                        if not orders_df.empty and 'side' in orders_df.columns:
+                            # Check for a FILLED close order
+                            close_orders = orders_df[
+                                (orders_df['side'] == close_order_side) &
+                                (orders_df['filled_qty'] > 0)
+                            ]
+                            if not close_orders.empty:
+                                latest_close = close_orders.iloc[0]
+                                filled_price = float(
+                                    latest_close['filled_avg_price'])
+                                filled_at = latest_close.get('submitted_at')
+                                if pd.notna(filled_at):
+                                    exit_date_val = filled_at if isinstance(
+                                        filled_at, datetime) else datetime.fromisoformat(str(filled_at))
+                                    if exit_date_val.tzinfo is not None:
+                                        exit_date_val = exit_date_val.replace(
+                                            tzinfo=None)
+                                exit_price_val = filled_price
+
+                                # Determine whether it hit stop_loss or take_profit
+                                if pd.notna(stop_loss) and pd.notna(take_profit):
+                                    dist_stop = abs(filled_price - stop_loss)
+                                    dist_take = abs(filled_price - take_profit)
+                                    if dist_stop <= dist_take:
+                                        exit_reason_val = "oco_stop_loss"
+                                    else:
+                                        exit_reason_val = "oco_take_profit"
+                                else:
+                                    exit_reason_val = "oco_filled"
+                                logger.info(
+                                    "Reconcile %s: found filled %s order at $%.2f (%s) — exit_reason=%s",
+                                    symbol, close_order_side, filled_price,
+                                    filled_at, exit_reason_val
+                                )
+
+                            # Check if any entry order ever existed
+                            if exit_price_val is None:
+                                entry_orders = orders_df[
+                                    (orders_df['side'] == entry_order_side) &
+                                    (orders_df['filled_qty'] > 0)
+                                ]
+                                if entry_orders.empty:
+                                    exit_reason_val = "failed_to_open"
+                                    exit_price_val = 0.0
+                                    logger.warning(
+                                        "Reconcile %s: no filled %s order found in history — "
+                                        "marking as failed_to_open",
+                                        symbol, entry_order_side
+                                    )
+                    except Exception as e:
+                        logger.warning(
+                            "Reconcile %s: order history lookup failed: %s", symbol, e)
+
+                    # --- Step 2: Fallback to OCO approximation ---
+                    if exit_price_val is None:
+                        if (pd.notna(stop_loss) and pd.notna(take_profit)
+                                and pd.notna(current_price) and current_price > 0):
+                            if abs(current_price - stop_loss) <= abs(current_price - take_profit):
+                                chosen = "stop_loss"
+                                exit_price_val = stop_loss
+                            else:
+                                chosen = "take_profit"
+                                exit_price_val = take_profit
+                            logger.info(
+                                "Reconcile OCO-fallback for %s: using %s=%.2f "
+                                "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
+                                symbol, chosen, exit_price_val, stop_loss, take_profit,
+                                current_price, entry_price
+                            )
+                        elif pd.notna(current_price) and current_price > 0:
+                            exit_price_val = current_price
+                        elif pd.notna(entry_price) and entry_price > 0:
+                            exit_price_val = entry_price
                         else:
-                            chosen = "take_profit"
-                            exit_price_val = take_profit
-                        logger.info(
-                            "Reconcile OCO-fallback for %s: using %s=%.2f "
-                            "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
-                            symbol, chosen, exit_price_val, stop_loss, take_profit,
-                            current_price, entry_price
-                        )
-                    elif pd.notna(current_price) and current_price > 0:
-                        exit_price_val = current_price
-                    elif pd.notna(entry_price) and entry_price > 0:
-                        exit_price_val = entry_price
-                    else:
-                        exit_price_val = 0.0
+                            exit_price_val = 0.0
+
+                    if exit_reason_val is None:
+                        exit_reason_val = 'broker_closed'
 
                     cloud_positions.loc[symbol_mask,
                                         'exit_price'] = exit_price_val
@@ -494,7 +577,10 @@ class PositionsManager:
                     if 'exit_date' not in cloud_positions.columns:
                         cloud_positions['exit_date'] = pd.NaT
                     cloud_positions.loc[symbol_mask,
-                                        'exit_date'] = pd.Timestamp(datetime.now()).floor('s')
+                                        'exit_date'] = pd.Timestamp(
+                                            exit_date_val if exit_date_val is not None
+                                            else datetime.now()
+                    ).floor('s')
 
                     if 'entry_price' in cloud_positions.columns:
                         if 'realized_return' not in cloud_positions.columns:
@@ -518,7 +604,7 @@ class PositionsManager:
                     cloud_positions.loc[cloud_positions['symbol']
                                         == symbol, 'closed'] = True
                     cloud_positions.loc[cloud_positions['symbol']
-                                        == symbol, 'exit_reason'] = 'broker_closed'
+                                        == symbol, 'exit_reason'] = exit_reason_val
                     cloud_positions['closed'] = cloud_positions['closed'].astype(
                         bool)
 
@@ -541,17 +627,11 @@ class PositionsManager:
                         alpaca_positions['symbol'] == symbol, 'qty'].values[0]
                     cloud_positions.at[index, 'position_value'] = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol, 'market_value'].values[0]
-                    # Only overwrite entry_price if this symbol existed in the
-                    # original cloud snapshot. For Alpaca-only symbols and
-                    # initialized-from-Alpaca symbols we preserve the
-                    # entry_price discovered via order history.
-                    try:
-                        if '_original_cloud_symbols' in locals() and symbol in _original_cloud_symbols:
-                            cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
-                                alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
-                    except (IndexError, KeyError, ValueError):
-                        # If anything goes wrong, skip overwriting entry_price.
-                        pass
+                    # Alpaca is the source of truth for live position values.
+                    # Always overwrite entry_price, shares, and current_price
+                    # from the broker's current state.
+                    cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
+                        alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
                     # Ensure any datetime-like columns remain compatible when
                     # overwriting values coming from Alpaca.
                     if 'entry_date' in cloud_positions.columns:
@@ -589,6 +669,12 @@ class PositionsManager:
             "Reconciliation complete: open_positions=%d, closed_positions=%d, total_in_memory=%d",
             len(open_positions), closed_positions_count, len(self.positions)
         )
+
+        # Cache the result so subsequent calls within the same cycle
+        # short-circuit and avoid duplicate Alpaca API calls.
+        self._reconciled_at = datetime.now().timestamp()
+        self._cached_open_positions = open_positions
+
         return open_positions
 
     def close_position(self, symbol: str):
@@ -715,6 +801,10 @@ class PositionsManager:
             realized_return if realized_return is not None else 0.0
         )
 
+        # Invalidate reconciliation cache so the next reconcile reflects
+        # the closed position without an extra Alpaca round-trip.
+        self.invalidate_reconciliation_cache()
+
     def _determine_exit_price_for_position(self, position, symbol: str) -> float:
         """
         Determine the most likely exit price when the actual fill cannot
@@ -783,7 +873,19 @@ class PositionsManager:
 
         # Add the new position
         self.positions.append(position)
+        # Invalidate reconciliation cache so the next reconcile picks up
+        # the newly opened position from the broker.
+        self.invalidate_reconciliation_cache()
         # Save the updated positions to cloud storage
         # self.storage_backend.save_positions(self.positions) SAVE AT END
         logger.info(
             "Opened new position for %s. Full saved positions: %s", position.symbol, self.positions)
+
+    def invalidate_reconciliation_cache(self) -> None:
+        """Clear the reconciliation cache, forcing a fresh reconcile on next call.
+
+        Call this after any operation that changes positions (open, close, etc.)
+        so subsequent get_and_reconcile_positions() calls see the latest state.
+        """
+        self._reconciled_at = None
+        self._cached_open_positions = None

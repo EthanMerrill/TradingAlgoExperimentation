@@ -61,6 +61,9 @@ class TestPositionsManager(unittest.TestCase):
         self.cloud = Mock()
         self.data = Mock()
         self.manager = PositionsManager(self.cloud, self.data)
+        # Default: no order history (empty DataFrame) — individual tests
+        # that need fills can override this.
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame()
 
     def _empty_positions_df(self):
         return pd.DataFrame(columns=['symbol', 'qty', 'avg_entry_price', 'current_price', 'market_value'])
@@ -312,8 +315,8 @@ class TestPositionsManager(unittest.TestCase):
         # entry_date should come from order history, not datetime.now()
         self.assertEqual(aapl_pos.entry_date, entry_submitted)
 
-        # entry_price should come from order history
-        self.assertEqual(aapl_pos.entry_price, 150.25)
+        # entry_price should come from Alpaca (source of truth)
+        self.assertEqual(aapl_pos.entry_price, 150.0)
 
         # RSI params should come from the backtest
         self.assertEqual(aapl_pos.rsi_period, 14)
@@ -502,8 +505,8 @@ class TestPositionsManager(unittest.TestCase):
         # entry_date should still come from order history
         self.assertEqual(aapl_pos.entry_date, early_date)
 
-        # entry_price should come from order history
-        self.assertEqual(aapl_pos.entry_price, 145.0)
+        # entry_price should come from Alpaca (source of truth), not order history
+        self.assertEqual(aapl_pos.entry_price, 150.0)
 
         # Backtest should NOT have been called
         mock_opt.optimize_symbol.assert_not_called()
@@ -590,9 +593,9 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(sqqq_pos.side, 'short')
         self.assertEqual(sqqq_pos.quantity, -50.0)
 
-        # entry_date/price from order history
+        # entry_date/price from order history (date) and Alpaca (price as source of truth)
         self.assertEqual(sqqq_pos.entry_date, entry_submitted)
-        self.assertEqual(sqqq_pos.entry_price, 30.50)
+        self.assertEqual(sqqq_pos.entry_price, 30.0)
 
         # RSI params from backtest
         self.assertEqual(sqqq_pos.rsi_period, 10)
@@ -726,8 +729,8 @@ class TestPositionsManager(unittest.TestCase):
 
         # entry_date from order history
         self.assertEqual(aapl.entry_date, entry_submitted)
-        # entry_price from order history
-        self.assertEqual(aapl.entry_price, 150.25)
+        # entry_price from Alpaca (source of truth)
+        self.assertEqual(aapl.entry_price, 150.0)
         # RSI from backtest
         self.assertEqual(aapl.rsi_period, 14)
         self.assertEqual(aapl.rsi_lower, 25)
@@ -914,6 +917,373 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(len(phantom_positions), 1)
         self.assertEqual(phantom_positions[0].quantity, 0.0)
         self.assertEqual(phantom_positions[0].side, 'long')
+
+    # ------------------------------------------------------------------
+    # Smart cloud-only exit detection tests (Fix 3)
+    # ------------------------------------------------------------------
+
+    def test_cloud_only_long_detects_oco_take_profit_from_order_history(self):
+        """Cloud-only LONG: filled SELL order found → exit_reason=oco_take_profit."""
+        self.data.get_current_positions_df.return_value = self._empty_positions_df()
+
+        cloud_df = pd.DataFrame({
+            'symbol': ['RFG'],
+            'shares': [15.0],
+            'entry_price': [62.30],
+            'current_price': [60.79],
+            'position_value': [911.85],
+            'current_rsi': [55.0],
+            'entry_date': [datetime(2026, 7, 9)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.05],
+            'stop_loss_price': [59.18],
+            'take_profit_price': [60.82],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _cloud_side_effect(is_open):
+            return cloud_df.copy() if is_open else self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
+
+        # Mock a filled SELL at $60.82 (matching take_profit)
+        fill_time = datetime(2026, 7, 14, 17, 37, 11)
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame({
+            'symbol': ['RFG', 'RFG'],
+            'side': ['sell', 'buy'],  # sell = close, buy = entry
+            'filled_qty': [15.0, 15.0],
+            'filled_avg_price': [60.82, 62.30],
+            'submitted_at': [fill_time, datetime(2026, 7, 9, 9, 10, 0)],
+            'order_type': ['limit', 'market'],
+            'status': ['filled', 'filled'],
+        })
+
+        open_positions = self.manager.get_and_reconcile_positions()
+
+        self.assertEqual(len(open_positions), 0)
+        closed = [
+            p for p in self.manager.positions if p.closed and p.symbol == 'RFG']
+        self.assertEqual(len(closed), 1)
+        rfg = closed[0]
+        self.assertEqual(rfg.exit_reason, 'oco_take_profit')
+        self.assertEqual(rfg.exit_price, 60.82)
+        # exit_date should come from the fill, not datetime.now()
+        self.assertEqual(rfg.exit_date, fill_time)
+        # Long: (60.82 - 62.30) / 62.30 = -0.0238
+        self.assertAlmostEqual(rfg.realized_return, -0.0238, places=3)
+
+    def test_cloud_only_short_detects_oco_stop_loss_from_order_history(self):
+        """Cloud-only SHORT: filled BUY (cover) at stop_loss → exit_reason=oco_stop_loss."""
+        self.data.get_current_positions_df.return_value = self._empty_positions_df()
+
+        cloud_df = pd.DataFrame({
+            'symbol': ['SHORTY'],
+            'shares': [-50.0],
+            'entry_price': [45.00],
+            'current_price': [48.50],
+            'position_value': [-2425.0],
+            'current_rsi': [75.0],
+            'entry_date': [datetime(2026, 7, 10)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.03],
+            'stop_loss_price': [47.25],   # 5% above entry
+            'take_profit_price': [38.25],  # 15% below entry
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _cloud_side_effect(is_open):
+            return cloud_df.copy() if is_open else self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
+
+        # Mock a filled BUY (cover) at $47.25 — closer to stop_loss than take_profit
+        fill_time = datetime(2026, 7, 14, 18, 15, 0)
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame({
+            'symbol': ['SHORTY', 'SHORTY'],
+            'side': ['buy', 'sell'],  # buy = cover, sell = entry (short)
+            'filled_qty': [50.0, 50.0],
+            'filled_avg_price': [47.25, 45.00],
+            'submitted_at': [fill_time, datetime(2026, 7, 10, 14, 30, 0)],
+            'order_type': ['stop_limit', 'market'],
+            'status': ['filled', 'filled'],
+        })
+
+        open_positions = self.manager.get_and_reconcile_positions()
+
+        self.assertEqual(len(open_positions), 0)
+        closed = [
+            p for p in self.manager.positions if p.closed and p.symbol == 'SHORTY']
+        self.assertEqual(len(closed), 1)
+        shorty = closed[0]
+        self.assertEqual(shorty.side, 'short')
+        self.assertEqual(shorty.exit_reason, 'oco_stop_loss')
+        self.assertEqual(shorty.exit_price, 47.25)
+        self.assertEqual(shorty.exit_date, fill_time)
+        # Short: (45 - 47.25) / 45 = -0.05
+        self.assertAlmostEqual(shorty.realized_return, -0.05, places=4)
+
+    def test_cloud_only_failed_to_open_no_entry_fill(self):
+        """Cloud-only position with order history but NO entry fill → failed_to_open."""
+        self.data.get_current_positions_df.return_value = self._empty_positions_df()
+
+        cloud_df = pd.DataFrame({
+            'symbol': ['GHOST'],
+            'shares': [10.0],
+            'entry_price': [100.0],
+            'current_price': [100.0],
+            'position_value': [1000.0],
+            'current_rsi': [50.0],
+            'entry_date': [datetime(2026, 7, 14)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.0],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _cloud_side_effect(is_open):
+            return cloud_df.copy() if is_open else self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
+
+        # Order history exists but only has CANCELED orders — no fills
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame({
+            'symbol': ['GHOST', 'GHOST'],
+            'side': ['buy', 'sell'],
+            'filled_qty': [0.0, 0.0],
+            'filled_avg_price': [0.0, 0.0],
+            'submitted_at': [datetime(2026, 7, 14, 10, 0), datetime(2026, 7, 14, 10, 1)],
+            'order_type': ['market', 'market'],
+            'status': ['canceled', 'canceled'],
+        })
+
+        open_positions = self.manager.get_and_reconcile_positions()
+
+        self.assertEqual(len(open_positions), 0)
+        closed = [
+            p for p in self.manager.positions if p.closed and p.symbol == 'GHOST']
+        self.assertEqual(len(closed), 1)
+        ghost = closed[0]
+        self.assertEqual(ghost.exit_reason, 'failed_to_open')
+        self.assertEqual(ghost.exit_price, 0.0)
+
+    def test_cloud_only_no_order_history_falls_back_to_broker_closed(self):
+        """Cloud-only with no order history at all → broker_closed (unchanged)."""
+        self.data.get_current_positions_df.return_value = self._empty_positions_df()
+
+        cloud_df = pd.DataFrame({
+            'symbol': ['MYSTERY'],
+            'shares': [25.0],
+            'entry_price': [80.0],
+            'current_price': [82.0],
+            'position_value': [2050.0],
+            'current_rsi': [45.0],
+            'entry_date': [datetime(2026, 7, 8)],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.04],
+            'stop_loss_price': [np.nan],
+            'take_profit_price': [np.nan],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _cloud_side_effect(is_open):
+            return cloud_df.copy() if is_open else self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
+
+        # Empty order history
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame()
+
+        open_positions = self.manager.get_and_reconcile_positions()
+
+        self.assertEqual(len(open_positions), 0)
+        closed = [
+            p for p in self.manager.positions if p.closed and p.symbol == 'MYSTERY']
+        self.assertEqual(len(closed), 1)
+        mystery = closed[0]
+        self.assertEqual(mystery.exit_reason, 'broker_closed')
+        # Fallback exit price: no OCO targets → uses current_price
+        self.assertEqual(mystery.exit_price, 82.0)
+
+    # ------------------------------------------------------------------
+    # Reconciliation cache tests (performance refinement)
+    # ------------------------------------------------------------------
+
+    def test_reconciliation_cache_returns_cached_result_on_second_call(self):
+        """Second reconcile within TTL returns cached result without API calls."""
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [100.0],
+            'current_price': [101.0],
+            'market_value': [1010.0],
+        })
+
+        cloud_df = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'shares': [10.0],
+            'entry_price': [100.0],
+            'current_price': [101.0],
+            'position_value': [1010.0],
+            'current_rsi': [45.0],
+            'entry_date': [datetime.now()],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.1],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _cloud_side_effect(is_open):
+            return cloud_df.copy() if is_open else self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
+
+        # First call: should hit Alpaca API + cloud storage
+        first = self.manager.get_and_reconcile_positions()
+        self.assertEqual(len(first), 1)
+
+        api_calls_before = self.data.get_current_positions_df.call_count
+
+        # Second call within TTL: should return cached result, NO new API calls
+        second = self.manager.get_and_reconcile_positions()
+        self.assertEqual(len(second), 1)
+        self.assertEqual(
+            self.data.get_current_positions_df.call_count, api_calls_before,
+            "Second reconcile should NOT call Alpaca API (should use cache)"
+        )
+
+    def test_open_position_invalidates_reconciliation_cache(self):
+        """open_position() clears the cache, forcing next reconcile to call API."""
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [100.0],
+            'current_price': [101.0],
+            'market_value': [1010.0],
+        })
+
+        cloud_df = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'shares': [10.0],
+            'entry_price': [100.0],
+            'current_price': [101.0],
+            'position_value': [1010.0],
+            'current_rsi': [45.0],
+            'entry_date': [datetime.now()],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.1],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _cloud_side_effect(is_open):
+            return cloud_df.copy() if is_open else self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
+
+        # Populate the cache
+        self.manager.get_and_reconcile_positions()
+        api_calls_after_first = self.data.get_current_positions_df.call_count
+
+        # Open a new position — this should invalidate the cache
+        new_pos = Position(
+            symbol="MSFT", quantity=5.0, entry_price=300.0,
+            current_price=305.0, current_rsi=50.0,
+            entry_date=datetime.now(), alpha=0.02,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
+            closed=False,
+        )
+        self.manager.open_position(new_pos)
+
+        # Next reconcile should call Alpaca API again (cache invalidated)
+        self.manager.get_and_reconcile_positions()
+        self.assertGreater(
+            self.data.get_current_positions_df.call_count, api_calls_after_first,
+            "Reconcile after open_position() should call Alpaca API (cache invalidated)"
+        )
+
+    def test_invalidate_reconciliation_cache_clears_state(self):
+        """invalidate_reconciliation_cache() forces a fresh reconcile."""
+        self.data.get_current_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'qty': [10.0],
+            'avg_entry_price': [100.0],
+            'current_price': [101.0],
+            'market_value': [1010.0],
+        })
+
+        cloud_df = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'shares': [10.0],
+            'entry_price': [100.0],
+            'current_price': [101.0],
+            'position_value': [1010.0],
+            'current_rsi': [45.0],
+            'entry_date': [datetime.now()],
+            'rsi_period': [14],
+            'rsi_lower': [30],
+            'rsi_upper': [70],
+            'alpha': [0.1],
+            'stop_loss_price': [np.nan],
+            'take_profit_price': [np.nan],
+            'exit_date': [None],
+            'exit_price': [pd.NA],
+            'realized_return': [pd.NA],
+            'exit_reason': [None],
+            'closed': [False],
+        })
+
+        def _cloud_side_effect(is_open):
+            return cloud_df.copy() if is_open else self._empty_cloud_df()
+        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
+
+        # Populate cache
+        self.manager.get_and_reconcile_positions()
+        api_calls = self.data.get_current_positions_df.call_count
+        self.assertIsNotNone(self.manager._reconciled_at)
+        self.assertIsNotNone(self.manager._cached_open_positions)
+
+        # Invalidate
+        self.manager.invalidate_reconciliation_cache()
+        self.assertIsNone(self.manager._reconciled_at)
+        self.assertIsNone(self.manager._cached_open_positions)
+
+        # Next call should hit API
+        self.manager.get_and_reconcile_positions()
+        self.assertGreater(
+            self.data.get_current_positions_df.call_count, api_calls)
 
 
 if __name__ == '__main__':
