@@ -211,9 +211,18 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
         paper = os.getenv('PAPER_TRADE', 'true').lower() in (
             'true', '1', 'yes')
 
+        cycle_running = shared_state.get(
+            'cycle_running', False) if shared_state else False
+        overall_status = 'running' if cycle_running else (
+            'idle' if result else 'running')
+
+        if result is None and not cycle_running:
+            # First cycle hasn't started yet
+            overall_status = 'running'
+
         if result is None:
             return jsonify({
-                'status': 'running',
+                'status': overall_status,
                 'last_run_status': 'running',
                 'last_run_summary': {},
                 'last_run_backtest_count': 0,
@@ -222,7 +231,7 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
                 'paper_trade': paper,
             })
         return jsonify({
-            'status': 'idle',
+            'status': overall_status,
             'last_run_status': result.get('status', 'unknown'),
             'last_run_summary': result.get('trading_summary', {}),
             'last_run_backtest_count': result.get('backtest_count', 0),
@@ -405,6 +414,53 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
         except Exception as e:
             logger.error("Error fetching live Alpaca data: %s", e)
             return jsonify({'error': 'Failed to fetch live Alpaca data'}), 500
+
+    # ---------- /api/run-cycle (auth required) ----------
+    #
+    # Triggers a new trading cycle in the main thread via a threading.Event.
+    # The cron job should POST to this endpoint instead of spawning a new
+    # process, which avoids "Address already in use" errors from Waitress.
+    #
+    # Query params:
+    #   force_backtest  (bool)  — skip cached backtest results
+    #   dry_run         (bool)  — analyze without placing orders
+    #   test_mode       (bool)  — limited universe for fast validation
+
+    @app.route('/api/run-cycle', methods=['POST'])
+    @_auth_required
+    def api_run_cycle():
+        if shared_state is None:
+            return jsonify({
+                'error': 'Server not configured for cycle execution'
+            }), 503
+
+        if shared_state.get('cycle_running', False):
+            return jsonify({
+                'status': 'already_running',
+                'message': 'A trading cycle is already in progress',
+            }), 409
+
+        trigger = shared_state.get('trigger_event')
+        if trigger is None:
+            return jsonify({
+                'error': 'Trigger mechanism not available'
+            }), 503
+
+        # Capture optional flags from query params
+        flags = {}
+        for flag in ('force_backtest', 'dry_run', 'test_mode'):
+            val = request.args.get(flag, '').lower()
+            if val in ('true', '1', 'yes'):
+                flags[flag] = True
+        shared_state['cycle_flags'] = flags
+
+        trigger.set()
+        logger.info("Trading cycle triggered via API (flags=%s)", flags)
+        return jsonify({
+            'status': 'triggered',
+            'message': 'Trading cycle triggered successfully',
+            'flags': flags,
+        }), 200
 
     # ---------- / (dashboard HTML, auth required) ----------
 

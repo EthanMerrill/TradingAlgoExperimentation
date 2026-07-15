@@ -131,6 +131,43 @@ make docker-build  # build Docker image
 make docker-run    # run in Docker
 ```
 
+### Re-running the Trading Cycle (KEEP_ALIVE mode)
+
+When running in a container with `KEEP_ALIVE=true`, the health/dashboard server stays
+alive after the initial cycle completes. Cron jobs or schedulers should **not** spawn a
+new `python app/main.py` process — that would fail with `Address already in use`
+because the server port is already bound.
+
+Instead, trigger a new cycle via HTTP:
+
+```bash
+# Trigger a new trading cycle (use cached backtest results)
+curl -X POST -u admin:$DASHBOARD_PASSWORD http://localhost:8080/api/run-cycle
+
+# Force fresh backtests (skip 24h cache)
+curl -X POST -u admin:$DASHBOARD_PASSWORD "http://localhost:8080/api/run-cycle?force_backtest=true"
+
+# Dry run only (analysis, no orders)
+curl -X POST -u admin:$DASHBOARD_PASSWORD "http://localhost:8080/api/run-cycle?dry_run=true"
+
+# Test mode with limited universe
+curl -X POST -u admin:$DASHBOARD_PASSWORD "http://localhost:8080/api/run-cycle?test_mode=true"
+```
+
+The endpoint returns `200` on success, or `409` if a cycle is already in progress.
+
+Check cycle status and last-run results at `GET /health` (no auth required):
+
+```bash
+curl http://localhost:8080/health
+```
+
+Example cron entry (weekdays, one hour after market open):
+
+```
+30 10 * * 1-5 curl -X POST -u admin:$DASHBOARD_PASSWORD http://localhost:8080/api/run-cycle
+```
+
 ---
 
 ## Running Tests

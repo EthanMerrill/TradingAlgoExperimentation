@@ -348,7 +348,12 @@ async def main():
         shared_state = None
         if globalConfig.KEEP_ALIVE:
             import threading
-            shared_state: dict = {'last_result': None}
+            shared_state: dict = {
+                'last_result': None,
+                'cycle_running': False,
+                'cycle_flags': {},
+                'trigger_event': threading.Event(),
+            }
             health_thread = threading.Thread(
                 target=start_health_server,
                 args=(globalConfig.HEALTH_PORT,
@@ -370,11 +375,54 @@ async def main():
         # Expose the completed result to the health server
         if shared_state is not None:
             shared_state['last_result'] = session_result
+            shared_state['cycle_running'] = False
 
         logger.info("=" * 50)
         logger.info("Trading Algorithm Complete")
         logger.info("Result: %s", session_result)
         logger.info("=" * 50)
+
+        # ---- KEEP_ALIVE idle loop (event-driven) ----
+        if shared_state is not None:
+            logger.info(
+                "🛟 KEEP_ALIVE — container idling. Dashboard at http://localhost:%d/. "
+                "Trigger cycles via POST /api/run-cycle or press Ctrl+C to exit.",
+                globalConfig.HEALTH_PORT)
+            trigger = shared_state['trigger_event']
+            try:
+                while True:
+                    # Wait until a cycle is triggered (or wake every 60s to
+                    # keep the thread responsive to signals).
+                    trigger.wait(timeout=60)
+                    if not trigger.is_set():
+                        continue
+
+                    trigger.clear()
+                    shared_state['cycle_running'] = True
+                    flags = shared_state.get('cycle_flags', {})
+
+                    logger.info(
+                        "🔄 Cycle triggered via API (flags=%s) — starting new run...",
+                        flags)
+
+                    try:
+                        session_result = await algorithm.run_full_cycle(
+                            force_backtest=flags.get('force_backtest', False),
+                            dry_run=flags.get('dry_run', False),
+                            test_mode=flags.get('test_mode', False),
+                        )
+                        shared_state['last_result'] = session_result
+                        logger.info("✅ Triggered cycle complete: %s",
+                                    session_result.get('status'))
+                    except Exception as e:
+                        logger.error("Triggered cycle failed: %s", e)
+                        shared_state['last_result'] = {
+                            'status': 'error', 'error': str(e)}
+                    finally:
+                        shared_state['cycle_running'] = False
+                        shared_state['cycle_flags'] = {}
+            except KeyboardInterrupt:
+                logger.info("Idle loop interrupted — shutting down.")
 
         return session_result
 
@@ -388,20 +436,6 @@ async def main():
 
 if __name__ == "__main__":
     result = asyncio.run(main())
-
-    # If KEEP_ALIVE is set, the server was already started inside main()
-    # before the backtest ran.  Just idle so the container stays alive.
-    if globalConfig.KEEP_ALIVE:
-        logger.info(
-            "🛟 KEEP_ALIVE — container idling. Dashboard at http://localhost:%d/. Press Ctrl+C to exit.",
-            globalConfig.HEALTH_PORT)
-        try:
-            import time
-            while True:
-                time.sleep(60)
-        except KeyboardInterrupt:
-            logger.info("Idle loop interrupted — shutting down.")
-            sys.exit(0)
 
     # Exit with appropriate code
     if result.get('status') == 'success':
