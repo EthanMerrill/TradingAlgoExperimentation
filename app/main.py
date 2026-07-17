@@ -343,27 +343,32 @@ async def main():
         # Initialize and run the trading algorithm
         algorithm = TradingAlgorithm()
 
-        # If KEEP_ALIVE is set, start the dashboard server immediately
-        # so you can watch progress while the backtest runs.
-        shared_state = None
+        # Always start the health server so the Docker HEALTHCHECK passes
+        # (the HEALTHCHECK runs curl against :8080/health regardless of KEEP_ALIVE).
+        # When KEEP_ALIVE is false, the process exits after run_full_cycle completes
+        # and the daemon thread is torn down automatically.
+        import threading
+        shared_state: dict = {
+            'last_result': None,
+            'cycle_running': False,
+            'cycle_flags': {},
+            'trigger_event': threading.Event(),
+        }
+        health_thread = threading.Thread(
+            target=start_health_server,
+            args=(globalConfig.HEALTH_PORT,
+                  shared_state, storage, data_provider),
+            daemon=True,
+        )
+        health_thread.start()
+        logger.info(
+            "🛟 Health server started on port %d",
+            globalConfig.HEALTH_PORT,
+        )
         if globalConfig.KEEP_ALIVE:
-            import threading
-            shared_state: dict = {
-                'last_result': None,
-                'cycle_running': False,
-                'cycle_flags': {},
-                'trigger_event': threading.Event(),
-            }
-            health_thread = threading.Thread(
-                target=start_health_server,
-                args=(globalConfig.HEALTH_PORT,
-                      shared_state, storage, data_provider),
-                daemon=True,
-            )
-            health_thread.start()
             logger.info(
-                "🛟 Dashboard server started on port %d — visit http://localhost:%d/",
-                globalConfig.HEALTH_PORT, globalConfig.HEALTH_PORT,
+                "🛟 Dashboard available at http://localhost:%d/",
+                globalConfig.HEALTH_PORT,
             )
 
         session_result = await algorithm.run_full_cycle(
@@ -373,9 +378,8 @@ async def main():
         )
 
         # Expose the completed result to the health server
-        if shared_state is not None:
-            shared_state['last_result'] = session_result
-            shared_state['cycle_running'] = False
+        shared_state['last_result'] = session_result
+        shared_state['cycle_running'] = False
 
         logger.info("=" * 50)
         logger.info("Trading Algorithm Complete")
@@ -383,7 +387,7 @@ async def main():
         logger.info("=" * 50)
 
         # ---- KEEP_ALIVE idle loop (event-driven) ----
-        if shared_state is not None:
+        if globalConfig.KEEP_ALIVE:
             logger.info(
                 "🛟 KEEP_ALIVE — container idling. Dashboard at http://localhost:%d/. "
                 "Trigger cycles via POST /api/run-cycle or press Ctrl+C to exit.",

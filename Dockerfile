@@ -76,5 +76,5 @@ USER appuser
 
 ENTRYPOINT ["python", "app/main.py"]
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -sf http://localhost:${HEALTH_PORT:-8080}/health || exit 1
