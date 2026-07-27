@@ -6,6 +6,7 @@ from .datetime_ import parse_dt, is_trading_day
 from .logging_ import setup_logging
 from .calendar import TradingCalendar
 from .metrics import PerformanceMetrics
+from .parallelism import resolve_worker_counts
 from .progress import ProgressIndicator
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "setup_logging",
     "TradingCalendar",
     "PerformanceMetrics",
+    "resolve_worker_counts",
     "ProgressIndicator",
 ]

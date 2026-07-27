@@ -4,7 +4,6 @@ Grid search over RSI parameters with two-stage (coarse + fine) optimization.
 """
 import asyncio
 import logging
-import os
 import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, cast
@@ -15,7 +14,7 @@ import pytz
 from data_provider import TechnicalIndicators, data_provider
 from joblib import Parallel, delayed
 from strategy import RSIStrategy
-from utils import ProgressIndicator
+from utils import ProgressIndicator, resolve_worker_counts
 
 from config import globalConfig  # type: ignore
 
@@ -382,13 +381,20 @@ class StrategyOptimizer:
         # Process symbols in batches to avoid overwhelming the API.
         # When grid-level parallelism is active (n_jobs != 1), process
         # symbols one at a time since each symbol already saturates cores.
-        effective_workers = (
-            os.cpu_count() or 4
-        ) if globalConfig.N_JOBS == -1 else globalConfig.N_JOBS
+        (
+            os_detected_cpus,
+            joblib_detected_cpus,
+            detected_cpus,
+            effective_workers,
+        ) = resolve_worker_counts(globalConfig.N_JOBS)
         batch_size = 1 if effective_workers > 1 else 10
         logger.info(
-            "⚡ Parallelism: %d joblib workers per symbol, batch_size=%d",
-            effective_workers, batch_size
+            "⚡ CPU detection: os.cpu_count=%s, joblib.cpu_count=%s, selected=%d",
+            os_detected_cpus, joblib_detected_cpus, detected_cpus
+        )
+        logger.info(
+            "⚡ Parallelism: configured_n_jobs=%d, effective_workers=%d, batch_size=%d",
+            globalConfig.N_JOBS, effective_workers, batch_size
         )
         total_batches = (total_symbols + batch_size - 1) // batch_size
 

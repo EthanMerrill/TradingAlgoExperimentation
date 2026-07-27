@@ -308,6 +308,53 @@ class TradingAlgorithm:
             logger.error("Error saving session results: %s", e)
 
 
+def _daily_scheduler(schedule_time: str, shared_state: dict, algorithm: 'TradingAlgorithm'):
+    """Background thread that triggers a trading cycle at a fixed time each day.
+
+    Waits until the next occurrence of *schedule_time* (HH:MM in Eastern),
+    then sets the trigger_event.  Repeats every 24 hours.
+    """
+    import time as _time
+
+    logger.info("⏰ Daily scheduler started — will trigger at %s ET each day", schedule_time)
+
+    while True:
+        try:
+            now = datetime.now()
+            hour, minute = map(int, schedule_time.split(':'))
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)
+
+            wait_seconds = (target - now).total_seconds()
+            logger.info(
+                "⏰ Next scheduled run: %s ET (in %.1f hours)",
+                target.strftime('%Y-%m-%d %H:%M'), wait_seconds / 3600,
+            )
+
+            # Sleep in 60-second chunks so we remain responsive to shutdown
+            while wait_seconds > 0:
+                chunk = min(wait_seconds, 60)
+                _time.sleep(chunk)
+                wait_seconds -= chunk
+                # If a manual trigger is already in progress, skip this tick
+                if shared_state.get('cycle_running', False):
+                    logger.info(
+                        "⏰ Skipping scheduled trigger — a cycle is already running")
+                    break
+            else:
+                # Timer expired cleanly — fire the trigger
+                if not shared_state.get('cycle_running', False):
+                    logger.info("⏰ Scheduled time reached — triggering daily cycle")
+                    shared_state['cycle_flags'] = {}
+                    trigger = shared_state.get('trigger_event')
+                    if trigger:
+                        trigger.set()
+        except Exception as e:
+            logger.error("Scheduler error: %s", e)
+            _time.sleep(60)  # back off on error
+
+
 async def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(description='Trading Algorithm')
@@ -370,6 +417,14 @@ async def main():
                 "🛟 Dashboard available at http://localhost:%d/",
                 globalConfig.HEALTH_PORT,
             )
+            # Start the daily scheduler if SCHEDULE_TIME is configured
+            if globalConfig.SCHEDULE_TIME:
+                scheduler_thread = threading.Thread(
+                    target=_daily_scheduler,
+                    args=(globalConfig.SCHEDULE_TIME, shared_state, algorithm),
+                    daemon=True,
+                )
+                scheduler_thread.start()
 
         session_result = await algorithm.run_full_cycle(
             force_backtest=args.force_backtest,

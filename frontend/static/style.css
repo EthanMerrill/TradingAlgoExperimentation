@@ -114,6 +114,31 @@ body {
 .status-dot.market_closed { background: var(--yellow); }
 .status-dot.idle, .status-dot.starting, .status-dot.unknown { background: var(--text-secondary); }
 
+/* ── Run Now button ── */
+
+#run-now-btn {
+    background: var(--green);
+    color: #fff;
+    border: none;
+    padding: 8px 18px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s, opacity 0.2s;
+    white-space: nowrap;
+    align-self: flex-start;
+}
+
+#run-now-btn:hover:not(:disabled) {
+    background: #2ea043;
+}
+
+#run-now-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 /* ── Filter bar ── */
 
 #filter-bar {

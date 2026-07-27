@@ -167,8 +167,12 @@ class Config:
             self.KEEP_ALIVE = os.getenv(
                 'KEEP_ALIVE', 'false').lower() in ('true', '1', 'yes')
             self.HEALTH_PORT = int(os.getenv('HEALTH_PORT', '8080'))
+            # Daily schedule time in Eastern Time (HH:MM, 24h).
+            # When set, the app auto-triggers a cycle at this time each day.
+            # Leave empty to disable automatic scheduling.
+            self.SCHEDULE_TIME = os.getenv('SCHEDULE_TIME', '').strip()
             print(
-                f"Info: KEEP_ALIVE = {self.KEEP_ALIVE}, HEALTH_PORT = {self.HEALTH_PORT}")
+                f"Info: KEEP_ALIVE = {self.KEEP_ALIVE}, HEALTH_PORT = {self.HEALTH_PORT}, SCHEDULE_TIME = {self.SCHEDULE_TIME or '(disabled)'}")
 
             print(f"Info: Loaded configuration from {config_file}")
 
@@ -206,6 +210,7 @@ class Config:
         self.KEEP_ALIVE = os.getenv(
             'KEEP_ALIVE', 'false').lower() in ('true', '1', 'yes')
         self.HEALTH_PORT = int(os.getenv('HEALTH_PORT', '8080'))
+        self.SCHEDULE_TIME = os.getenv('SCHEDULE_TIME', '').strip()
 
     def setup_backtesting_parameters(self):
         """Set up backtesting parameters (fallback method)."""

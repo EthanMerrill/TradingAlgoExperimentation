@@ -546,7 +546,7 @@ class WalkForwardValidator:
         logger.info("=" * 60)
 
         # Import here to avoid circular dependency at module level.
-        from utils import ProgressIndicator  # pylint: disable=import-outside-toplevel
+        from utils import ProgressIndicator, resolve_worker_counts  # pylint: disable=import-outside-toplevel
 
         progress = ProgressIndicator(
             total_symbols, "🔍 Walk-forward validation")
@@ -554,10 +554,21 @@ class WalkForwardValidator:
         loop = asyncio.get_event_loop()
 
         # Same batching as StrategyOptimizer.optimize_universe
-        effective_workers = (
-            os.cpu_count() or 4
-        ) if globalConfig.N_JOBS == -1 else globalConfig.N_JOBS
+        (
+            os_detected_cpus,
+            joblib_detected_cpus,
+            detected_cpus,
+            effective_workers,
+        ) = resolve_worker_counts(globalConfig.N_JOBS)
         batch_size = 1 if effective_workers > 1 else 10
+        logger.info(
+            "⚡ CPU detection: os.cpu_count=%s, joblib.cpu_count=%s, selected=%d",
+            os_detected_cpus, joblib_detected_cpus, detected_cpus,
+        )
+        logger.info(
+            "⚡ Parallelism: configured_n_jobs=%d, effective_workers=%d, batch_size=%d",
+            globalConfig.N_JOBS, effective_workers, batch_size,
+        )
         total_batches = (total_symbols + batch_size - 1) // batch_size
 
         for batch_num, i in enumerate(range(0, len(symbols), batch_size), 1):

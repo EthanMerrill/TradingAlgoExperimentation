@@ -39,7 +39,7 @@ function formatCurrency(val) {
 
 function formatPercent(val) {
     if (val == null || isNaN(val)) return '—';
-    return (Number(val) * 100).toFixed(2) + '%';
+    return (Number(val) * 100).toFixed(3) + '%';
 }
 
 function formatDate(val) {
@@ -516,4 +516,54 @@ async function init() {
     setInterval(fetchHealth, REFRESH_INTERVAL_MS * 2);
 }
 
-document.addEventListener('DOMContentLoaded', init);
+// ── Run Now button ──
+
+function setupRunNowButton() {
+    var btn = $('#run-now-btn');
+    if (!btn) return;
+
+    btn.disabled = false;
+    btn.addEventListener('click', async function () {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.textContent = '⏳ Running...';
+
+        try {
+            var resp = await fetch('/api/run-cycle', { method: 'POST' });
+            var data = await resp.json();
+            if (resp.ok) {
+                btn.textContent = '✅ Triggered';
+                setTimeout(function () {
+                    btn.textContent = '▶ Run Now';
+                    btn.disabled = false;
+                }, 3000);
+            } else if (resp.status === 409) {
+                // Already running
+                btn.textContent = '⏳ Already running';
+                setTimeout(function () {
+                    btn.textContent = '▶ Run Now';
+                    btn.disabled = false;
+                }, 5000);
+            } else {
+                btn.textContent = '❌ Error';
+                console.error('Run cycle failed:', data);
+                setTimeout(function () {
+                    btn.textContent = '▶ Run Now';
+                    btn.disabled = false;
+                }, 3000);
+            }
+        } catch (err) {
+            console.error('Run cycle request failed:', err);
+            btn.textContent = '❌ Error';
+            setTimeout(function () {
+                btn.textContent = '▶ Run Now';
+                btn.disabled = false;
+            }, 3000);
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    init();
+    setupRunNowButton();
+});
