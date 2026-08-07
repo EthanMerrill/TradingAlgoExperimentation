@@ -324,13 +324,20 @@ class PostgresStorage(StorageBackend):
             "VALUES (" + col_placeholders + ")"
         )
 
+        # Numeric columns that represent prices/shares (round to 2 decimal places).
+        # Ratio columns (realized_return, alpha) are left at full precision
+        # so the frontend can display exact percentages.
+        _PRICE_COLS_FOR_ROUND = {
+            'shares', 'entry_price', 'current_price', 'exit_price',
+            'stop_loss_price', 'take_profit_price',
+        }
+
         tuples: List[tuple] = []
         for d in rows_list:
             tup = (timestamp, self._env)
             for col in _POSITION_COLS:
                 val = d.get(col)
-                # Round numeric columns
-                if isinstance(val, float):
+                if isinstance(val, float) and col in _PRICE_COLS_FOR_ROUND:
                     val = round(val, 2)
                 tup += (val,)
             tuples.append(tup)

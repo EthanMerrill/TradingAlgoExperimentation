@@ -253,12 +253,18 @@ class GcsStorage(StorageBackend):
 
             filename = f"{globalConfig.get_environment_path('Positions')}/positions_{timestamp}.csv"
 
-            # Round floats before uploading (skip datetime/timedelta columns)
+            # Round price/quantity columns to 2 decimal places before uploading,
+            # but preserve full precision for ratio columns (realized_return,
+            # alpha, current_rsi) so the UI can display exact percentages.
+            PRICE_COLS = {
+                'entry_price', 'exit_price', 'current_price',
+                'stop_loss_price', 'take_profit_price', 'shares',
+            }
             if isinstance(positions_df, pd.DataFrame):
-                numeric_cols = positions_df.select_dtypes(
-                    include='number').columns
                 rounded_df = positions_df.copy()
-                rounded_df[numeric_cols] = rounded_df[numeric_cols].round(2)
+                for col in rounded_df.select_dtypes(include='number').columns:
+                    if col in PRICE_COLS:
+                        rounded_df[col] = rounded_df[col].round(2)
             else:
                 rounded_df = positions_df
 

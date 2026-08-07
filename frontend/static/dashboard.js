@@ -39,7 +39,7 @@ function formatCurrency(val) {
 
 function formatPercent(val) {
     if (val == null || isNaN(val)) return '—';
-    return (Number(val) * 100).toFixed(3) + '%';
+    return (Number(val) * 100).toFixed(2) + '%';
 }
 
 function formatDate(val) {
