@@ -2,6 +2,7 @@
 """
 Unit tests for the cloud_storage module.
 """
+import io
 import os
 import sys
 import unittest
@@ -387,6 +388,104 @@ class TestCloudStorage(unittest.TestCase):
         self.assertIsInstance(result.iloc[0]['entry_date'], datetime,
                               "entry_date must be datetime, not str — parse_dates may be missing from read_csv")
         self.assertIsInstance(result.iloc[1]['exit_date'], datetime)
+
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
+    def test_save_orders_upsert_by_client_order_id(self, mock_import_module, mock_config):
+        """Saving an order with an existing client_order_id replaces the row."""
+        mock_config.GCS_BUCKET_NAME = 'test-bucket'
+        mock_config.get_environment_path.return_value = 'dev/Orders'
+        mock_storage_module = Mock()
+        mock_client = Mock()
+        mock_bucket = Mock()
+        mock_blob = Mock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage_module.Client.return_value = mock_client
+        mock_bucket.blob.return_value = mock_blob
+        mock_import_module.import_module.return_value = mock_storage_module
+
+        existing_csv = (
+            "client_order_id,order_id,symbol,side,qty,order_type,order_class,"
+            "status,stop_price,limit_price,submitted_at,filled_at,leg\n"
+            "AAPL-BUY-1,order_old,AAPL,buy,5.0,market,bracket,new,95.0,110.0,,,entry\n"
+        )
+        mock_blob.exists.return_value = True
+        mock_blob.download_as_text.return_value = existing_csv
+
+        from datetime import datetime
+        from order import Order
+
+        cloud_storage = CloudStorage()
+        ok = cloud_storage.save_orders([
+            Order(
+                client_order_id="AAPL-BUY-1",
+                order_id="order_new",
+                symbol="AAPL",
+                side="buy",
+                qty=5.0,
+                order_type="market",
+                order_class="bracket",
+                status="filled",
+                stop_price=95.0,
+                limit_price=110.0,
+                submitted_at=datetime(2026, 8, 13, 12, 0, 0),
+                leg="entry",
+            ),
+        ])
+
+        self.assertTrue(ok)
+        uploaded = mock_blob.upload_from_string.call_args[0][0]
+        df = pd.read_csv(io.StringIO(uploaded))
+        self.assertEqual(
+            len(df), 1, "upsert must not duplicate client_order_id")
+        self.assertEqual(df.iloc[0]['client_order_id'], "AAPL-BUY-1")
+        self.assertEqual(df.iloc[0]['status'], "filled")
+        self.assertEqual(df.iloc[0]['order_id'], "order_new")
+
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
+    def test_load_orders_and_get_open_orders_stored(self, mock_import_module, mock_config):
+        """load_orders filters; get_open_orders_stored excludes terminal orders."""
+        mock_config.GCS_BUCKET_NAME = 'test-bucket'
+        mock_config.get_environment_path.return_value = 'dev/Orders'
+        mock_storage_module = Mock()
+        mock_client = Mock()
+        mock_bucket = Mock()
+        mock_blob = Mock()
+        mock_client.bucket.return_value = mock_bucket
+        mock_storage_module.Client.return_value = mock_client
+        mock_bucket.blob.return_value = mock_blob
+        mock_import_module.import_module.return_value = mock_storage_module
+
+        csv_data = (
+            "client_order_id,order_id,symbol,side,qty,order_type,order_class,"
+            "status,stop_price,limit_price,submitted_at,filled_at,leg\n"
+            "AAPL-BUY-1,o1,AAPL,buy,5.0,market,bracket,new,95.0,110.0,,,entry\n"
+            "TSLA-BUY-1,o2,TSLA,buy,2.0,market,bracket,filled,200.0,220.0,,,entry\n"
+        )
+        mock_blob.exists.return_value = True
+        mock_blob.download_as_text.return_value = csv_data
+
+        cloud_storage = CloudStorage()
+
+        aapl_orders = cloud_storage.load_orders(symbol="AAPL")
+        self.assertEqual(len(aapl_orders), 1)
+        self.assertEqual(aapl_orders[0].symbol, "AAPL")
+        self.assertEqual(aapl_orders[0].status, "new")
+
+        open_orders = cloud_storage.get_open_orders_stored()
+        self.assertEqual(len(open_orders), 1,
+                         "filled order must be filtered out")
+        self.assertEqual(open_orders[0].symbol, "AAPL")
+
+    @patch('storage.gcs.globalConfig')
+    @patch('storage.gcs.importlib')
+    def test_save_orders_no_bucket(self, mock_import_module, mock_config):
+        """save_orders returns False when storage is not initialized."""
+        mock_import_module.import_module.side_effect = Exception("No client")
+
+        cloud_storage = CloudStorage()
+        self.assertFalse(cloud_storage.save_orders([]))
 
 
 if __name__ == '__main__':

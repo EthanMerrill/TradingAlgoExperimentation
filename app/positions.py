@@ -33,6 +33,8 @@ class Position:
     exit_reason: Optional[str] = None
     closed: bool = False
     side: str = field(init=False, default="long")
+    order_id: Optional[str] = None
+    client_order_id: Optional[str] = None
 
     def __post_init__(self):
         """Derive side from quantity: negative qty = short position."""
@@ -132,6 +134,10 @@ class PositionsManager:
                 row['exit_reason']) and row['exit_reason'] is not None else None,
             closed=closed,
             exit_date=exit_date,
+            order_id=str(row['order_id']) if 'order_id' in row and pd.notna(
+                row['order_id']) and row['order_id'] is not None else None,
+            client_order_id=str(row['client_order_id']) if 'client_order_id' in row and pd.notna(
+                row['client_order_id']) and row['client_order_id'] is not None else None,
         )
 
     def get_and_reconcile_positions(self) -> List[Position]:

@@ -18,6 +18,7 @@ from alpaca.trading.requests import (GetOrdersRequest, LimitOrderRequest,
                                      TakeProfitRequest)
 from data_provider import TechnicalIndicators, data_provider
 from storage import storage
+from order import Order, generate_client_order_id
 from positions import Position, PositionsManager
 from strategy import BacktestResult, RSIStrategy
 
@@ -353,6 +354,8 @@ class TradingEngine:
             True if order was placed successfully
         """
         order_success = False
+        client_order_id: Optional[str] = None
+        placed_order_id: Optional[str] = None
         try:
             if self.dry_run:
                 logger.info("🔍 DRY RUN: Would place %s order for %d shares of %s at $%.2f",
@@ -368,6 +371,14 @@ class TradingEngine:
                         "Trading client not available - cannot place order")
                     return False
 
+                client_order_id = self._make_unique_client_order_id(
+                    generate_client_order_id(
+                        opportunity.symbol,
+                        "BUY" if side == OrderSide.BUY else "SELL",
+                        datetime.now(),
+                    )
+                )
+
                 order_request = MarketOrderRequest(
                     symbol=opportunity.symbol,
                     qty=shares,
@@ -377,12 +388,13 @@ class TradingEngine:
                     stop_loss=StopLossRequest(
                         stop_price=opportunity.stop_loss_price),
                     take_profit=TakeProfitRequest(
-                        limit_price=opportunity.take_profit_price)
+                        limit_price=opportunity.take_profit_price),
+                    client_order_id=client_order_id,
                 )
 
                 order = self.trading_client.submit_order(order_request)
-                order_id = getattr(order, 'id', 'Unknown')
-                logger.info("Order placed successfully: %s", order_id)
+                placed_order_id = getattr(order, 'id', None)
+                logger.info("Order placed successfully: %s", placed_order_id)
                 logger.info("%s order for %d shares of %s at $%.2f",
                             label.title(), shares, opportunity.symbol, opportunity.entry_price)
                 logger.info("Stop loss: $%.2f, %s: $%.2f",
@@ -413,12 +425,37 @@ class TradingEngine:
                     stop_loss_price=opportunity.stop_loss_price,
                     take_profit_price=opportunity.take_profit_price,
                     closed=False,
-                    exit_date=None
+                    exit_date=None,
+                    order_id=placed_order_id,
+                    client_order_id=client_order_id,
                 )
 
                 self._positions_manager.open_position(new_position)
             except Exception as e:
                 logger.error("Error adding position to positions manager for %s: %s",
+                             opportunity.symbol, e)
+
+            # Persist the order to the ledger (idempotent via client_order_id).
+            try:
+                if client_order_id:
+                    storage.save_orders([
+                        Order(
+                            client_order_id=client_order_id,
+                            order_id=placed_order_id,
+                            symbol=opportunity.symbol,
+                            side="buy" if side == OrderSide.BUY else "sell",
+                            qty=float(shares) * quantity_sign,
+                            order_type="market",
+                            order_class="bracket",
+                            status="new",
+                            stop_price=opportunity.stop_loss_price,
+                            limit_price=opportunity.take_profit_price,
+                            submitted_at=datetime.now(),
+                            leg="entry",
+                        )
+                    ])
+            except Exception as e:
+                logger.error("Error saving order to storage for %s: %s",
                              opportunity.symbol, e)
         elif not self.dry_run:
             logger.warning(
@@ -695,6 +732,13 @@ class TradingEngine:
 
             # Create OCO order according to Alpaca documentation
             # OCO orders must be limit orders with take_profit and stop_loss parameters
+            client_order_id = self._make_unique_client_order_id(
+                generate_client_order_id(
+                    symbol,
+                    "BUY" if order_side == OrderSide.BUY else "SELL",
+                    datetime.now(),
+                )
+            )
             oco_order = LimitOrderRequest(
                 symbol=symbol,
                 qty=shares,
@@ -711,7 +755,8 @@ class TradingEngine:
                     stop_price=stop_loss_price,
                     # Stop-limit order with small buffer
                     limit_price=stop_limit_buffer
-                )
+                ),
+                client_order_id=client_order_id,
             )
 
             # Submit the order
@@ -721,14 +766,35 @@ class TradingEngine:
                 return False
 
             order = self.trading_client.submit_order(oco_order)
-            order_id = getattr(order, 'id', 'Unknown')
-            logger.info("Order placed successfully: %s", order_id)
+            placed_order_id = getattr(order, 'id', None)
+            logger.info("Order placed successfully: %s", placed_order_id)
 
             logger.info(
                 "OCO %s order placed for %d shares of %s (%s)",
                 action_label, shares, symbol, side)
             logger.info("Take profit limit: $%.2f, Stop loss: $%.2f",
                         take_profit_price, stop_loss_price)
+
+            try:
+                storage.save_orders([
+                    Order(
+                        client_order_id=client_order_id,
+                        order_id=placed_order_id,
+                        symbol=symbol,
+                        side="buy" if order_side == OrderSide.BUY else "sell",
+                        qty=float(shares),
+                        order_type="limit",
+                        order_class="oco",
+                        status="new",
+                        stop_price=stop_loss_price,
+                        limit_price=take_profit_price,
+                        submitted_at=datetime.now(),
+                        leg="oco",
+                    )
+                ])
+            except Exception as e:
+                logger.error("Error saving OCO order to storage for %s: %s",
+                             symbol, e)
 
             return True
 
@@ -765,16 +831,41 @@ class TradingEngine:
                     "Trading client not available — cannot place sell order for %s", symbol)
                 return False
 
+            client_order_id = self._make_unique_client_order_id(
+                generate_client_order_id(symbol, "SELL", datetime.now())
+            )
+
             order_request = MarketOrderRequest(
                 symbol=symbol,
                 qty=shares,
                 side=OrderSide.SELL,
-                time_in_force=TimeInForce.DAY
+                time_in_force=TimeInForce.DAY,
+                client_order_id=client_order_id,
             )
             order = self.trading_client.submit_order(order_request)
-            order_id = getattr(order, 'id', 'Unknown')
+            placed_order_id = getattr(order, 'id', None)
             logger.info("Market sell order placed for %d shares of %s (reason: %s) — order %s",
-                        shares, symbol, reason, order_id)
+                        shares, symbol, reason, placed_order_id)
+
+            try:
+                storage.save_orders([
+                    Order(
+                        client_order_id=client_order_id,
+                        order_id=placed_order_id,
+                        symbol=symbol,
+                        side="sell",
+                        qty=float(shares),
+                        order_type="market",
+                        order_class="simple",
+                        status="new",
+                        submitted_at=datetime.now(),
+                        leg="market_exit",
+                    )
+                ])
+            except Exception as e:
+                logger.error("Error saving market sell order to storage for %s: %s",
+                             symbol, e)
+
             return True
 
         except Exception as e:
@@ -983,7 +1074,66 @@ class TradingEngine:
                     "Dry run mode: Skipping positions save to cloud storage")
             session_summary['errors'].append(error_msg)
 
+        # Refresh persisted order statuses from the broker (best-effort).
+        self._refresh_order_statuses()
+
         return session_summary
+
+    def _refresh_order_statuses(self) -> None:
+        """Refresh persisted order statuses from the broker.
+
+        Reads non-terminal orders from the ledger, fetches their current
+        status from Alpaca, and upserts any changes back via save_orders.
+        """
+        try:
+            open_orders = storage.get_open_orders_stored()
+            if not open_orders:
+                return
+            cids = [o.client_order_id for o in open_orders if o.client_order_id]
+            if not cids:
+                return
+            status_map = data_provider.get_order_status_map(cids)
+            updated = []
+            for o in open_orders:
+                new_status = status_map.get(o.client_order_id)
+                if new_status and new_status != o.status:
+                    o.status = new_status
+                    updated.append(o)
+            if updated:
+                storage.save_orders(updated)
+                logger.info(
+                    "Refreshed %d order statuses from Alpaca", len(updated))
+        except Exception as e:
+            logger.error("Error refreshing order statuses: %s", e)
+
+    def _get_broker_order_by_client_id(self, client_order_id: str):
+        """Fetch an order by client_order_id via the engine's client.
+
+        Returns the order object, or None when not found (404) or on any
+        lookup failure.
+        """
+        if self.trading_client is None or not client_order_id:
+            return None
+        try:
+            return self.trading_client.get_order_by_client_id(client_order_id)
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+
+    def _make_unique_client_order_id(
+        self, base: str, max_attempts: int = 20
+    ) -> str:
+        """Return a client_order_id not already present at the broker."""
+        if self._get_broker_order_by_client_id(base) is None:
+            return base
+        for i in range(1, max_attempts + 1):
+            candidate = f"{base}-{i}"
+            if self._get_broker_order_by_client_id(candidate) is None:
+                return candidate
+        logger.warning(
+            "Could not find a free client_order_id after %d attempts; "
+            "returning base '%s'", max_attempts, base,
+        )
+        return base
 
     def _clear_ohlcv_cache(self) -> None:
         """Clear the per-cycle OHLCV cache. Call at the start of each run cycle."""

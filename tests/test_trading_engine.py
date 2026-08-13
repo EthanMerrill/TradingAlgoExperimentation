@@ -182,10 +182,19 @@ class TestTradingEngine(unittest.TestCase):
             num_trades=10,
         )
 
-        result = self.engine.place_buy_order(opp, 5)
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-BUY-TEST"), \
+                patch('trading_engine.storage.save_orders') as mock_save_orders:
+            result = self.engine.place_buy_order(opp, 5)
 
         self.assertTrue(result)
         self.engine._positions_manager.open_position.assert_called_once()
+        mock_save_orders.assert_called_once()
+        created = self.engine._positions_manager.open_position.call_args[0][0]
+        self.assertEqual(created.client_order_id, "AAPL-BUY-TEST")
+        self.assertEqual(created.order_id, "order_1")
+        saved = mock_save_orders.call_args[0][0][0]
+        self.assertEqual(saved.leg, "entry")
 
     def test_place_oco_close_order_dry_run(self):
         self.engine.set_dry_run_mode(True)
@@ -388,14 +397,20 @@ class TestTradingEngine(unittest.TestCase):
             direction="short",
         )
 
-        result = self.engine.place_short_order(opp, 5)
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-SELL-TEST"), \
+                patch('trading_engine.storage.save_orders') as mock_save_orders:
+            result = self.engine.place_short_order(opp, 5)
 
         self.assertTrue(result)
         self.engine._positions_manager.open_position.assert_called_once()
+        mock_save_orders.assert_called_once()
         # Verify the position was created with side="short"
         call_args = self.engine._positions_manager.open_position.call_args
         created_position = call_args[0][0]
         self.assertEqual(created_position.side, "short")
+        self.assertEqual(created_position.client_order_id, "AAPL-SELL-TEST")
+        self.assertEqual(created_position.order_id, "order_short_1")
 
     def test_close_conflicting_position_no_conflict(self):
         """No close when direction matches existing position."""

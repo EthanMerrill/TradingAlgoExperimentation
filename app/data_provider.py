@@ -870,6 +870,43 @@ class DataProvider:
             logger.error("Error fetching open orders: %s", e)
             return pd.DataFrame()
 
+    def get_order_by_client_id_safe(self, client_order_id: str) -> Optional[Any]:
+        """Fetch an order by client_order_id, returning None if not found.
+
+        Alpaca's ``get_order_by_client_id`` raises ``APIError(404)`` when no
+        order matches.  We normalize that (and any other lookup failure) to
+        ``None`` so callers can treat it as "free to reuse".
+        """
+        if self.trading_client is None or not client_order_id:
+            return None
+        try:
+            return self.trading_client.get_order_by_client_id(client_order_id)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.debug(
+                "Order not found by client_order_id %s: %s",
+                client_order_id, e,
+            )
+            return None
+
+    def get_order_status_map(self, client_order_ids: List[str]) -> Dict[str, str]:
+        """Fetch current statuses for a list of client_order_ids.
+
+        Returns a mapping of client_order_id -> status string (empty string
+        when the order cannot be found at the broker).
+        """
+        result: Dict[str, str] = {}
+        for cid in (client_order_ids or []):
+            order = self.get_order_by_client_id_safe(cid)
+            if order is None:
+                result[cid] = ""
+                continue
+            raw = getattr(order, 'status', None)
+            if raw is not None and hasattr(raw, 'value'):
+                result[cid] = str(raw.value).lower()
+            else:
+                result[cid] = str(raw).lower()
+        return result
+
 
 class TechnicalIndicators:
     """Technical analysis indicators."""

@@ -10,12 +10,12 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import numpy as np
 # pylint: disable=broad-exception-caught
 import pandas as pd
-from storage.backend import StorageBackend, backtest_result_to_dict, dict_to_backtest_result, normalize_position_for_save
+from storage.backend import StorageBackend, backtest_result_to_dict, dict_to_backtest_result, normalize_position_for_save, order_to_dict, dict_to_order
 from strategy import BacktestResult
 
 from config import globalConfig  # type: ignore
@@ -280,6 +280,97 @@ class GcsStorage(StorageBackend):
         except Exception as e:
             logger.error("Error saving positions: %s", e)
             return False
+
+    def _orders_path(self) -> str:
+        """Blob path for the single append+upsert orders ledger."""
+        return f"{globalConfig.get_environment_path('Orders')}/orders.csv"
+
+    def save_orders(self, orders, timestamp: Optional[str] = None) -> bool:
+        """Persist broker orders to a single append+upsert CSV.
+
+        Keyed by ``client_order_id``: incoming rows replace existing rows with
+        the same key, so status lifecycle updates do not create duplicates.
+        """
+        if not self.bucket:
+            logger.error("Cloud storage not initialized")
+            return False
+
+        if not orders:
+            return True
+
+        try:
+            incoming = pd.DataFrame([order_to_dict(o) for o in orders])
+
+            blob = self.bucket.blob(self._orders_path())
+            if blob.exists():
+                existing = pd.read_csv(
+                    io.StringIO(blob.download_as_text()))
+                # Upsert: drop existing rows whose client_order_id is incoming,
+                # then append the incoming rows (incoming wins).
+                if not existing.empty and 'client_order_id' in existing.columns:
+                    keys = set(incoming['client_order_id'].astype(str))
+                    existing = existing[
+                        ~existing['client_order_id'].astype(str).isin(keys)
+                    ]
+                combined = pd.concat([existing, incoming], ignore_index=True)
+            else:
+                combined = incoming
+
+            # Round only numeric price/qty columns; leave datetime columns
+            # (submitted_at / filled_at) untouched to avoid pandas warnings.
+            order_price_cols = {'qty', 'stop_price', 'limit_price'}
+            for col in combined.select_dtypes(include='number').columns:
+                if col in order_price_cols:
+                    combined[col] = combined[col].round(2)
+
+            stream = io.StringIO()
+            combined.to_csv(stream, index=False)
+            blob.upload_from_string(
+                stream.getvalue(), content_type='text/csv')
+            logger.info(
+                "Saved %d orders to %s", len(orders), self._orders_path())
+            return True
+
+        except Exception as e:
+            logger.error("Error saving orders: %s", e)
+            return False
+
+    def load_orders(
+        self, symbol: Optional[str] = None, status: Optional[str] = None
+    ) -> List[Any]:
+        """Load orders from the orders ledger, optionally filtered."""
+        if not self.bucket:
+            return []
+
+        try:
+            blob = self.bucket.blob(self._orders_path())
+            if not blob.exists():
+                return []
+
+            df = pd.read_csv(io.StringIO(blob.download_as_text()))
+            if df.empty:
+                return []
+
+            orders: List[Any] = [
+                dict_to_order(row.to_dict()) for _, row in df.iterrows()
+            ]
+            if symbol is not None:
+                orders = [
+                    o for o in orders
+                    if str(o.symbol).upper() == str(symbol).upper()
+                ]
+            if status is not None:
+                s = status.lower()
+                orders = [o for o in orders if o.status.lower() == s]
+            return orders
+
+        except Exception as e:
+            logger.error("Error loading orders: %s", e)
+            return []
+
+    def get_open_orders_stored(self, symbol: Optional[str] = None) -> List[Any]:
+        """Load persisted orders that are not in a terminal status."""
+        return [o for o in self.load_orders(symbol) if not o.is_terminal]
 
     def save_metadata(self, metadata: dict, timestamp: Optional[str] = None) -> bool:
         """

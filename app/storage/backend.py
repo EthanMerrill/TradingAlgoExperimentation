@@ -54,6 +54,8 @@ POSITION_FIELDS = [
     "exit_price",
     "realized_return",
     "side",
+    "order_id",
+    "client_order_id",
 ]
 
 
@@ -161,7 +163,90 @@ def normalize_position_for_save(pos: Any) -> Dict[str, Any]:
         "exit_price": exit_price,
         "realized_return": realized_return,
         "side": getattr(pos, "side", "long"),
+        "order_id": getattr(pos, "order_id", None),
+        "client_order_id": getattr(pos, "client_order_id", None),
     }
+
+
+ORDER_FIELDS = [
+    "client_order_id",
+    "order_id",
+    "symbol",
+    "side",
+    "qty",
+    "order_type",
+    "order_class",
+    "status",
+    "stop_price",
+    "limit_price",
+    "submitted_at",
+    "filled_at",
+    "leg",
+]
+
+
+def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+    """Parse a possibly-datetime/None/NaN value into a datetime or None."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ("nan", "nat", "none"):
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def order_to_dict(order: Any) -> Dict[str, Any]:
+    """Convert an Order to a flat, serializable dict."""
+    return {
+        "client_order_id": getattr(order, "client_order_id", None),
+        "order_id": getattr(order, "order_id", None),
+        "symbol": getattr(order, "symbol", None),
+        "side": getattr(order, "side", None),
+        "qty": _safe_round(getattr(order, "qty", None)),
+        "order_type": getattr(order, "order_type", None),
+        "order_class": getattr(order, "order_class", None),
+        "status": getattr(order, "status", None),
+        "stop_price": _safe_round(getattr(order, "stop_price", None)),
+        "limit_price": _safe_round(getattr(order, "limit_price", None)),
+        "submitted_at": getattr(order, "submitted_at", None),
+        "filled_at": getattr(order, "filled_at", None),
+        "leg": getattr(order, "leg", None),
+    }
+
+
+def dict_to_order(d: Dict[str, Any]) -> "Order":
+    """Reconstruct an Order from a flat dict (CSV row / DB row)."""
+    from order import Order  # pylint: disable=import-outside-toplevel
+
+    def _opt_float(v: Any) -> Optional[float]:
+        if v is None:
+            return None
+        if isinstance(v, float) and pd.isna(v):
+            return None
+        return float(v)
+
+    return Order(
+        client_order_id=str(d.get("client_order_id") or ""),
+        symbol=str(d.get("symbol") or ""),
+        side=str(d.get("side") or ""),
+        qty=float(d.get("qty") or 0),
+        order_type=str(d.get("order_type") or "market"),
+        order_class=str(d.get("order_class") or "simple"),
+        status=str(d.get("status") or "new"),
+        order_id=d.get("order_id") or None,
+        stop_price=_opt_float(d.get("stop_price")),
+        limit_price=_opt_float(d.get("limit_price")),
+        submitted_at=_parse_optional_datetime(d.get("submitted_at")),
+        filled_at=_parse_optional_datetime(d.get("filled_at")),
+        leg=d.get("leg") or None,
+    )
 
 
 class StorageBackend(ABC):
@@ -211,6 +296,23 @@ class StorageBackend(ABC):
     @abstractmethod
     def get_latest_positions_df(self, openPosition: bool = True) -> pd.DataFrame:
         """Get the most recent position DataFrame."""
+
+    def save_orders(self, orders, timestamp: Optional[str] = None) -> bool:
+        """Persist broker orders. Default no-op; backends may override."""
+        return False
+
+    def load_orders(
+        self, symbol: Optional[str] = None, status: Optional[str] = None
+    ) -> List[Any]:
+        """Load persisted orders. Default returns an empty list."""
+        return []
+
+    def get_open_orders_stored(self, symbol: Optional[str] = None) -> List[Any]:
+        """Load persisted orders that are not in a terminal status."""
+        return [
+            o for o in self.load_orders(symbol)
+            if not getattr(o, "is_terminal", False)
+        ]
 
     @staticmethod
     def create(config: "Config") -> "StorageBackend":
