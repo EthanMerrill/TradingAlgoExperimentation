@@ -6,6 +6,9 @@ import unittest
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 
+import pandas as pd
+from alpaca.trading.enums import OrderSide
+
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
@@ -140,7 +143,7 @@ class TestTradingEngine(unittest.TestCase):
         self.assertEqual(allocations[0][0].symbol, "AAPL")
         self.assertGreater(allocations[0][1], 0)
 
-    def test_place_buy_order_dry_run_returns_false(self):
+    def test_place_buy_order_dry_run_returns_true(self):
         self.engine.set_dry_run_mode(True)
         opp = TradingOpportunity(
             symbol="AAPL",
@@ -159,8 +162,10 @@ class TestTradingEngine(unittest.TestCase):
 
         result = self.engine.place_buy_order(opp, 5)
 
-        # Current implementation intentionally does not mark dry-run as success.
-        self.assertFalse(result)
+        # Dry-run simulates success (consistent with OCO/market-close).
+        self.assertTrue(result)
+        # No position is opened and no order is persisted in dry-run.
+        self.engine._positions_manager.open_position.assert_not_called()
 
     def test_place_buy_order_live_success_adds_position(self):
         self.engine.set_dry_run_mode(False)
@@ -308,11 +313,12 @@ class TestTradingEngine(unittest.TestCase):
             'equity': 100000.0,
             'buying_power': 200000.0,
         }
-        # Add existing short with $2000 notional
+        # Add existing short with $2000 notional (negative qty, as produced
+        # by _place_order for shorts).
         existing_short = self._position("MSFT")
         existing_short.side = "short"
         existing_short.entry_price = 100.0
-        existing_short.quantity = 20.0  # $2000 notional
+        existing_short.quantity = -20.0  # $2000 notional
         self.engine._positions_manager.positions = [existing_short]
 
         opp = TradingOpportunity(
@@ -353,8 +359,76 @@ class TestTradingEngine(unittest.TestCase):
                              "Total short notional should respect cap")
         self.assertGreater(shares, 0)
 
-    def test_place_short_order_dry_run_returns_false(self):
-        """Dry run short order logs but returns False."""
+    def test_calculate_todays_stop_loss_and_take_profit_long_underwater(self):
+        """Fix #0: underwater long must never produce take-profit below stop-loss."""
+        pos = self._position("AAPL")
+        pos.entry_price = 100.0
+        pos.current_price = 90.0  # underwater
+
+        with patch.object(self.engine, '_fetch_ohlcv_once',
+                          return_value=pd.DataFrame({'close': [100.0, 99.0, 98.0]})), \
+                patch.object(self.engine, '_get_current_price', return_value=90.0), \
+                patch('trading_engine.RSIStrategy.calculate_price_for_target_rsi',
+                      return_value=97.0), \
+                patch('trading_engine.globalConfig') as mock_cfg:
+            mock_cfg.STOP_LOSS_PCT = 0.05
+            mock_cfg.TAKE_PROFIT_PCT = 0.10
+            stop, take = self.engine.calculate_todays_stop_loss_and_take_profit(
+                pos)
+
+        # stop anchored to entry*0.95 = 95.0; take must be above it (and above entry).
+        self.assertGreater(take, stop, "take-profit must stay above stop-loss")
+        self.assertGreater(take, pos.entry_price,
+                           "take-profit must stay above entry for a long")
+
+    def test_place_market_sell_order_short_covers_with_buy(self):
+        """Fix #1: closing a short must BUY to cover, not SELL again."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = Mock(
+            id="order_cover_1")
+
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-BUY-TEST"), \
+                patch('trading_engine.storage.save_orders') as mock_save_orders:
+            result = self.engine.place_market_sell_order(
+                "AAPL", 10, "max_hold_days", side="short")
+
+        self.assertTrue(result)
+        submitted = self.engine.trading_client.submit_order.call_args[0][0]
+        self.assertEqual(submitted.side, OrderSide.BUY)
+        # Persisted order records a buy (cover), not a sell.
+        saved = mock_save_orders.call_args[0][0][0]
+        self.assertEqual(saved.side, "buy")
+
+    def test_place_oco_close_order_refuses_inverted_long(self):
+        """Fix #3: inverted long SL/TP must be refused before cancelling orders."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+
+        # stop (110) above take-profit (90) is inverted for a long.
+        result = self.engine.place_oco_close_order(
+            "AAPL", 10, stop_loss_price=110.0, take_profit_price=90.0, side="long")
+
+        self.assertFalse(result)
+        self.engine.trading_client.get_orders.assert_not_called()
+        self.engine.trading_client.submit_order.assert_not_called()
+
+    def test_place_oco_close_order_refuses_inverted_short(self):
+        """Fix #3: inverted short cover (cover above stop) must be refused."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+
+        # cover (110) above stop (90) is inverted for a short.
+        result = self.engine.place_oco_close_order(
+            "AAPL", 10, stop_loss_price=90.0, take_profit_price=110.0, side="short")
+
+        self.assertFalse(result)
+        self.engine.trading_client.get_orders.assert_not_called()
+        self.engine.trading_client.submit_order.assert_not_called()
+
+    def test_place_short_order_dry_run_returns_true(self):
+        """Dry run short order simulates success and does not open a position."""
         self.engine.set_dry_run_mode(True)
         opp = TradingOpportunity(
             symbol="AAPL",
@@ -373,7 +447,8 @@ class TestTradingEngine(unittest.TestCase):
         )
 
         result = self.engine.place_short_order(opp, 5)
-        self.assertFalse(result)
+        self.assertTrue(result)
+        self.engine._positions_manager.open_position.assert_not_called()
 
     def test_place_short_order_live_success_adds_position(self):
         """Live short order adds position with side='short'."""
@@ -411,40 +486,167 @@ class TestTradingEngine(unittest.TestCase):
         self.assertEqual(created_position.side, "short")
         self.assertEqual(created_position.client_order_id, "AAPL-SELL-TEST")
         self.assertEqual(created_position.order_id, "order_short_1")
+        # Order ledger uses unsigned qty + explicit side (fix E).
+        saved = mock_save_orders.call_args[0][0][0]
+        self.assertEqual(saved.qty, 5.0, "order ledger qty must be unsigned")
+        self.assertEqual(saved.side, "sell")
 
-    def test_close_conflicting_position_no_conflict(self):
-        """No close when direction matches existing position."""
+    def test_exit_opposite_position_no_conflict(self):
+        """No exit when direction matches existing position."""
         existing = self._position("AAPL")
-        # side defaults to "long" since not explicitly set
         self.engine._positions_manager.positions = [existing]
 
-        result = self.engine._close_conflicting_position("AAPL", "long")
-        self.assertFalse(result,
-                         "Should not close when direction matches")
+        result = self.engine._exit_opposite_position("AAPL", "long")
+        self.assertFalse(result, "Should not exit when direction matches")
 
-    def test_close_conflicting_position_flip_to_short(self):
-        """Close existing long when flipping to short."""
+    def test_exit_opposite_position_exits_long(self):
+        """Exit existing long when a short signal fires (no flip)."""
         existing = self._position("AAPL")
-        # side defaults to "long"
         self.engine._positions_manager.positions = [existing]
         self.engine.set_dry_run_mode(True)
 
-        result = self.engine._close_conflicting_position("AAPL", "short")
-        self.assertTrue(result, "Should close conflicting long position")
-        self.engine._positions_manager.close_position.assert_called_once_with(
-            "AAPL")
+        result = self.engine._exit_opposite_position("AAPL", "short")
+        self.assertTrue(result, "Should exit conflicting long position")
+        # Dry-run does not mutate position state.
+        self.engine._positions_manager.close_position.assert_not_called()
 
-    def test_close_conflicting_position_flip_to_long(self):
-        """Close existing short when flipping to long."""
+    def test_exit_opposite_position_exits_short(self):
+        """Exit existing short when a long signal fires (no flip)."""
         existing = self._position("AAPL")
         existing.side = "short"
         self.engine._positions_manager.positions = [existing]
         self.engine.set_dry_run_mode(True)
 
-        result = self.engine._close_conflicting_position("AAPL", "long")
-        self.assertTrue(result, "Should close conflicting short position")
+        result = self.engine._exit_opposite_position("AAPL", "long")
+        self.assertTrue(result, "Should exit conflicting short position")
+        # Dry-run does not mutate position state.
+        self.engine._positions_manager.close_position.assert_not_called()
+
+    def test_exit_opposite_position_uses_side_aware_close(self):
+        """Exiting a short must close via BUY (cover), not SELL (fix B/C)."""
+        existing = self._position("AAPL")
+        existing.side = "short"
+        existing.quantity = -10.0
+        self.engine._positions_manager.positions = [existing]
+        self.engine.set_dry_run_mode(False)
+
+        with patch.object(self.engine, 'place_market_sell_order',
+                          return_value=True) as mock_close:
+            result = self.engine._exit_opposite_position("AAPL", "long")
+
+        self.assertTrue(result)
+        mock_close.assert_called_once_with(
+            "AAPL", 10, "opposite_signal", side="short")
         self.engine._positions_manager.close_position.assert_called_once_with(
             "AAPL")
+
+    def test_exit_opposite_position_fails_without_client_does_not_mark_closed(self):
+        """Fix D: when broker close fails, don't mark the position closed."""
+        existing = self._position("AAPL")
+        self.engine._positions_manager.positions = [existing]
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = None
+
+        result = self.engine._exit_opposite_position("AAPL", "short")
+        self.assertFalse(result)
+        self.engine._positions_manager.close_position.assert_not_called()
+
+    def test_long_opportunity_does_not_exclude_existing_short(self):
+        """A symbol held short still appears as a long opportunity (to be exited)."""
+        results = [self._result("AAPL")]
+        results[0].direction = "long"
+
+        existing_short = self._position("AAPL")
+        existing_short.side = "short"
+        self.engine._positions_manager.positions = [existing_short]
+
+        def rsi_side_effect(symbol, _period):
+            return (25.0, 35.0)  # crossed below 30
+
+        with patch.object(self.engine, '_get_rsi_with_previous', side_effect=rsi_side_effect), \
+                patch.object(self.engine, '_get_current_price', return_value=150.0), \
+                patch.object(self.engine, '_compute_rsi_take_profit', return_value=170.0):
+            opportunities = self.engine.identify_buying_opportunities(results)
+
+        self.assertEqual(len(opportunities), 1,
+                         "existing short should not be excluded from long opportunities")
+
+    def test_identify_purchases_exit_does_not_consume_position_slot(self):
+        """Exits must not consume new-position slots (sizing sees only entries)."""
+        existing_short = self._position("EXIT")
+        existing_short.side = "short"
+        self.engine._positions_manager.positions = [existing_short]
+
+        exit_op = TradingOpportunity(
+            symbol="EXIT", current_rsi=25.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=95.0, take_profit_price=110.0, num_trades=10,
+        )
+        entry_op = TradingOpportunity(
+            symbol="NEW", current_rsi=24.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.2,
+            alpha=0.1, win_rate=0.9, entry_price=50.0,
+            stop_loss_price=47.5, take_profit_price=55.0, num_trades=10,
+        )
+
+        summary = {'opportunities_found': 0, 'new_positions': 0,
+                   'orders_placed': 0, 'positions_exited': 0}
+
+        with patch.object(self.engine, 'identify_buying_opportunities',
+                          return_value=[exit_op, entry_op]), \
+                patch.object(self.engine, '_exit_opposite_position',
+                             return_value=True) as mock_exit, \
+                patch.object(self.engine, 'calculate_position_sizes',
+                             return_value=[(entry_op, 10)]) as mock_size, \
+                patch.object(self.engine, 'place_buy_order', return_value=True):
+            self.engine.identify_purchases(summary, [])
+
+        # Sizing must only see the new entry, not the exit.
+        sized_opps = mock_size.call_args[0][0]
+        self.assertEqual([op.symbol for op in sized_opps], ["NEW"])
+        mock_exit.assert_called_once_with("EXIT", "long")
+        self.assertEqual(summary['positions_exited'], 1)
+        self.assertEqual(summary['new_positions'], 1)
+
+    def test_identify_and_execute_shorts_exit_does_not_consume_position_slot(self):
+        """Short exits must not consume new-position slots."""
+        existing_long = self._position("EXIT")
+        existing_long.side = "long"
+        self.engine._positions_manager.positions = [existing_long]
+
+        exit_op = TradingOpportunity(
+            symbol="EXIT", current_rsi=75.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=105.0, take_profit_price=90.0, num_trades=10,
+            direction="short",
+        )
+        entry_op = TradingOpportunity(
+            symbol="NEW", current_rsi=76.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.2,
+            alpha=0.1, win_rate=0.9, entry_price=50.0,
+            stop_loss_price=52.5, take_profit_price=45.0, num_trades=10,
+            direction="short",
+        )
+
+        summary = {'opportunities_found': 0, 'new_positions': 0,
+                   'orders_placed': 0, 'positions_exited': 0}
+
+        with patch.object(self.engine, 'identify_shorting_opportunities',
+                          return_value=[exit_op, entry_op]), \
+                patch.object(self.engine, '_exit_opposite_position',
+                             return_value=True) as mock_exit, \
+                patch.object(self.engine, 'calculate_short_position_sizes',
+                             return_value=[(entry_op, 10)]) as mock_size, \
+                patch.object(self.engine, 'place_short_order', return_value=True):
+            self.engine.identify_and_execute_shorts(summary, [])
+
+        sized_opps = mock_size.call_args[0][0]
+        self.assertEqual([op.symbol for op in sized_opps], ["NEW"])
+        mock_exit.assert_called_once_with("EXIT", "short")
+        self.assertEqual(summary['positions_exited'], 1)
+        self.assertEqual(summary['new_positions'], 1)
 
 
 if __name__ == '__main__':

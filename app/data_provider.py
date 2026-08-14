@@ -20,6 +20,20 @@ from config import globalConfig  # type: ignore
 logger = logging.getLogger(__name__)
 
 
+def _lower_str(value: Any) -> str:
+    """Coerce a value (possibly an Alpaca SDK enum) to a lowercase string.
+
+    Alpaca SDK enums expose ``.value`` (e.g. ``OrderSide.BUY.value == "buy"``),
+    but ``str()`` on the enum returns ``"OrderSide.BUY"`` which never matches
+    our lowercase string comparisons.
+    """
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        return str(value.value).lower()
+    return str(value).lower()
+
+
 class DataProvider:
     """Modern data provider using Alpaca's latest API."""
 
@@ -221,13 +235,13 @@ class DataProvider:
             for order in orders:
                 order_data.append({
                     'symbol': getattr(order, 'symbol', symbol),
-                    'side': getattr(order, 'side', None),
+                    'side': _lower_str(getattr(order, 'side', None)),
                     'filled_qty': float(getattr(order, 'filled_qty', 0) or 0),
                     'filled_avg_price': float(getattr(order, 'filled_avg_price', 0) or 0),
                     'submitted_at': getattr(order, 'submitted_at', None),
                     'filled_at': getattr(order, 'filled_at', None),
-                    'order_type': getattr(order, 'type', None),
-                    'status': getattr(order, 'status', None),
+                    'order_type': _lower_str(getattr(order, 'type', None)),
+                    'status': _lower_str(getattr(order, 'status', None)),
                 })
 
             df = pd.DataFrame(order_data)
@@ -783,15 +797,7 @@ class DataProvider:
                                   'rejected', 'suspended', 'pending_cancel'}
             active_orders = []
             for o in (orders or []):
-                _raw = getattr(o, 'status', None)
-                if _raw is not None:
-                    if hasattr(_raw, 'value'):
-                        s = str(_raw.value).lower()
-                    else:
-                        s = str(_raw).lower()
-                else:
-                    s = ''
-                if s not in _terminal_statuses:
+                if _lower_str(getattr(o, 'status', None)) not in _terminal_statuses:
                     active_orders.append(o)
 
             if not active_orders:
@@ -803,22 +809,8 @@ class DataProvider:
                 # Extract the raw order type — Alpaca SDK enums have .value
                 # (e.g. OrderType.LIMIT.value == "limit"), but str() on the enum
                 # returns "OrderType.LIMIT" which never matches our strings below.
-                _raw_type = getattr(order, 'type', None)
-                if _raw_type is not None:
-                    if hasattr(_raw_type, 'value'):
-                        order_type = str(_raw_type.value).lower()
-                    else:
-                        order_type = str(_raw_type).lower()
-                else:
-                    order_type = ''
-                _raw_side = getattr(order, 'side', None)
-                if _raw_side is not None:
-                    if hasattr(_raw_side, 'value'):
-                        side = str(_raw_side.value).lower()
-                    else:
-                        side = str(_raw_side).lower()
-                else:
-                    side = ''
+                order_type = _lower_str(getattr(order, 'type', None))
+                side = _lower_str(getattr(order, 'side', None))
 
                 # Classify the leg purely by order type — bracket legs
                 # become ``simple`` orders after the parent fills, so
@@ -839,14 +831,7 @@ class DataProvider:
                     created_at = created_at.isoformat()
 
                 # Also normalize the status enum: OrderStatus.ACCEPTED → "accepted"
-                _raw_status = getattr(order, 'status', None)
-                if _raw_status is not None:
-                    if hasattr(_raw_status, 'value'):
-                        status = str(_raw_status.value).lower()
-                    else:
-                        status = str(_raw_status).lower()
-                else:
-                    status = ''
+                status = _lower_str(getattr(order, 'status', None))
 
                 order_data.append({
                     'symbol': getattr(order, 'symbol', None),

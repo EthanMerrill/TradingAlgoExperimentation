@@ -164,10 +164,12 @@ class TradingEngine:
         opportunities = [
             op for op in opportunities if op.num_trades >= globalConfig.MIN_NUM_TRADES]
 
-        # Existing-position dedup
+        # Existing-position dedup: exclude only same-direction open positions.
+        # Opposite-direction holdings are handled as exits (no flip logic).
         if is_long:
             current_symbols = {
-                pos.symbol for pos in self._positions_manager.positions if not pos.closed}
+                pos.symbol for pos in self._positions_manager.positions
+                if not pos.closed and getattr(pos, 'side', 'long') == 'long'}
         else:
             current_symbols = {
                 pos.symbol for pos in self._positions_manager.positions
@@ -272,9 +274,11 @@ class TradingEngine:
 
             equity = account_info['equity']
 
-            # Calculate total notional value of existing short positions
+            # Calculate total notional value of existing short positions.
+            # quantity is negative for shorts, so use abs() — otherwise the
+            # cap is INCREASED by the existing short size instead of reduced.
             current_short_notional = sum(
-                pos.entry_price * pos.quantity
+                pos.entry_price * abs(pos.quantity)
                 for pos in current_positions
                 if getattr(pos, 'side', 'long') == 'short'
             )
@@ -364,7 +368,7 @@ class TradingEngine:
                             opportunity.stop_loss_price, profit_label, opportunity.take_profit_price)
                 logger.info("🔍 DRY RUN: Position value: $%.2f",
                             shares * opportunity.entry_price)
-                order_success = False
+                return True
             else:
                 if self.trading_client is None:
                     logger.error(
@@ -444,7 +448,7 @@ class TradingEngine:
                             order_id=placed_order_id,
                             symbol=opportunity.symbol,
                             side="buy" if side == OrderSide.BUY else "sell",
-                            qty=float(shares) * quantity_sign,
+                            qty=float(shares),
                             order_type="market",
                             order_class="bracket",
                             status="new",
@@ -471,61 +475,63 @@ class TradingEngine:
         """Place a short-sell order for a trading opportunity."""
         return self._place_order(opportunity, shares, OrderSide.SELL, -1, "SHORT", "Cover target")
 
-    def _close_conflicting_position(self, symbol: str, new_direction: str) -> bool:
-        """
-        Close an existing position in the opposite direction (flip logic).
-
-        When a new signal fires in the opposite direction for the same symbol,
-        we close the existing position first before opening the new one.
-
-        Args:
-            symbol: Stock symbol
-            new_direction: The direction we want to open ("long" or "short")
-
-        Returns:
-            True if a conflicting position was closed, False if none existed
-        """
-        existing = next(
+    def _find_open_position(self, symbol: str) -> Optional[Position]:
+        """Return the open position for a symbol, or None."""
+        return next(
             (pos for pos in self._positions_manager.positions
              if pos.symbol == symbol and not pos.closed),
             None
         )
+
+    def _has_opposite_position(self, symbol: str, direction: str) -> bool:
+        """True if there is an open position in the opposite direction."""
+        existing = self._find_open_position(symbol)
+        if existing is None:
+            return False
+        return getattr(existing, 'side', 'long') != direction
+
+    def _exit_opposite_position(self, symbol: str, new_direction: str) -> bool:
+        """
+        Exit an open position held in the opposite direction of ``new_direction``.
+
+        Replaces the old flip logic: when a signal fires in the opposite
+        direction of an existing position, we close that position instead of
+        opening a new opposite position.
+
+        Args:
+            symbol: Stock symbol
+            new_direction: The direction we are considering ("long" or "short")
+
+        Returns:
+            True if an opposite position was closed; False if there was none
+            or the close failed.
+        """
+        existing = self._find_open_position(symbol)
         if existing is None:
             return False
 
         existing_side = getattr(existing, 'side', 'long')
         if existing_side == new_direction:
-            return False  # Same direction, no conflict
+            return False  # Same direction — nothing to exit
 
         logger.info(
-            "🔄 Flipping %s: closing existing %s position before opening %s",
-            symbol, existing_side, new_direction
+            "🔄 Exiting %s: closing existing %s position (signal in opposite direction)",
+            symbol, existing_side
         )
 
-        try:
-            if self.dry_run:
-                logger.info(
-                    "🔍 DRY RUN: Would market-sell %d shares of %s to close %s position",
-                    existing.quantity, symbol, existing_side
-                )
-            else:
-                if self.trading_client is not None:
-                    self.trading_client.close_position(
-                        symbol_or_asset_id=symbol
-                    )
-                    logger.info(
-                        "Market-sold %d shares of %s to close %s position (flip)",
-                        existing.quantity, symbol, existing_side
-                    )
-
-            # Mark position as closed in positions manager
-            self._positions_manager.close_position(symbol)
+        # Use the side-aware market close so the exit is persisted to the
+        # order ledger and only marked closed when the broker close succeeds.
+        if self.place_market_sell_order(
+            symbol, abs(existing.quantity), "opposite_signal",
+            side=existing_side
+        ):
+            if not self.dry_run:
+                existing.exit_reason = "opposite_signal"
+                self._positions_manager.close_position(symbol)
             return True
 
-        except Exception as e:
-            logger.error(
-                "Error closing conflicting position for %s: %s", symbol, e)
-            return False
+        logger.error("Failed to exit opposite position for %s", symbol)
+        return False
 
     def calculate_todays_stop_loss_and_take_profit(self, position: Position) -> Tuple[float, float]:
         """
@@ -617,13 +623,25 @@ class TradingEngine:
                                     else position.take_profit_price)
                     return default_stop, default_take
 
-                if target_price <= current_price or target_price <= position.entry_price:
+                if target_price <= position.entry_price:
+                    # RSI target at/below entry: anchor the take-profit to
+                    # entry, not current price. Anchoring to current price
+                    # can push the take-profit below the entry-anchored
+                    # stop-loss when the position is underwater.
+                    take_profit_price = round(
+                        position.entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
+                elif target_price <= current_price:
                     take_profit_price = round(current_price * (1.0005), 2)
                 else:
                     take_profit_price = round(target_price, 2)
 
                 stop_loss_price = round(
                     position.entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
+
+                # Defensive: never return an inverted long SL/TP pair.
+                if take_profit_price <= stop_loss_price:
+                    take_profit_price = round(
+                        position.entry_price * (1 + globalConfig.TAKE_PROFIT_PCT), 2)
 
                 logger.info("Calculated new stop loss: $%.2f and take profit: $%.2f for %s",
                             stop_loss_price, take_profit_price, position.symbol)
@@ -648,7 +666,7 @@ class TradingEngine:
                                 else position.take_profit_price)
             return default_stop, default_take
 
-    def place_oco_close_order(self, symbol: str, shares: int, stop_loss_price: float, take_profit_price: float, side: str = "long") -> bool:
+    def place_oco_close_order(self, symbol: str, shares: float, stop_loss_price: float, take_profit_price: float, side: str = "long") -> bool:
         """
         Place an OCO (One Cancels Other) close order for an existing position.
 
@@ -676,6 +694,23 @@ class TradingEngine:
                 logger.info("🔍 DRY RUN: Stop loss at $%.2f, Take profit at $%.2f",
                             stop_loss_price, take_profit_price)
                 return True
+
+            # Validate SL/TP orientation BEFORE cancelling existing orders.
+            # An inverted pair would be rejected by Alpaca, but only after we
+            # have already cancelled the (still-valid) protective orders —
+            # leaving the position exposed. Refuse early instead.
+            if side == "short":
+                if take_profit_price >= stop_loss_price:
+                    logger.error(
+                        "Refusing OCO for %s: short cover $%.2f must be below stop $%.2f",
+                        symbol, take_profit_price, stop_loss_price)
+                    return False
+            else:
+                if stop_loss_price >= take_profit_price:
+                    logger.error(
+                        "Refusing OCO for %s: long stop $%.2f must be below take-profit $%.2f",
+                        symbol, stop_loss_price, take_profit_price)
+                    return False
 
             # Get current price for validation
             current_price = self._get_current_price(symbol)
@@ -807,45 +842,55 @@ class TradingEngine:
             logger.error(error_msg)
             return False
 
-    def place_market_sell_order(self, symbol: str, shares: int, reason: str = "manual") -> bool:
+    def place_market_sell_order(self, symbol: str, shares: float, reason: str = "manual", side: str = "long") -> bool:
         """
-        Place a simple market sell order (used for max-hold-day forced exits).
+        Place a simple market close order (used for max-hold-day forced exits).
+
+        Closes a long with a market SELL, or a short with a market BUY (cover).
 
         Args:
-            symbol: Stock symbol to sell
-            shares: Number of shares to sell
+            symbol: Stock symbol to close
+            shares: Number of shares to close (absolute value)
             reason: Human-readable reason for the exit (for logging)
+            side: Position side — "long" (default) or "short"
 
         Returns:
             True if order was placed successfully
         """
+        is_short = side == "short"
+        order_side = OrderSide.BUY if is_short else OrderSide.SELL
+        action = "buy (cover)" if is_short else "sell"
+        side_tag = "BUY" if is_short else "SELL"
+        side_label = "buy" if is_short else "sell"
+
         try:
             if self.dry_run:
                 logger.info(
-                    "🔍 DRY RUN: Would place market sell for %d shares of %s (reason: %s)",
-                    shares, symbol, reason)
+                    "🔍 DRY RUN: Would place market %s for %d shares of %s (reason: %s)",
+                    action, shares, symbol, reason)
                 return True
 
             if self.trading_client is None:
                 logger.error(
-                    "Trading client not available — cannot place sell order for %s", symbol)
+                    "Trading client not available — cannot place %s order for %s",
+                    action, symbol)
                 return False
 
             client_order_id = self._make_unique_client_order_id(
-                generate_client_order_id(symbol, "SELL", datetime.now())
+                generate_client_order_id(symbol, side_tag, datetime.now())
             )
 
             order_request = MarketOrderRequest(
                 symbol=symbol,
                 qty=shares,
-                side=OrderSide.SELL,
+                side=order_side,
                 time_in_force=TimeInForce.DAY,
                 client_order_id=client_order_id,
             )
             order = self.trading_client.submit_order(order_request)
             placed_order_id = getattr(order, 'id', None)
-            logger.info("Market sell order placed for %d shares of %s (reason: %s) — order %s",
-                        shares, symbol, reason, placed_order_id)
+            logger.info("Market %s order placed for %d shares of %s (reason: %s) — order %s",
+                        action, shares, symbol, reason, placed_order_id)
 
             try:
                 storage.save_orders([
@@ -853,7 +898,7 @@ class TradingEngine:
                         client_order_id=client_order_id,
                         order_id=placed_order_id,
                         symbol=symbol,
-                        side="sell",
+                        side=side_label,
                         qty=float(shares),
                         order_type="market",
                         order_class="simple",
@@ -863,14 +908,14 @@ class TradingEngine:
                     )
                 ])
             except Exception as e:
-                logger.error("Error saving market sell order to storage for %s: %s",
+                logger.error("Error saving market close order to storage for %s: %s",
                              symbol, e)
 
             return True
 
         except Exception as e:
             logger.error(
-                "Error placing market sell order for %s: %s", symbol, e)
+                "Error placing market %s order for %s: %s", action, symbol, e)
             return False
 
     def update_portfolio_orders(self, session_summary: Dict[str, Any], current_positions: List[Position]) -> Dict[str, Any]:
@@ -894,13 +939,14 @@ class TradingEngine:
                     "⏰ Position %s held for %d days (max: %d) — force closing",
                     position.symbol, days_held, globalConfig.MAX_HOLD_DAYS)
                 if self.place_market_sell_order(
-                    position.symbol, int(
-                        abs(position.quantity)), "max_hold_days"
+                    position.symbol, abs(position.quantity),
+                    "max_hold_days", side=getattr(position, 'side', 'long')
                 ):
-                    position.exit_reason = "max_hold_days"
-                    self._positions_manager.close_position(position.symbol)
                     session_summary['positions_exited'] += 1
                     positions_to_close.append(position.symbol)
+                    if not self.dry_run:
+                        position.exit_reason = "max_hold_days"
+                        self._positions_manager.close_position(position.symbol)
                 else:
                     logger.error(
                         "Failed to force-close expired position: %s", position.symbol)
@@ -919,7 +965,7 @@ class TradingEngine:
             else:
                 # Place OCO close order with updated stop loss and take profit
                 pos_side = getattr(position, 'side', 'long')
-                if self.place_oco_close_order(position.symbol, int(abs(position.quantity)), position.stop_loss_price, position.take_profit_price, side=pos_side):
+                if self.place_oco_close_order(position.symbol, abs(position.quantity), position.stop_loss_price, position.take_profit_price, side=pos_side):
                     session_summary['orders_placed'] += 1
         return session_summary
 
@@ -936,8 +982,24 @@ class TradingEngine:
         opportunities = self.identify_buying_opportunities(backtest_results)
         session_summary['opportunities_found'] = len(opportunities)
 
-        # Calculate position sizes
-        position_allocations = self.calculate_position_sizes(opportunities)
+        # Partition: opposite-direction holdings are exits, not new entries.
+        # Exits do NOT consume new-position slots.
+        exit_symbols = {
+            op.symbol for op in opportunities
+            if self._has_opposite_position(op.symbol, "long")
+        }
+        for op in opportunities:
+            if op.symbol in exit_symbols:
+                if self._exit_opposite_position(op.symbol, "long"):
+                    session_summary['positions_exited'] += 1
+
+        entry_opportunities = [
+            op for op in opportunities if op.symbol not in exit_symbols
+        ]
+
+        # Calculate position sizes (new entries only)
+        position_allocations = self.calculate_position_sizes(
+            entry_opportunities)
 
         if position_allocations:
             logger.info("📥 Found %d new buying opportunities:",
@@ -952,10 +1014,8 @@ class TradingEngine:
                             opportunity.current_rsi, opportunity.alpha, opportunity.win_rate * 100)
             logger.info("   Total investment: $%.2f", total_investment)
 
-            # Execute buy orders (with flip check for conflicting shorts)
+            # Execute buy orders
             for opportunity, shares in position_allocations:
-                # Close conflicting short position if one exists (flip to long)
-                self._close_conflicting_position(opportunity.symbol, "long")
                 if self.place_buy_order(opportunity, shares):
                     session_summary['orders_placed'] += 1
                     session_summary['new_positions'] += 1
@@ -978,9 +1038,23 @@ class TradingEngine:
         logger.info("Found %d short-selling opportunities",
                     len(short_opportunities))
 
-        # Calculate position sizes (respects leverage cap)
+        # Partition: opposite-direction holdings are exits, not new entries.
+        exit_symbols = {
+            op.symbol for op in short_opportunities
+            if self._has_opposite_position(op.symbol, "short")
+        }
+        for op in short_opportunities:
+            if op.symbol in exit_symbols:
+                if self._exit_opposite_position(op.symbol, "short"):
+                    session_summary['positions_exited'] += 1
+
+        entry_opportunities = [
+            op for op in short_opportunities if op.symbol not in exit_symbols
+        ]
+
+        # Calculate position sizes (respects leverage cap; new entries only)
         position_allocations = self.calculate_short_position_sizes(
-            short_opportunities)
+            entry_opportunities)
 
         if position_allocations:
             logger.info("📉 Found %d new short-selling opportunities:",
@@ -995,10 +1069,8 @@ class TradingEngine:
                             opportunity.current_rsi, opportunity.alpha, opportunity.win_rate * 100)
             logger.info("   Total short notional: $%.2f", total_notional)
 
-            # Execute short orders with flip check
+            # Execute short orders
             for opportunity, shares in position_allocations:
-                # Close conflicting long position if one exists (flip to short)
-                self._close_conflicting_position(opportunity.symbol, "short")
                 if self.place_short_order(opportunity, shares):
                     session_summary['orders_placed'] += 1
                     session_summary['new_positions'] += 1
@@ -1056,7 +1128,7 @@ class TradingEngine:
 
             # save updated positions to cloud storage
             if not self.dry_run:
-                storage.save_positions(self._positions_manager.positions)
+                self._positions_manager.persist_positions()
             else:
                 logger.info(
                     "Dry run mode: Skipping positions save to cloud storage")
@@ -1068,7 +1140,7 @@ class TradingEngine:
             logger.error(error_msg)
             # save updated positions to cloud storage
             if not self.dry_run:
-                storage.save_positions(self._positions_manager.positions)
+                self._positions_manager.persist_positions()
             else:
                 logger.info(
                     "Dry run mode: Skipping positions save to cloud storage")

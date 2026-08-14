@@ -93,6 +93,22 @@ class PositionsManager:
                 )
         self.storage_backend.save_positions(positions_df)
 
+    def persist_positions(self) -> None:
+        """Persist the full in-memory position state (open + closed).
+
+        Single save path: builds a DataFrame from ``self.positions`` and
+        delegates to ``_persist_positions`` so historical closed rows are
+        preserved.  Replaces direct ``storage.save_positions(positions)``
+        calls that silently dropped closed positions.
+        """
+        if not self.positions:
+            return
+        # pylint: disable=import-outside-toplevel
+        from storage.backend import normalize_position_for_save
+
+        rows = [normalize_position_for_save(p) for p in self.positions]
+        self._persist_positions(pd.DataFrame(rows))
+
     @staticmethod
     def _df_row_to_position(row: pd.Series, closed: bool = None,
                             exit_date_default=None) -> Position:
