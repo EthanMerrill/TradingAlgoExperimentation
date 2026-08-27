@@ -8,6 +8,7 @@ Requires DATABASE_URL env var when STORAGE_BACKEND=postgres.
 """
 import asyncio
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
@@ -62,6 +63,21 @@ def _sync(coro):
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(asyncio.run, coro).result()
+
+
+def _pool_is_closed(pool) -> bool:
+    """True only if ``pool`` is a real asyncpg pool reporting closed.
+
+    Mock pools used in tests report a truthy ``is_closed()`` value, so we
+    only treat an actual ``True`` as closed.
+    """
+    if pool is None:
+        return True
+    try:
+        result = pool.is_closed()
+    except (AttributeError, TypeError):
+        return False
+    return result is True
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +208,13 @@ _POSITION_COLS = POSITION_FIELDS
 class PostgresStorage(StorageBackend):
     """Storage backend backed by a Postgres database via asyncpg."""
 
+    # asyncpg pools are bound to the event loop that created them and cannot
+    # be used from other threads/loops (raises "Event loop is closed").  Since
+    # this backend is called from both the main trading loop and the Waitress
+    # health-server daemon thread, keep one pool per event loop.
+    _pools_by_loop: Dict[int, asyncpg.Pool] = {}
+    _pools_lock: threading.Lock = threading.Lock()
+
     def __init__(self, database_url: Optional[str] = None):
         # type: ignore # pylint: disable=import-outside-toplevel
         from config import globalConfig
@@ -218,8 +241,6 @@ class PostgresStorage(StorageBackend):
     # -- pool & schema -------------------------------------------------------
 
     async def _init_pool_and_schema(self) -> None:
-        # import asyncpg  # pylint: disable=import-outside-toplevel
-
         self._pool = await asyncpg.create_pool(
             self._dsn,
             min_size=1,
@@ -232,16 +253,60 @@ class PostgresStorage(StorageBackend):
         logger.info(
             "Postgres pool connected & schema ensured (env=%s)", self._env)
 
+    def _get_pool(self) -> Optional[asyncpg.Pool]:
+        """Return a pool bound to the current event loop, creating one if needed.
+
+        asyncpg pools cannot be shared across event loops, so keep a pool per
+        loop: the main trading loop and the Waitress health-server daemon
+        thread each get a pool owned by their own loop.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return self._pool
+
+        loop_id = id(loop)
+        with self._pools_lock:
+            # Prefer an explicitly-assigned pool (tests, or the pool created
+            # in __init__).  Mock pools (tests) report a truthy is_closed(),
+            # so only a real pool reporting True is treated as closed.
+            if self._pool is not None and not _pool_is_closed(self._pool):
+                return self._pool
+
+            existing = self._pools_by_loop.get(loop_id)
+            if existing is not None and not _pool_is_closed(existing):
+                return existing
+
+            async def _create() -> asyncpg.Pool:
+                return await asyncpg.create_pool(
+                    self._dsn, min_size=1, max_size=4, command_timeout=30)
+
+            try:
+                pool = _sync(_create())
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.error(
+                    "Failed to create per-loop Postgres pool: %s", exc)
+                return None
+
+            self._pools_by_loop[loop_id] = pool
+            return pool
+
     async def _fetch(self, query: str, *args) -> List[asyncpg.Record]:
-        if not self._connected or self._pool is None:
+        if not self._connected:
             return []
-        async with self._pool.acquire() as conn:
+        pool = self._get_pool()
+        if pool is None:
+            return []
+        async with pool.acquire() as conn:
             return await conn.fetch(query, *args)
 
     async def _execute(self, query: str, *args) -> str:
-        if not self._connected or self._pool is None:
+        if not self._connected:
             return "NOT_CONNECTED"
-        async with self._pool.acquire() as conn:
+        pool = self._get_pool()
+        if pool is None:
+            return "NOT_CONNECTED"
+        async with pool.acquire() as conn:
             return await conn.execute(query, *args)
 
     # -- save_backtest_results -----------------------------------------------
@@ -293,9 +358,12 @@ class PostgresStorage(StorageBackend):
             return False
 
     async def _execute_many(self, sql: str, rows: List[tuple]) -> None:
-        if not self._connected or self._pool is None:
+        if not self._connected:
             return
-        async with self._pool.acquire() as conn:
+        pool = self._get_pool()
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
             await conn.executemany(sql, rows)
 
     # -- load_backtest_results -----------------------------------------------
