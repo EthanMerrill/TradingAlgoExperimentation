@@ -37,11 +37,26 @@ logger = logging.getLogger(__name__)
 
 
 def _sync(coro):
-    """Run an async coroutine and return its result synchronously."""
+    """Run an async coroutine and return its result synchronously.
+
+    Loop-safe: works from a sync context, an already-running event loop,
+    and (importantly) from worker threads spawned by ``run_in_executor``
+    that inherit loop context.  ``asyncio.run`` fails with
+    ``RuntimeError: Event loop is closed`` in those threads, so when there
+    is no *running* loop we create a fresh loop explicitly and close it
+    ourselves.
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        # No running loop — create a fresh one and drive it directly.
+        # This is safe even in threads that carry stale loop context,
+        # which `asyncio.run` is not.
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
     # We're inside an already-running event loop — run in a background thread.
     import concurrent.futures
