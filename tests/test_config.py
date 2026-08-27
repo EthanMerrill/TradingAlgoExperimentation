@@ -224,6 +224,38 @@ class TestConfig(unittest.TestCase):
         self.assertIsNone(test_config.MAX_VOLUME)
         self.assertIsNone(test_config.MAX_MARKET_CAP)
 
+    @patch('config.load_dotenv')
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'dev',
+        'ALPACA_DEV_PAPER_KEY': 'test_key',
+        'ALPACA_DEV_PAPER_SECRET': 'test_secret',
+        'DATABASE_URL': 'postgresql://u:p@h/db',
+    })
+    @patch('builtins.open', mock_open(read_data='{"storage_backend": "postgres"}'))
+    def test_storage_backend_from_json_not_clobbered(self, _mock_dotenv):
+        """storage_backend from JSON must survive setup_data_parameters."""
+        from config import Config
+
+        test_config = Config()
+
+        self.assertEqual(test_config.STORAGE_BACKEND, 'postgres')
+        self.assertEqual(test_config.DATABASE_URL, 'postgresql://u:p@h/db')
+
+    @patch('config.load_dotenv')
+    @patch.dict(os.environ, {
+        'ENVIRONMENT': 'dev',
+        'ALPACA_DEV_PAPER_KEY': 'test_key',
+        'ALPACA_DEV_PAPER_SECRET': 'test_secret',
+    })
+    @patch('builtins.open', side_effect=FileNotFoundError())
+    def test_storage_backend_defaults_to_gcs_without_json(self, _mock_open_file, _mock_dotenv):
+        """storage_backend defaults to gcs when the JSON config is missing."""
+        from config import Config
+
+        test_config = Config()
+
+        self.assertEqual(test_config.STORAGE_BACKEND, 'gcs')
+
 
 if __name__ == '__main__':
     unittest.main()

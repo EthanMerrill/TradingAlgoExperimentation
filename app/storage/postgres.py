@@ -14,7 +14,16 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 import asyncpg
 import pandas as pd
 
-from storage.backend import StorageBackend, backtest_result_to_dict, dict_to_backtest_result, normalize_position_for_save
+from storage.backend import (
+    StorageBackend,
+    backtest_result_to_dict,
+    dict_to_backtest_result,
+    normalize_position_for_save,
+    order_to_dict,
+    dict_to_order,
+    POSITION_FIELDS,
+    ORDER_FIELDS,
+)
 
 if TYPE_CHECKING:
     from config import Config
@@ -94,6 +103,8 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
     exit_price          DOUBLE PRECISION,
     realized_return     DOUBLE PRECISION,
     side                TEXT        DEFAULT 'long',
+    order_id            TEXT,
+    client_order_id     TEXT,
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_ps_timestamp
@@ -112,7 +123,34 @@ CREATE INDEX IF NOT EXISTS idx_sm_timestamp
     ON session_metadata (timestamp, environment);
 """
 
-_ALL_DDL = _DDL_BACKTEST_RESULTS + _DDL_POSITION_SNAPSHOTS + _DDL_SESSION_METADATA
+_DDL_ORDERS = """
+CREATE TABLE IF NOT EXISTS orders (
+    id              SERIAL PRIMARY KEY,
+    environment     TEXT        NOT NULL,
+    client_order_id TEXT        NOT NULL,
+    order_id        TEXT,
+    symbol          TEXT        NOT NULL,
+    side            TEXT,
+    qty             DOUBLE PRECISION,
+    order_type      TEXT,
+    order_class     TEXT,
+    status          TEXT,
+    stop_price      DOUBLE PRECISION,
+    limit_price     DOUBLE PRECISION,
+    submitted_at    TIMESTAMPTZ,
+    filled_at       TIMESTAMPTZ,
+    leg             TEXT,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_orders_env_client UNIQUE (environment, client_order_id)
+);
+CREATE INDEX IF NOT EXISTS idx_orders_env_symbol
+    ON orders (environment, symbol);
+"""
+
+_ALL_DDL = (
+    _DDL_BACKTEST_RESULTS + _DDL_POSITION_SNAPSHOTS
+    + _DDL_SESSION_METADATA + _DDL_ORDERS
+)
 
 # ---------------------------------------------------------------------------
 # Column-name helpers
@@ -126,12 +164,10 @@ _BACKTEST_COLS = [
     "composite_score", "direction", "profitable", "current_rsi",
 ]
 
-_POSITION_COLS = [
-    "symbol", "shares", "entry_price", "current_price", "current_rsi",
-    "entry_date", "rsi_period", "rsi_lower", "rsi_upper", "alpha",
-    "stop_loss_price", "take_profit_price", "closed",
-    "exit_date", "exit_price", "realized_return", "side",
-]
+# Position columns are the single source of truth from backend.py so the
+# Postgres schema cannot drift from the GCS/CSV schema (previous drift here
+# silently dropped order_id/client_order_id).
+_POSITION_COLS = POSITION_FIELDS
 
 # ---------------------------------------------------------------------------
 # PostgresStorage
@@ -350,6 +386,74 @@ class PostgresStorage(StorageBackend):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error saving positions to Postgres: %s", exc)
             return False
+
+    # -- save_orders ---------------------------------------------------------
+
+    def save_orders(self, orders, timestamp: Optional[str] = None) -> bool:
+        """Persist broker orders, upserting by (environment, client_order_id)."""
+        if not self._connected:
+            logger.error("Postgres not connected — cannot save orders")
+            return False
+
+        if not orders:
+            return True
+
+        rows: List[tuple] = []
+        for o in orders:
+            d = order_to_dict(o)
+            rows.append((
+                self._env, d["client_order_id"], d["order_id"], d["symbol"],
+                d["side"], d["qty"], d["order_type"], d["order_class"],
+                d["status"], d["stop_price"], d["limit_price"],
+                d["submitted_at"], d["filled_at"], d["leg"],
+            ))
+
+        cols = ["environment"] + list(ORDER_FIELDS)
+        col_list = ", ".join(cols)
+        placeholders = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
+        # Upsert all columns except the conflict key (client_order_id).
+        update_set = ", ".join(
+            f"{c} = EXCLUDED.{c}" for c in ORDER_FIELDS if c != "client_order_id"
+        )
+        sql = (
+            f"INSERT INTO orders ({col_list}) VALUES ({placeholders}) "
+            f"ON CONFLICT (environment, client_order_id) DO UPDATE SET {update_set}"
+        )
+
+        try:
+            _sync(self._execute_many(sql, rows))
+            logger.info("Saved %d orders to Postgres", len(orders))
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving orders to Postgres: %s", exc)
+            return False
+
+    # -- load_orders ---------------------------------------------------------
+
+    def load_orders(
+        self, symbol: Optional[str] = None, status: Optional[str] = None
+    ) -> List[Any]:
+        """Load orders, optionally filtered by symbol and/or status."""
+        if not self._connected:
+            return []
+
+        col_list = ", ".join(ORDER_FIELDS)
+        query = f"SELECT {col_list} FROM orders WHERE environment = $1"
+        args: List[Any] = [self._env]
+        if symbol is not None:
+            args.append(symbol)
+            query += f" AND symbol = ${len(args)}"
+        if status is not None:
+            args.append(status.lower())
+            query += f" AND status = ${len(args)}"
+
+        try:
+            rows = _sync(self._fetch(query, *args))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error loading orders from Postgres: %s", exc)
+            return []
+
+        return [dict_to_order(dict(r)) for r in rows]
 
     # -- save_metadata -------------------------------------------------------
 

@@ -210,7 +210,7 @@ class DataProvider:
 
         Returns:
             DataFrame with columns: symbol, side, filled_qty, filled_avg_price,
-            submitted_at, filled_at, order_type, status
+            submitted_at, filled_at, order_type, status, order_id, client_order_id
         """
         try:
             if self.trading_client is None:
@@ -242,6 +242,8 @@ class DataProvider:
                     'filled_at': getattr(order, 'filled_at', None),
                     'order_type': _lower_str(getattr(order, 'type', None)),
                     'status': _lower_str(getattr(order, 'status', None)),
+                    'order_id': getattr(order, 'id', None),
+                    'client_order_id': getattr(order, 'client_order_id', None),
                 })
 
             df = pd.DataFrame(order_data)

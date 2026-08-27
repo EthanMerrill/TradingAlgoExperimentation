@@ -1285,6 +1285,65 @@ class TestPositionsManager(unittest.TestCase):
         self.assertGreater(
             self.data.get_current_positions_df.call_count, api_calls)
 
+    def test_find_fill_by_client_order_id(self):
+        """Exact match by client_order_id returns price/qty/filled_at."""
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
+             "filled_avg_price": 155.0, "client_order_id": "AAPL-BUY-1",
+             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
+             "filled_at": datetime(2025, 6, 10)},
+        ])
+        result = self.manager._find_fill_by_client_order_id("AAPL", "AAPL-BUY-1")
+        self.assertIsNotNone(result)
+        price, qty, _ = result
+        self.assertEqual(price, 155.0)
+        self.assertEqual(qty, 10.0)
+
+    def test_find_fill_by_client_order_id_fallback_to_order_id(self):
+        """Falls back to matching by order_id when client_order_id differs."""
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
+             "filled_avg_price": 155.0, "client_order_id": None,
+             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
+             "filled_at": datetime(2025, 6, 10)},
+        ])
+        result = self.manager._find_fill_by_client_order_id("AAPL", "o1")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], 155.0)
+
+    def test_find_fill_by_client_order_id_no_match(self):
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
+             "filled_avg_price": 155.0, "client_order_id": "OTHER",
+             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
+             "filled_at": datetime(2025, 6, 10)},
+        ])
+        self.assertIsNone(
+            self.manager._find_fill_by_client_order_id("AAPL", "NOPE"))
+
+    def test_close_position_prefers_client_order_id_fill(self):
+        """close_position uses the exact client_order_id fill, not a heuristic."""
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
+             "filled_avg_price": 155.0, "client_order_id": "AAPL-BUY-1",
+             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
+             "filled_at": datetime(2025, 6, 10)},
+        ])
+        p = Position(
+            symbol="AAPL", quantity=10.0, entry_price=150.0, current_price=151.0,
+            current_rsi=45.0, entry_date=datetime(2025, 6, 1), alpha=0.05,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
+            stop_loss_price=140.0, take_profit_price=160.0,
+            client_order_id="AAPL-BUY-1",
+        )
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
+
+        self.manager.close_position("AAPL")
+
+        self.assertTrue(p.closed)
+        self.assertEqual(p.exit_price, 155.0)
+
 
 if __name__ == '__main__':
     unittest.main()

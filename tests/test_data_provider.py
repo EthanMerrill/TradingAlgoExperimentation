@@ -428,6 +428,34 @@ class TestDataProviderOrderHistory(unittest.TestCase):
         self.assertEqual(result.iloc[0]['status'], "buy")
 
     @patch('data_provider.globalConfig')
+    def test_get_filled_orders_exposes_order_ids(self, mock_config):
+        """Filled orders must expose order_id and client_order_id columns."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        order = Mock()
+        order.symbol = "AAPL"
+        order.side = "buy"
+        order.filled_qty = "10"
+        order.filled_avg_price = "150.25"
+        order.submitted_at = datetime.now()
+        order.filled_at = datetime.now()
+        order.type = "market"
+        order.status = "filled"
+        order.id = "order_123"
+        order.client_order_id = "AAPL-BUY-1"
+
+        with patch('data_provider.TradingClient') as mock_trading_class:
+            mock_trading = Mock()
+            mock_trading.get_orders.return_value = [order]
+            mock_trading_class.return_value = mock_trading
+
+            data_provider = DataProvider()
+            result = data_provider.get_filled_orders_for_symbol('AAPL')
+
+        self.assertEqual(result.iloc[0]['order_id'], "order_123")
+        self.assertEqual(result.iloc[0]['client_order_id'], "AAPL-BUY-1")
+
+    @patch('data_provider.globalConfig')
     def test_get_entry_order_for_symbol_long(self, mock_config):
         """Test finding entry order for a long position."""
         mock_config.get_alpaca_config.return_value = self.mock_config

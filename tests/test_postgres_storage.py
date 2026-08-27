@@ -135,6 +135,41 @@ class TestPostgresStorage(unittest.TestCase):
         self.assertTrue(s.save_positions(pos, timestamp="20250610_170000"))
         self._conn.executemany.assert_called()
 
+    # --- save_orders ---
+
+    def test_save_orders_disconnected(self):
+        self.assertFalse(self._disconnected().save_orders([]))
+
+    def test_save_orders_success_upsert(self):
+        from order import Order
+        s = self._connected()
+        orders = [Order(client_order_id="AAPL-BUY-1", symbol="AAPL",
+                        side="buy", qty=5.0, status="new", leg="entry")]
+        self.assertTrue(s.save_orders(orders))
+        self._conn.executemany.assert_called()
+        sql = self._conn.executemany.call_args[0][0]
+        self.assertIn("ON CONFLICT (environment, client_order_id)", sql)
+
+    def test_save_orders_empty(self):
+        self.assertTrue(self._connected().save_orders([]))
+
+    # --- load_orders ---
+
+    def test_load_orders_disconnected(self):
+        self.assertEqual(self._disconnected().load_orders(), [])
+
+    def test_load_orders_success(self):
+        self._conn.fetch = AsyncMock(return_value=[dict(
+            client_order_id="AAPL-BUY-1", order_id="o1", symbol="AAPL",
+            side="buy", qty=5.0, order_type="market", order_class="bracket",
+            status="new", stop_price=None, limit_price=None,
+            submitted_at=None, filled_at=None, leg="entry")])
+        orders = self._connected().load_orders(symbol="AAPL")
+        self.assertEqual(len(orders), 1)
+        self.assertEqual(orders[0].symbol, "AAPL")
+        self.assertEqual(orders[0].client_order_id, "AAPL-BUY-1")
+        self.assertEqual(orders[0].status, "new")
+
     # --- save_metadata ---
 
     def test_save_md_disconnected(self):

@@ -510,6 +510,30 @@ class PositionsManager:
                     exit_date_val = None
                     exit_reason_val = None
 
+                    # --- Step 0: exact fill by client_order_id/order_id ---
+                    client_order_id = None
+                    if 'client_order_id' in cloud_positions.columns:
+                        cid_vals = cloud_positions.loc[
+                            symbol_mask, 'client_order_id']
+                        if len(cid_vals) and pd.notna(cid_vals.values[0]):
+                            client_order_id = str(cid_vals.values[0])
+                    matched = self._find_fill_by_client_order_id(
+                        symbol, client_order_id)
+                    if matched is not None and matched[0] and matched[0] > 0:
+                        exit_price_val = matched[0]
+                        filled_at = matched[2]
+                        if pd.notna(filled_at):
+                            exit_date_val = filled_at if isinstance(
+                                filled_at, datetime) else datetime.fromisoformat(str(filled_at))
+                            if exit_date_val.tzinfo is not None:
+                                exit_date_val = exit_date_val.replace(
+                                    tzinfo=None)
+                        exit_reason_val = "matched_by_client_order_id"
+                        logger.info(
+                            "Reconcile %s: matched fill by client_order_id=%s at $%.2f",
+                            symbol, client_order_id, exit_price_val
+                        )
+
                     # --- Step 1: Check Alpaca order history for a real fill ---
                     try:
                         orders_df = self.data_provider.get_filled_orders_for_symbol(
@@ -520,7 +544,7 @@ class PositionsManager:
                                 (orders_df['side'] == close_order_side) &
                                 (orders_df['filled_qty'] > 0)
                             ]
-                            if not close_orders.empty:
+                            if exit_price_val is None and not close_orders.empty:
                                 latest_close = close_orders.iloc[0]
                                 filled_price = float(
                                     latest_close['filled_avg_price'])
@@ -699,6 +723,43 @@ class PositionsManager:
 
         return open_positions
 
+    def _find_fill_by_client_order_id(
+        self, symbol: str, client_order_id: Optional[str]
+    ) -> Optional[tuple]:
+        """Find a filled order by client_order_id (fallback: order_id).
+
+        Returns (filled_avg_price, filled_qty, filled_at) or None.
+        Used to deterministically match a position to its close fill instead
+        of guessing by side + most-recent order.
+        """
+        if not client_order_id:
+            return None
+        try:
+            orders_df = self.data_provider.get_filled_orders_for_symbol(
+                symbol, limit=50)
+        except Exception:  # pylint: disable=broad-exception-caught
+            return None
+        if orders_df.empty or 'client_order_id' not in orders_df.columns:
+            return None
+
+        cid = str(client_order_id)
+        matched = orders_df[orders_df['client_order_id'].astype(str) == cid]
+        if matched.empty and 'order_id' in orders_df.columns:
+            matched = orders_df[orders_df['order_id'].astype(str) == cid]
+        if matched.empty:
+            return None
+
+        row = matched.iloc[0]
+        price = row.get('filled_avg_price')
+        qty = row.get('filled_qty')
+        filled_at = row.get('filled_at')
+        try:
+            price = float(price) if price is not None and pd.notna(price) else None
+            qty = float(qty) if qty is not None and pd.notna(qty) else None
+        except (TypeError, ValueError):
+            return None
+        return (price, qty, filled_at)
+
     def close_position(self, symbol: str):
         """
         Close a position by symbol.
@@ -727,27 +788,40 @@ class PositionsManager:
         #   Short positions are closed with buy  orders (cover)
         close_order_side = "sell" if position_side == "long" else "buy"
 
-        # Try to get the actual filled close price from Alpaca order history
+        # Resolve the actual fill price for this close, preferring an exact
+        # match by client_order_id/order_id and falling back to the
+        # most-recent close-side heuristic.
         filled_exit_price = None
-        try:
-            orders_df = self.data_provider.get_filled_orders_for_symbol(
-                symbol, limit=50)
-            if not orders_df.empty and 'side' in orders_df.columns:
-                close_orders = orders_df[orders_df['side'] == close_order_side]
-                close_orders = close_orders[close_orders['filled_qty'] > 0]
-                if not close_orders.empty:
-                    latest_close = close_orders.iloc[0]
-                    filled_exit_price = latest_close['filled_avg_price']
-                    logger.info(
-                        "Found filled close order for %s (side=%s): price=%.2f, qty=%.2f",
-                        symbol, close_order_side, filled_exit_price,
-                        latest_close['filled_qty']
-                    )
-        except Exception as e:
-            logger.warning(
-                "Could not fetch filled close price for %s: %s. Will use fallback.",
-                symbol, e
+        matched = self._find_fill_by_client_order_id(
+            symbol, getattr(target_position, 'client_order_id', None))
+        if matched is not None and matched[0] and matched[0] > 0:
+            filled_exit_price = matched[0]
+            logger.info(
+                "Found close fill for %s by client_order_id=%s: price=%.2f, qty=%s",
+                symbol, getattr(target_position, 'client_order_id', None),
+                filled_exit_price, matched[1]
             )
+
+        if filled_exit_price is None:
+            try:
+                orders_df = self.data_provider.get_filled_orders_for_symbol(
+                    symbol, limit=50)
+                if not orders_df.empty and 'side' in orders_df.columns:
+                    close_orders = orders_df[orders_df['side'] == close_order_side]
+                    close_orders = close_orders[close_orders['filled_qty'] > 0]
+                    if not close_orders.empty:
+                        latest_close = close_orders.iloc[0]
+                        filled_exit_price = latest_close['filled_avg_price']
+                        logger.info(
+                            "Found filled close order for %s (side=%s): price=%.2f, qty=%.2f",
+                            symbol, close_order_side, filled_exit_price,
+                            latest_close['filled_qty']
+                        )
+            except Exception as e:
+                logger.warning(
+                    "Could not fetch filled close price for %s: %s. Will use fallback.",
+                    symbol, e
+                )
 
         # Determine exit_price:
         #   1. Actual fill from Alpaca order history (best)

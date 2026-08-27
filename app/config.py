@@ -234,8 +234,13 @@ class Config:
 
     def setup_data_parameters(self):
         """Set up data filtering parameters (fallback handled in load_json_config)."""
-        # Storage backend
-        self.STORAGE_BACKEND = 'gcs'
+        # Storage backend — only default to gcs if load_json_config did not
+        # already set it (otherwise this would clobber the JSON-configured
+        # backend, e.g. "postgres").  load_json_config sets it from the JSON
+        # on success; on config-file failure it is left unset here so we
+        # fall back to gcs.
+        if not hasattr(self, 'STORAGE_BACKEND'):
+            self.STORAGE_BACKEND = 'gcs'
         # Google Cloud Storage
         self.GCS_BUCKET_NAME = os.getenv(
             'GCS_BUCKET_NAME', 'trading-algo-data')
