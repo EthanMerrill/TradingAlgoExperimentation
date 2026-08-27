@@ -4,32 +4,14 @@ FROM python:3.13-slim AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/New_York
 
-# System dependencies (TA-Lib C build + Python build tools)
+# Python build tools (for any package without a prebuilt wheel, e.g. asyncpg)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc make libc6-dev \
-    autotools-dev automake autoconf libtool \
-    wget curl ca-certificates git \
+    build-essential gcc make libc6-dev ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Build TA-Lib C library from source
-WORKDIR /tmp
-RUN git clone https://github.com/TA-Lib/ta-lib.git \
-    && cd ta-lib \
-    && autoreconf -fiv \
-    && ./configure --prefix=/usr/local --enable-shared --enable-static \
-    && make -j$(nproc) \
-    && make install \
-    && echo "/usr/local/lib" > /etc/ld.so.conf.d/talib.conf \
-    && ldconfig \
-    && cd / && rm -rf /tmp/ta-lib
-
-# Install TA-Lib Python wrapper + runtime deps into a wheelhouse
+# Build all runtime deps into a wheelhouse
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-    && CFLAGS="-I/usr/local/include" LDFLAGS="-L/usr/local/lib" \
-       LD_LIBRARY_PATH=/usr/local/lib \
-       PKG_CONFIG_PATH=/usr/local/lib/pkgconfig \
-       pip wheel --no-cache-dir --wheel-dir=/wheels TA-Lib \
     && pip wheel --no-cache-dir --wheel-dir=/wheels -r /tmp/requirements.txt
 
 # ── Stage 2: Runtime ──────────────────────────────────────────────────────────
@@ -38,14 +20,10 @@ FROM python:3.13-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/New_York
 
-# Minimal runtime deps (only what TA-Lib shared lib needs)
+# Minimal runtime deps (curl for the HEALTHCHECK)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgomp1 curl ca-certificates \
+    curl ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# Copy TA-Lib shared library from builder
-COPY --from=builder /usr/local/lib/libta_lib* /usr/local/lib/
-RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/talib.conf && ldconfig
 
 # Copy pre-built wheels
 COPY --from=builder /wheels /tmp/wheels

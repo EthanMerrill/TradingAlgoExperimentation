@@ -1293,7 +1293,8 @@ class TestPositionsManager(unittest.TestCase):
              "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
              "filled_at": datetime(2025, 6, 10)},
         ])
-        result = self.manager._find_fill_by_client_order_id("AAPL", "AAPL-BUY-1")
+        result = self.manager._find_fill_by_client_order_id(
+            "AAPL", "AAPL-BUY-1")
         self.assertIsNotNone(result)
         price, qty, _ = result
         self.assertEqual(price, 155.0)

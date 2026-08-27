@@ -754,7 +754,8 @@ class PositionsManager:
         qty = row.get('filled_qty')
         filled_at = row.get('filled_at')
         try:
-            price = float(price) if price is not None and pd.notna(price) else None
+            price = float(price) if price is not None and pd.notna(
+                price) else None
             qty = float(qty) if qty is not None and pd.notna(qty) else None
         except (TypeError, ValueError):
             return None
@@ -807,7 +808,8 @@ class PositionsManager:
                 orders_df = self.data_provider.get_filled_orders_for_symbol(
                     symbol, limit=50)
                 if not orders_df.empty and 'side' in orders_df.columns:
-                    close_orders = orders_df[orders_df['side'] == close_order_side]
+                    close_orders = orders_df[orders_df['side']
+                                             == close_order_side]
                     close_orders = close_orders[close_orders['filled_qty'] > 0]
                     if not close_orders.empty:
                         latest_close = close_orders.iloc[0]

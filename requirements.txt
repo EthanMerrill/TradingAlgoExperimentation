@@ -24,6 +24,3 @@ asyncpg>=0.29.0
 
 # Parallel execution
 joblib>=1.3.0
-
-# TA-Lib (Python wrapper — C library installed separately in Docker)
-TA-Lib>=0.4.0

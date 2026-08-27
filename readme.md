@@ -42,7 +42,6 @@ app/
 ### Prerequisites
 
 - **Python 3.13+**
-- **TA-Lib** (C library — `brew install ta-lib` on macOS; `apt-get install ta-lib` on Linux)
 - **Alpaca API keys** — free paper trading at [alpaca.markets](https://alpaca.markets)
 
 ### 1. Create & activate a virtual environment
@@ -52,23 +51,13 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 2. Install TA-Lib
-
-```bash
-# macOS
-brew install ta-lib
-
-# Linux
-sudo apt-get install ta-lib
-```
-
-### 3. Install Python dependencies
+### 2. Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Set environment variables
+### 3. Set environment variables
 
 Create a `.env` file in the project root:
 
