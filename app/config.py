@@ -161,6 +161,15 @@ class Config:
             self.WF_STEP_MONTHS = walk_forward.get('step_months', 2)
             self.WF_MIN_WINDOWS = walk_forward.get('min_windows', 3)
 
+            # Multi-strategy configuration: ordered list of enabled strategy
+            # registry keys and static capital-allocation weights (sum 1.0).
+            # Absent/missing keys default to the legacy RSI strategy so the
+            # default behavior is unchanged (see MULTI_STRATEGY_PLAN.md).
+            strategies_cfg = config_data.get('strategies', {})
+            self.STRATEGIES_ENABLED = strategies_cfg.get(
+                'enabled', ['rsi_mean_reversion'])
+            self.STRATEGY_ALLOCATION = strategies_cfg.get('allocation', {})
+
             # Keep-alive mode: when true, container idles after completion
             # instead of exiting. Set KEEP_ALIVE=true in Coolify env vars;
             # leave unset on GCP Cloud Run to scale-to-zero after execution.
@@ -231,6 +240,10 @@ class Config:
         self.WF_OOS_MONTHS = 2
         self.WF_STEP_MONTHS = 2
         self.WF_MIN_WINDOWS = 3
+
+        # Multi-strategy defaults (legacy behavior: RSI strategy only)
+        self.STRATEGIES_ENABLED = ['rsi_mean_reversion']
+        self.STRATEGY_ALLOCATION = {}
 
     def setup_data_parameters(self):
         """Set up data filtering parameters (fallback handled in load_json_config)."""
@@ -311,6 +324,7 @@ class Config:
             'rsi_period_range': self.RSI_PERIOD_RANGE,
             'rsi_lower_range': self.RSI_LOWER_RANGE,
             'rsi_upper_range': self.RSI_UPPER_RANGE,
+            'strategies_enabled': self.STRATEGIES_ENABLED,
             'min_volume': self.MIN_VOLUME,
             'min_price': self.MIN_PRICE,
             'max_price': self.MAX_PRICE

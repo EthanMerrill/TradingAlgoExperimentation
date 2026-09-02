@@ -46,6 +46,12 @@
 		"rate_limit_delay": 0.03
 	},
 	"storage_backend": "postgres",
+	"strategies": {
+		"enabled": ["rsi_mean_reversion"],
+		"allocation": {
+			"rsi_mean_reversion": 1.0
+		}
+	},
 	"walk_forward": {
 		"enabled": true,
 		"is_months": 4,

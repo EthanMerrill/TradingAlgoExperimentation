@@ -46,6 +46,12 @@
 		"rate_limit_delay": 0.07
 	},
 	"storage_backend": "gcs",
+	"strategies": {
+		"enabled": ["rsi_mean_reversion"],
+		"allocation": {
+			"rsi_mean_reversion": 1.0
+		}
+	},
 	"walk_forward": {
 		"enabled": false,
 		"is_months": 6,

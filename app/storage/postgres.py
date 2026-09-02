@@ -106,8 +106,15 @@ CREATE TABLE IF NOT EXISTS backtest_results (
     direction           TEXT            DEFAULT 'long',
     profitable          BOOLEAN,
     current_rsi         DOUBLE PRECISION,
+    strategy_name       TEXT            DEFAULT 'rsi_mean_reversion',
+    params              JSONB,
     created_at          TIMESTAMPTZ     DEFAULT NOW()
 );
+-- Idempotent migration for pre-existing tables (ADD COLUMN IF NOT EXISTS).
+ALTER TABLE backtest_results
+    ADD COLUMN IF NOT EXISTS strategy_name TEXT DEFAULT 'rsi_mean_reversion';
+ALTER TABLE backtest_results
+    ADD COLUMN IF NOT EXISTS params JSONB;
 CREATE INDEX IF NOT EXISTS idx_bt_timestamp
     ON backtest_results (run_timestamp, environment);
 """
@@ -136,8 +143,15 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
     side                TEXT        DEFAULT 'long',
     order_id            TEXT,
     client_order_id     TEXT,
+    strategy_name       TEXT        DEFAULT 'rsi_mean_reversion',
+    intraday            BOOLEAN     DEFAULT FALSE,
     created_at          TIMESTAMPTZ DEFAULT NOW()
 );
+-- Idempotent migration for pre-existing tables (ADD COLUMN IF NOT EXISTS).
+ALTER TABLE position_snapshots
+    ADD COLUMN IF NOT EXISTS strategy_name TEXT DEFAULT 'rsi_mean_reversion';
+ALTER TABLE position_snapshots
+    ADD COLUMN IF NOT EXISTS intraday BOOLEAN DEFAULT FALSE;
 CREATE INDEX IF NOT EXISTS idx_ps_timestamp
     ON position_snapshots (snapshot_timestamp, environment);
 """
@@ -193,6 +207,7 @@ _BACKTEST_COLS = [
     "num_trades", "win_rate", "avg_trade_duration",
     "max_drawdown", "sharpe_ratio", "calmar_ratio",
     "composite_score", "direction", "profitable", "current_rsi",
+    "strategy_name", "params",
 ]
 
 # Position columns are the single source of truth from backend.py so the
@@ -309,6 +324,88 @@ class PostgresStorage(StorageBackend):
         async with pool.acquire() as conn:
             return await conn.execute(query, *args)
 
+    # -- dashboard DB browsing (read-only) -----------------------------------
+
+    def db_browse_enabled(self) -> bool:
+        """Postgres supports the dashboard "Database" tab."""
+        return self._connected
+
+    def db_list_tables(self) -> List[str]:
+        """List browsable application tables (public schema, base tables only)."""
+        if not self._connected:
+            return []
+        sql = """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+        """
+        try:
+            rows = _sync(self._fetch(sql))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("db_list_tables failed: %s", exc)
+            return []
+        return [str(r["table_name"]) for r in rows]
+
+    def db_fetch_table(
+        self, table: str, limit: int = 100, offset: int = 0
+    ) -> Dict[str, Any]:
+        """Fetch a page of rows from ``table`` (read-only, allowlist-validated).
+
+        The table name is validated against ``db_list_tables()`` before being
+        interpolated into SQL, so it can never be a raw injection vector.
+        """
+        if not self._connected:
+            raise ValueError("Database not connected")
+
+        tables = self.db_list_tables()
+        if table not in tables:
+            raise ValueError(
+                f"Unknown table '{table}'. Available: {tables or 'none'}")
+
+        # Interpolating after allowlist validation is safe (identifier only).
+        count_sql = f'SELECT COUNT(*) AS n FROM "{table}"'
+        rows_sql = (
+            f'SELECT * FROM "{table}" '
+            "ORDER BY 1 LIMIT $1 OFFSET $2"
+        )
+
+        try:
+            count_rows = _sync(self._fetch(count_sql))
+            total = int(count_rows[0]["n"]) if count_rows else 0
+            records = _sync(self._fetch(rows_sql, limit, offset))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("db_fetch_table(%s) failed: %s", table, exc)
+            raise
+
+        rows = [dict(r) for r in records]
+        columns = list(rows[0].keys()) if rows else []
+
+        # JSON-safe value conversion (asyncpg types → primitives)
+        import decimal  # pylint: disable=import-outside-toplevel
+        for row in rows:
+            for key, value in list(row.items()):
+                if value is None:
+                    continue
+                if isinstance(value, datetime):
+                    row[key] = value.isoformat()
+                elif isinstance(value, (decimal.Decimal,)):
+                    row[key] = float(value)
+                elif isinstance(value, (bytes, bytearray)):
+                    row[key] = str(value)
+                elif hasattr(value, "isoformat"):  # dates, etc.
+                    row[key] = value.isoformat()
+
+        return {
+            "table": table,
+            "columns": columns,
+            "rows": rows,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
     # -- save_backtest_results -----------------------------------------------
 
     def save_backtest_results(
@@ -334,7 +431,7 @@ class PostgresStorage(StorageBackend):
                 d["avg_trade_duration"], d["max_drawdown"],
                 d["sharpe_ratio"], d["calmar_ratio"],
                 d["composite_score"], d["direction"], d["profitable"],
-                d["current_rsi"],
+                d["current_rsi"], str(d["strategy_name"]), d.get("params"),
             ))
 
         col_placeholders = ", ".join(

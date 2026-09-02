@@ -104,6 +104,9 @@ class TestMainModule(unittest.IsolatedAsyncioTestCase):
         """Test the backtest functionality in TradingAlgorithm."""
         # Disable walk-forward to take the direct optimizer path
         mock_global_config.WF_ENABLED = False
+        # Multi-strategy: single enabled strategy (legacy behavior)
+        mock_global_config.STRATEGIES_ENABLED = ['rsi_mean_reversion']
+        mock_global_config.STRATEGY_ALLOCATION = {}
 
         # Mock optimizer
         mock_optimizer = Mock()

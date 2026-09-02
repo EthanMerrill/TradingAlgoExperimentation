@@ -41,16 +41,42 @@
         </div>
     </header>
 
-    <!-- Filter bar -->
-    <div id="filter-bar">
-        <button class="filter-btn active" data-status="all">All Positions</button>
-        <button class="filter-btn" data-status="open">Open Only</button>
-        <button class="filter-btn" data-status="closed">Closed Only</button>
-        <span id="position-count" class="count-label"></span>
+    <!-- Tab bar -->
+    <div id="tab-bar">
+        <button class="tab-btn active" data-tab="positions">Positions</button>
+        <button class="tab-btn" data-tab="database">Database</button>
     </div>
 
-    <!-- Positions table -->
-    <div id="positions-table"></div>
+    <!-- Positions tab -->
+    <section id="tab-positions" class="tab-panel active">
+        <!-- Filter bar -->
+        <div id="filter-bar">
+            <button class="filter-btn active" data-status="all">All Positions</button>
+            <button class="filter-btn" data-status="open">Open Only</button>
+            <button class="filter-btn" data-status="closed">Closed Only</button>
+            <span id="position-count" class="count-label"></span>
+        </div>
+
+        <!-- Positions table -->
+        <div id="positions-table"></div>
+    </section>
+
+    <!-- Database tab -->
+    <section id="tab-database" class="tab-panel">
+        <div id="db-toolbar">
+            <label for="db-table-select">Table</label>
+            <select id="db-table-select"></select>
+            <button id="db-refresh-btn" title="Refresh current table">↻ Refresh</button>
+            <span id="db-row-count" class="count-label"></span>
+            <span id="db-error" class="db-error"></span>
+        </div>
+        <div id="db-table-container"></div>
+        <div id="db-pager">
+            <button id="db-prev-btn" disabled>← Prev</button>
+            <span id="db-page-label">—</span>
+            <button id="db-next-btn" disabled>Next →</button>
+        </div>
+    </section>
 
     <script src="/static/dashboard.js"></script>
 </body>

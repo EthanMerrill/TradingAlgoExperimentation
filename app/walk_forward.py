@@ -12,12 +12,13 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from config import globalConfig  # type: ignore
+from strategies.base import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class WalkForwardWindow:
     is_optimized: bool = False
     oos_validated: bool = False
     error: Optional[str] = None
+    # Best params dict (strategy-agnostic; empty for legacy RSI-only windows)
+    best_params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,6 +74,10 @@ class WalkForwardResult:
     best_rsi_period: Optional[int] = None
     best_rsi_lower: Optional[int] = None
     best_rsi_upper: Optional[int] = None
+    # Best params dict (strategy-agnostic; empty for legacy RSI-only results)
+    best_params: Dict[str, Any] = field(default_factory=dict)
+    # Owning strategy registry key (set by the validator from its optimizer)
+    strategy_name: str = "rsi_mean_reversion"
 
     # Parameter stability: fraction of windows with same (period, lower, upper)
     param_stability: float = 0.0
@@ -118,6 +125,13 @@ class WalkForwardResult:
             current_rsi=None,
             trade_details=None,
             direction=self.direction,
+            strategy_name=self.strategy_name,
+            params=self.best_params or {
+                "rsi_period": self.best_rsi_period or 14,
+                "rsi_lower": self.best_rsi_lower or 30,
+                "rsi_upper": self.best_rsi_upper or 70,
+                "direction": self.direction,
+            },
         )
 
 
@@ -314,6 +328,8 @@ class WalkForwardValidator:
                 wf_win.best_period = is_result.rsi_period
                 wf_win.best_lower = is_result.rsi_lower
                 wf_win.best_upper = is_result.rsi_upper
+                wf_win.best_params = dict(
+                    getattr(is_result, "params", None) or {})
                 wf_win.is_total_return = is_result.total_return
                 wf_win.is_sharpe_ratio = is_result.sharpe_ratio
                 wf_win.is_num_trades = is_result.num_trades
@@ -360,12 +376,24 @@ class WalkForwardValidator:
 
             # --- Aggregate results ---
             result = self._aggregate_windows(symbol, direction, wf_windows)
+            result.strategy_name = self._strategy_name()
             return result
 
         except Exception as e:
             logger.error("💥 Error in walk-forward for %s (%s): %s",
                          symbol, direction, e)
             return None
+
+    def _strategy_name(self) -> str:
+        """Registry name of the strategy being validated.
+
+        Falls back to the legacy RSI name when the optimizer has no real
+        Strategy attached (e.g. mock optimizers in tests).
+        """
+        strategy = getattr(self.optimizer, "strategy", None)
+        if isinstance(strategy, Strategy):
+            return strategy.name
+        return "rsi_mean_reversion"
 
     def _run_oos_backtest(
         self,
@@ -387,29 +415,46 @@ class WalkForwardValidator:
         Returns:
             BacktestResult from OOS evaluation, or None if insufficient data
         """
-        from strategy import RSIStrategy  # pylint: disable=import-outside-toplevel
         from data_provider import data_provider  # pylint: disable=import-outside-toplevel,reimported
+        from strategies.rsi import RSIStrategy  # pylint: disable=import-outside-toplevel
 
-        # Fetch OOS data with warmup for RSI calculation
-        warmup_days = is_result.rsi_period * 2
+        # Best params from the IS result; fall back to legacy rsi_* fields.
+        params = dict(getattr(is_result, "params", None) or {})
+        if not params and hasattr(is_result, "rsi_period"):
+            params = {
+                "rsi_period": is_result.rsi_period,
+                "rsi_lower": is_result.rsi_lower,
+                "rsi_upper": is_result.rsi_upper,
+                "direction": direction,
+            }
+
+        strategy = getattr(self.optimizer, "strategy", None)
+        if not isinstance(strategy, Strategy):
+            # Legacy/mock optimizer without a strategy — reconstruct the RSI
+            # strategy from the IS result (pre-framework behavior).
+            strategy = RSIStrategy(
+                rsi_period=params.get("rsi_period", 14),
+                rsi_lower=params.get("rsi_lower", 30),
+                rsi_upper=params.get("rsi_upper", 70),
+                direction=direction,
+            )
+
+        # Fetch OOS data with warmup for indicator history.
+        warmup_period = params.get("rsi_period") or 14
+        warmup_days = warmup_period * 2
         warmup_start = oos_start - timedelta(days=warmup_days)
         oos_data = data_provider.get_single_stock_bars(
             symbol, warmup_start, oos_end)
 
-        if oos_data.empty or len(oos_data) < is_result.rsi_period + 10:
+        if oos_data.empty or len(oos_data) < warmup_period + 10:
             logger.debug(
-                "⚠️  %s: Insufficient OOS data (%d rows) for RSI(%d)",
-                symbol, len(oos_data), is_result.rsi_period,
+                "⚠️  %s: Insufficient OOS data (%d rows) for RSI(%s)",
+                symbol, len(oos_data), warmup_period,
             )
             return None
 
-        strategy = RSIStrategy(
-            rsi_period=is_result.rsi_period,
-            rsi_lower=is_result.rsi_lower,
-            rsi_upper=is_result.rsi_upper,
-            direction=direction,
-        )
-        return strategy.backtest(oos_data, symbol, globalConfig.BACKTEST_INIT_CASH)
+        return strategy.backtest(
+            oos_data, symbol, globalConfig.BACKTEST_INIT_CASH, **params)
 
     def _aggregate_windows(
         self,
@@ -456,6 +501,7 @@ class WalkForwardValidator:
             result.best_rsi_period = chosen.best_period
             result.best_rsi_lower = chosen.best_lower
             result.best_rsi_upper = chosen.best_upper
+            result.best_params = dict(chosen.best_params or {})
             result.profitable = result.oos_total_return > 0
 
         else:
@@ -466,6 +512,7 @@ class WalkForwardValidator:
                 result.best_rsi_period = chosen.best_period
                 result.best_rsi_lower = chosen.best_lower
                 result.best_rsi_upper = chosen.best_upper
+                result.best_params = dict(chosen.best_params or {})
                 result.oos_total_return = chosen.is_total_return
                 result.oos_sharpe_ratio = chosen.is_sharpe_ratio
                 result.oos_num_trades = chosen.is_num_trades

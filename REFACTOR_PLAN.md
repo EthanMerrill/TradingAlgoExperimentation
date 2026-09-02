@@ -6,6 +6,16 @@
 
 **Final outcome:** 961 net lines removed (443 added, 1404 deleted). 203 tests pass.
 
+> **Follow-up (2026-09-01):** The multi-strategy framework (Phases A–D of
+> [`MULTI_STRATEGY_PLAN.md`](./MULTI_STRATEGY_PLAN.md)) built on top of this refactor:
+> `strategy.py` is now a re-export shim over `app/strategies/`, `optimizer.py`
+> delegates to per-strategy `Strategy.optimize()`, `trading_engine.py` gained
+> strategy-aware dispatch + per-strategy allocation, and a new `bar_engine.py`
+> handles intraday strategies. The deferred **Phase 6** engine-split remains
+> deferred, but the engine is now partially decomposed along strategy lines
+> (registry + strategy-provided live signals) rather than purely by
+> price/opportunity/sizer/executor concerns.
+
 ---
 
 ### Phase 1: Dead Code Removal (safe, no behavioral changes)

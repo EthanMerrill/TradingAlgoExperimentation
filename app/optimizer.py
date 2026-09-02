@@ -6,14 +6,12 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, cast
+from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
-import pytz
-from data_provider import TechnicalIndicators, data_provider
-from joblib import Parallel, delayed
-from strategy import RSIStrategy
+from data_provider import data_provider
+from strategies.base import Strategy
+from strategies.rsi import RSIStrategy
 from utils import ProgressIndicator, resolve_worker_counts
 
 from config import globalConfig  # type: ignore
@@ -22,45 +20,25 @@ logger = logging.getLogger(__name__)
 
 
 class StrategyOptimizer:
-    """Optimize RSI strategy parameters for multiple symbols."""
+    """Grid-search optimizer over a Strategy's parameter space.
 
-    def __init__(self):
+    Owns data fetching + universe orchestration; the actual grid search is
+    delegated to ``strategy.optimize(...)`` so strategies can specialize
+    (RSI keeps its two-stage search and per-period RSI cache).
+    """
+
+    def __init__(self, strategy: Optional[Strategy] = None):
+        # Backward-compatible default: RSI strategy with config-derived ranges.
+        self.strategy = strategy if strategy is not None else RSIStrategy.create()
+        # RSI ranges kept for backward compatibility (legacy attribute surface).
         self.rsi_periods = list(range(*globalConfig.RSI_PERIOD_RANGE))
         self.rsi_lowers = list(range(*globalConfig.RSI_LOWER_RANGE))
         self.rsi_uppers = list(range(*globalConfig.RSI_UPPER_RANGE))
         self.last_consolidated_trades_df = pd.DataFrame()
 
-    @staticmethod
-    def _test_single_combo(
-        data: pd.DataFrame,
-        symbol: str,
-        rsi_series: pd.Series,
-        rsi_period: int,
-        rsi_lower: int,
-        rsi_upper: int,
-        direction: str,
-        initial_cash: float,
-    ) -> Tuple["BacktestResult", int, int, int]:  # noqa: F821
-        """Run a single backtest for one parameter combination.
-
-        Extracted as a static method so it's trivially shareable across
-        threads/processes — no mutable instance state, all inputs are
-        read-only primitives or numpy/pandas objects.
-
-        Returns:
-            Tuple of (BacktestResult, rsi_period, rsi_lower, rsi_upper)
-        """
-        strategy = RSIStrategy(
-            rsi_period, rsi_lower, rsi_upper, direction=direction
-        )
-        result = strategy.backtest_with_rsi(
-            data, symbol, rsi_series, initial_cash
-        )
-        return result, rsi_period, rsi_lower, rsi_upper
-
     def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime, direction: str = "long", prefetched_data: Optional[pd.DataFrame] = None) -> Optional["BacktestResult"]:  # noqa: F821
         """
-        Optimize RSI parameters for a single symbol.
+        Optimize the strategy's parameters for a single symbol.
 
         Args:
             symbol: Stock symbol
@@ -72,16 +50,10 @@ class StrategyOptimizer:
         Returns:
             Best BacktestResult or None if optimization fails
         """
-        # Lazy imports to avoid circular dependency at module level.
-        from strategy import RSIStrategy, BacktestResult  # pylint: disable=import-outside-toplevel
-
         try:
-            # Shift start_date back to warm up RSI calculation.
-            # RSI needs rsi_period + 1 bars; the optimizer tests periods up to
-            # max(self.rsi_periods).  Multiply by 2 to convert trading days to
-            # calendar days (covers weekends + holidays with margin).
-            max_rsi_period = max(self.rsi_periods) if self.rsi_periods else 14
-            warmup_days = max_rsi_period * 2
+            # Shift start_date back to warm up indicator history.  The number of
+            # calendar days needed is strategy-specific (e.g. RSI periods).
+            warmup_days = self.strategy.warmup_days()
             warmup_start = start_date - timedelta(days=warmup_days)
 
             # Use pre-fetched data when available (avoids duplicate API calls
@@ -97,243 +69,11 @@ class StrategyOptimizer:
                     f"⚠️  {symbol}: Insufficient data ({len(data)} rows)")
                 return None
 
-            # --- Tier 1: Precompute RSI for every unique period once ---
-            # RSI depends only on rsi_period, not lower/upper, so this eliminates
-            # ~96% of redundant RSI calculations (e.g., 28 recomputations → 1 per period).
-            price_col = RSIStrategy._get_price_column(data)
-            rsi_cache: Dict[int, pd.Series] = {}
-            for period in self.rsi_periods:
-                rsi_cache[period] = TechnicalIndicators.calculate_rsi(
-                    data, period, price_col
-                )
-
-            best_result: Optional[BacktestResult] = None
-            best_score = -float('inf')
-            tested_combinations = 0
-            tested_set: set = set()  # dedup between stages
-            n_jobs = globalConfig.N_JOBS
-
-            # Lazy import to avoid circular dependency at module level.
-            import zscore  # pylint: disable=import-outside-toplevel,redefined-outer-name,reimported
-
-            # Determine whether two-stage (coarse + fine) optimization is enabled.
-            # Gated behind the fine_tuning_enabled feature flag and requires at least
-            # 4 values in both lower and upper ranges for the coarse grid to be meaningful.
-            fine_step_lower = (
-                self.rsi_lowers[1] - self.rsi_lowers[0]
-                if len(self.rsi_lowers) >= 2 else 1
-            )
-            fine_step_upper = (
-                self.rsi_uppers[1] - self.rsi_uppers[0]
-                if len(self.rsi_uppers) >= 2 else 1
-            )
-            use_two_stage = (
-                globalConfig.RSI_FINE_TUNING_ENABLED
-                and len(self.rsi_lowers) >= 4
-                and len(self.rsi_uppers) >= 4
-                and fine_step_lower > 0
-                and fine_step_upper > 0
-            )
-
-            if use_two_stage:
-                # --- Tier 2: Stage 1 — Coarse grid (double step) ---
-                coarse_step_lower = fine_step_lower * 2
-                coarse_step_upper = fine_step_upper * 2
-                coarse_lowers = list(range(
-                    self.rsi_lowers[0], self.rsi_lowers[-1] +
-                    1, coarse_step_lower
-                ))
-                coarse_uppers = list(range(
-                    self.rsi_uppers[0], self.rsi_uppers[-1] +
-                    1, coarse_step_upper
-                ))
-
-                coarse_candidates: List[Tuple[float, int, int, int]] = []
-
-                # Build flat list of combos for parallel dispatch
-                coarse_combos: List[Tuple[int, int, int, pd.Series]] = []
-                for rsi_period in self.rsi_periods:
-                    rsi = rsi_cache[rsi_period]
-                    for rsi_lower in coarse_lowers:
-                        for rsi_upper in coarse_uppers:
-                            if rsi_lower >= rsi_upper:
-                                continue
-                            tested_set.add((rsi_period, rsi_lower, rsi_upper))
-                            coarse_combos.append(
-                                (rsi_period, rsi_lower, rsi_upper, rsi))
-
-                coarse_count = len(coarse_combos)
-                tested_combinations = coarse_count
-                logger.debug(
-                    "🔍 %s: Stage 1/2 — coarse grid (%d lowers × %d uppers × %d periods = %d combos)",
-                    symbol, len(coarse_lowers), len(coarse_uppers),
-                    len(self.rsi_periods), coarse_count
-                )
-
-                # Run coarse grid in parallel
-                parallel_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
-                    delayed(StrategyOptimizer._test_single_combo)(
-                        data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
-                        direction, globalConfig.BACKTEST_INIT_CASH
-                    )
-                    for rsi_period, rsi_lower, rsi_upper, rsi_series in coarse_combos
-                )
-                assert isinstance(
-                    parallel_results, list), "Parallel() returned non-list for coarse grid"
-                parallel_results = cast(
-                    List[Tuple[BacktestResult, int, int, int]], parallel_results)
-
-                # Compute Z-scores within the coarse pool
-                coarse_zscores = zscore.compute_stage_zscores(parallel_results)
-
-                for idx, (result, rp, rl, ru) in enumerate(parallel_results):
-                    score = coarse_zscores[idx]
-                    if result.profitable:
-                        coarse_candidates.append((score, rp, rl, ru))
-                    if score > best_score and result.profitable:
-                        best_score = score
-                        best_result = result
-
-                # Keep top-3 for fine refinement
-                coarse_candidates.sort(key=lambda x: x[0], reverse=True)
-                top_candidates = coarse_candidates[:3]
-
-                # --- Tier 2: Stage 2 — Fine grid around top candidates (parallel) ---
-                if coarse_candidates:
-
-                    fine_combos: List[Tuple[int, int, int, pd.Series]] = []
-                    for _, c_period, c_lower, c_upper in top_candidates:
-                        fine_lowers = [
-                            x for x in range(
-                                c_lower - fine_step_lower,
-                                c_lower + fine_step_lower + 1,
-                                fine_step_lower
-                            )
-                            if x >= self.rsi_lowers[0] and x < self.rsi_uppers[-1]
-                        ]
-                        fine_uppers = [
-                            x for x in range(
-                                c_upper - fine_step_upper,
-                                c_upper + fine_step_upper + 1,
-                                fine_step_upper
-                            )
-                            if x > self.rsi_lowers[0] and x <= self.rsi_uppers[-1]
-                        ]
-
-                        rsi = rsi_cache[c_period]
-                        for rsi_lower in fine_lowers:
-                            for rsi_upper in fine_uppers:
-                                if rsi_lower >= rsi_upper:
-                                    continue
-                                key = (c_period, rsi_lower, rsi_upper)
-                                if key in tested_set:
-                                    continue
-                                tested_set.add(key)
-                                fine_combos.append(
-                                    (c_period, rsi_lower, rsi_upper, rsi))
-
-                    if fine_combos:
-                        fine_count = len(fine_combos)
-                        tested_combinations += fine_count
-
-                        fine_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
-                            delayed(StrategyOptimizer._test_single_combo)(
-                                data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
-                                direction, globalConfig.BACKTEST_INIT_CASH
-                            )
-                            for rsi_period, rsi_lower, rsi_upper, rsi_series in fine_combos
-                        )
-                        assert isinstance(
-                            fine_results, list), "Parallel() returned non-list for fine grid"
-                        fine_results = cast(
-                            List[Tuple[BacktestResult, int, int, int]], fine_results)
-
-                        # Compute Z-scores within the fine pool
-                        fine_zscores = zscore.compute_stage_zscores(
-                            fine_results)
-
-                        for idx, (result, rp, rl, ru) in enumerate(fine_results):
-                            score = fine_zscores[idx]
-                            if score > best_score and result.profitable:
-                                best_score = score
-                                best_result = result
-                                logger.debug(
-                                    "🎯 %s: New best — RSI(%d, %d, %d) Z-Score: %.2f",
-                                    symbol, rp, rl, ru, score
-                                )
-
-                        logger.debug(
-                            "🔍 %s: Stage 2/2 — %d fine combos tested around top-3 candidates",
-                            symbol, fine_count
-                        )
-                    else:
-                        logger.debug(
-                            "🔍 %s: Stage 2/2 — no new fine combos to test",
-                            symbol
-                        )
-            else:
-                # Fallback: single-stage fine grid with cached RSI (Tier 1 only).
-                # Used when parameter ranges are too narrow for two-stage to help.
-                fallback_combos: List[Tuple[int, int, int, pd.Series]] = []
-                for rsi_period in self.rsi_periods:
-                    rsi = rsi_cache[rsi_period]
-                    for rsi_lower in self.rsi_lowers:
-                        for rsi_upper in self.rsi_uppers:
-                            if rsi_lower >= rsi_upper:
-                                continue
-                            fallback_combos.append(
-                                (rsi_period, rsi_lower, rsi_upper, rsi))
-
-                tested_combinations = len(fallback_combos)
-
-                if fallback_combos:
-                    fallback_results = Parallel(n_jobs=n_jobs, prefer="threads", verbose=0)(
-                        delayed(StrategyOptimizer._test_single_combo)(
-                            data, symbol, rsi_series, rsi_period, rsi_lower, rsi_upper,
-                            direction, globalConfig.BACKTEST_INIT_CASH
-                        )
-                        for rsi_period, rsi_lower, rsi_upper, rsi_series in fallback_combos
-                    )
-                    assert isinstance(
-                        fallback_results, list), "Parallel() returned non-list for fallback grid"
-                    fallback_results = cast(
-                        List[Tuple[BacktestResult, int, int, int]], fallback_results)
-
-                    # Compute Z-scores within the fallback pool
-                    fallback_zscores = zscore.compute_stage_zscores(
-                        fallback_results)
-
-                    for idx, (result, rp, rl, ru) in enumerate(fallback_results):
-                        score = fallback_zscores[idx]
-                        if score > best_score and result.profitable:
-                            best_score = score
-                            best_result = result
-                            logger.debug(
-                                "🎯 %s: New best — RSI(%d, %d, %d) Z-Score: %.2f",
-                                symbol, rp, rl, ru, score
-                            )
-
-            if best_result:
-                # Store the within-symbol Z-score on the winning result.
-                # (This will be overwritten by cross-symbol Z-scores later.)
-                best_result.composite_score = best_score
-                logger.debug(
-                    "✅ %s: Optimization complete — "
-                    "Best: RSI(%d, %d, %d) Z-Score: %.2f "
-                    "(α=%.2f%%, Sharpe=%.2f, Calmar=%.2f), Trades: %d (tested %d combos)",
-                    symbol, best_result.rsi_period, best_result.rsi_lower,
-                    best_result.rsi_upper, best_score,
-                    best_result.alpha * 100, best_result.sharpe_ratio,
-                    best_result.calmar_ratio,
-                    best_result.num_trades, tested_combinations
-                )
-            else:
-                logger.debug(
-                    "❌ %s: No profitable strategies found from %d combinations",
-                    symbol, tested_combinations
-                )
-
-            return best_result
+            # Delegate the grid search to the strategy (RSI keeps its
+            # two-stage search + per-period RSI cache; new strategies get the
+            # generic grid-search default from Strategy.optimize).
+            return self.strategy.optimize(
+                data, symbol, direction, globalConfig.BACKTEST_INIT_CASH)
 
         except Exception as e:
             logger.error(f"💥 Error optimizing {symbol}: {e}")
@@ -367,7 +107,8 @@ class StrategyOptimizer:
         logger.info(
             f"📅 Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
         logger.info(
-            f"⚙️  RSI Parameters - Periods: {self.rsi_periods}, Lower: {self.rsi_lowers}, Upper: {self.rsi_uppers}")
+            f"⚙️  Strategy: {self.strategy.name} — "
+            f"grid: {len(self.strategy.get_param_grid('long'))} combos")
         logger.info(
             f"📉 Short selling: {'ENABLED' if globalConfig.ENABLE_SHORT_SELLING else 'DISABLED'}")
         logger.info("=" * 60)
@@ -405,9 +146,8 @@ class StrategyOptimizer:
             logger.info(
                 f"📊 Processing batch {batch_num}/{total_batches} ({len(batch)} symbols): {', '.join(batch)}")
 
-            # Compute warmup days once for the batch
-            max_rsi_period = max(self.rsi_periods) if self.rsi_periods else 14
-            warmup_days = max_rsi_period * 2
+            # Compute warmup days once for the batch (strategy-specific)
+            warmup_days = self.strategy.warmup_days()
             warmup_start = start_date - timedelta(days=warmup_days)
 
             # Pre-fetch OHLCV data per symbol so long and short share the same fetch
@@ -540,11 +280,7 @@ class StrategyOptimizer:
             Consolidated trades DataFrame
         """
         # Lazy import to avoid circular dependency at module level.
-        from strategy import RSIStrategy  # pylint: disable=import-outside-toplevel
-
-        strategy = RSIStrategy(
-            14, 30, 70)  # Dummy strategy instance for the method
-        return strategy.build_consolidated_trades_df(results)
+        return self.strategy.build_consolidated_trades(results)
 
     def filter_results(self, results: List["BacktestResult"]) -> List["BacktestResult"]:  # noqa: F821
         """

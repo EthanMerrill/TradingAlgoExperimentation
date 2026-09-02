@@ -84,7 +84,7 @@ class TestRSIStrategy(unittest.TestCase):
         self.assertEqual(self.strategy.rsi_upper, 70)
         self.assertEqual(self.strategy.max_hold_days, 30)
 
-    @patch('strategy.globalConfig')
+    @patch('strategies.rsi.globalConfig')
     def test_rsi_strategy_init_with_config_max_hold_days(self, mock_config):
         """Test RSIStrategy initialization using globalConfig for max_hold_days."""
         mock_config.MAX_HOLD_DAYS = 45

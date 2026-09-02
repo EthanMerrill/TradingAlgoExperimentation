@@ -2,6 +2,7 @@
 Abstract storage backend interface.
 All persistence operations (GCS, Postgres, etc.) must implement this ABC.
 """
+import json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -34,6 +35,8 @@ BACKTEST_FIELDS = [
     "direction",
     "profitable",
     "current_rsi",
+    "strategy_name",
+    "params",
 ]
 
 POSITION_FIELDS = [
@@ -56,6 +59,8 @@ POSITION_FIELDS = [
     "side",
     "order_id",
     "client_order_id",
+    "strategy_name",
+    "intraday",
 ]
 
 
@@ -67,6 +72,20 @@ def _safe_round(value: Any, ndigits: int = 2) -> Any:
         return round(float(value), ndigits)
     except (TypeError, ValueError):
         return value
+
+
+def _serialize_params(params: Any) -> Optional[str]:
+    """Serialize strategy params to a JSON string (None when empty/unserializable).
+
+    Defensive: tolerates Mock objects (storage tests) and non-serializable
+    values by returning None instead of raising.
+    """
+    if params is None:
+        return None
+    try:
+        return json.dumps(params) if params else None
+    except (TypeError, ValueError):
+        return None
 
 
 def backtest_result_to_dict(result: "BacktestResult") -> Dict[str, Any]:
@@ -89,6 +108,8 @@ def backtest_result_to_dict(result: "BacktestResult") -> Dict[str, Any]:
         "direction": result.direction,
         "profitable": result.profitable,
         "current_rsi": _safe_round(result.current_rsi),
+        "strategy_name": result.strategy_name,
+        "params": _serialize_params(result.params),
     }
 
 
@@ -122,7 +143,28 @@ def dict_to_backtest_result(d: Dict[str, Any]) -> "BacktestResult":
         profitable=bool(d["profitable"]),
         current_rsi=float(d["current_rsi"]) if d.get("current_rsi") is not None and not (
             isinstance(d.get("current_rsi"), float) and pd.isna(d["current_rsi"])) else None,
+        strategy_name=str(d.get("strategy_name", "rsi_mean_reversion")),
+        params=_deserialize_params(d.get("params")),
     )
+
+
+def _deserialize_params(raw: Any) -> Dict[str, Any]:
+    """Deserialize the ``params`` column (JSON string or dict) safely."""
+    if raw is None:
+        return {}
+    if isinstance(raw, float) and pd.isna(raw):
+        return {}
+    if isinstance(raw, str):
+        if not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    if isinstance(raw, dict):
+        return raw
+    return {}
 
 
 def normalize_position_for_save(pos: Any) -> Dict[str, Any]:
@@ -165,6 +207,8 @@ def normalize_position_for_save(pos: Any) -> Dict[str, Any]:
         "side": getattr(pos, "side", "long"),
         "order_id": getattr(pos, "order_id", None),
         "client_order_id": getattr(pos, "client_order_id", None),
+        "strategy_name": getattr(pos, "strategy_name", "rsi_mean_reversion"),
+        "intraday": bool(getattr(pos, "intraday", False)),
     }
 
 
@@ -333,3 +377,29 @@ class StorageBackend(ABC):
             f"Unknown STORAGE_BACKEND '{backend}'. "
             f"Expected 'gcs' or 'postgres'."
         )
+
+    # ------------------------------------------------------------------
+    # Optional DB-browse support (used by the dashboard "Database" tab).
+    #
+    # Concrete methods with safe defaults so backends that don't support
+    # relational browsing (e.g. GCS) and test mocks need no changes.
+    # ------------------------------------------------------------------
+
+    def db_browse_enabled(self) -> bool:
+        """True if the backend supports browsing tables (dashboard DB tab)."""
+        return False
+
+    def db_list_tables(self) -> List[str]:
+        """List browsable table names. Default: none."""
+        return []
+
+    def db_fetch_table(
+        self, table: str, limit: int = 100, offset: int = 0
+    ) -> Dict[str, Any]:
+        """Fetch a page of rows from ``table``.
+
+        Returns a dict with ``rows``, ``columns``, ``total``, ``limit``,
+        ``offset``. Raises ValueError for unknown tables.
+        """
+        raise NotImplementedError(
+            "This storage backend does not support table browsing")

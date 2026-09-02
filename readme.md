@@ -1,26 +1,33 @@
 # Trading Algorithm
 
-An RSI-based trading algorithm for US common stocks, with pluggable storage
-backends (GCS / Postgres), walk-forward validation, and short-selling support.
+A **multi-strategy** trading framework for US common stocks, with pluggable
+storage backends (GCS / Postgres), walk-forward validation, short-selling
+support, and an intraday bar-loop engine. Ships with an RSI mean-reversion
+strategy; new strategies plug in via a registry.
 
 ## Architecture Overview
 
 ```
 app/
 ├── config.py              Configuration & env vars (dev/qa/prod JSON)
-├── data_provider.py        Alpaca API — OHLCV, positions, orders, snapshots
-├── strategy.py             Vectorized RSI backtester & BacktestResult
-├── optimizer.py            Grid-search optimization across stock universe
+├── data_provider.py        Alpaca API — OHLCV (daily or intraday), positions, orders, snapshots
+├── strategies/             Multi-strategy framework
+│   ├── base.py             Strategy ABC, BacktestResult, LiveSignal, StrategyContext
+│   ├── registry.py         name → strategy class registry (register/get_strategy)
+│   └── rsi.py              RSIStrategy (moved from strategy.py)
+├── strategy.py             Backward-compatible re-export shim (→ strategies/)
+├── optimizer.py            Per-strategy grid-search optimization across the universe
 ├── walk_forward.py         Walk-forward validation (IS/OOS windows)
-├── trading_engine.py       Order execution, position sizing, OCO orders
+├── bar_engine.py           Intraday bar-loop engine (bar_loop strategies, session-close exits)
+├── trading_engine.py       Order execution, position sizing, OCO orders, strategy-aware dispatch
 ├── positions.py            Position reconciliation (GCS/Postgres ↔ Alpaca)
 ├── zscore.py               Cross-symbol Z-score normalization
-├── utils.py                Trading calendar, logging, date helpers
-├── health_server.py        Lightweight HTTP health check server
+├── utils/                  Trading calendar, logging, metrics, progress helpers
+├── health_server.py        Lightweight HTTP health check + dashboard server
 ├── main.py                 Orchestrator — full trading cycle runner
 └── storage/
     ├── __init__.py          Shared singleton (auto-selects GCS or Postgres)
-    ├── backend.py           Abstract StorageBackend ABC + factory
+    ├── backend.py           Abstract StorageBackend ABC + serialization helpers
     ├── gcs.py               GCS backend — CSV blobs (implements StorageBackend)
     └── postgres.py          Postgres backend — relational tables (implements StorageBackend)
 ```
@@ -29,6 +36,9 @@ app/
 
 - **Modern Alpaca SDK** (`alpaca-py`) with async/await patterns
 - **Vectorized backtesting** — replaced Backtrader, much faster
+- **Multi-strategy framework** — strategy registry, config-driven enablement, per-strategy capital allocation
+- **Intraday bar-loop engine** — strategies can trade on intraday bars with session-close exits
+- **Strategy-tagged positions** — every position records its owning strategy (visible in the dashboard)
 - **Pluggable storage** — swap between GCS and Postgres with a config toggle
 - **Walk-forward validation** — IS/OOS window evaluation to reduce overfitting
 - **Short selling** — RSI-based short signals with leverage caps
@@ -145,6 +155,14 @@ curl -X POST -u admin:$DASHBOARD_PASSWORD "http://localhost:8080/api/run-cycle?t
 
 The endpoint returns `200` on success, or `409` if a cycle is already in progress.
 
+The dashboard has two tabs:
+
+- **Positions** — the strategy-tagged positions table (all/open/closed, live Alpaca prices, unrealized P&L).
+- **Database** — a read-only table browser (requires `storage_backend: "postgres"`):
+  pick a table, page through rows, refresh. Backed by `GET /api/db/tables` and
+  `GET /api/db/table/<name>?limit=&offset=` (auth required, SELECT-only,
+  allowlist-validated table names). Returns `501` when the active backend is GCS.
+
 Check cycle status and last-run results at `GET /health` (no auth required):
 
 ```bash
@@ -201,7 +219,10 @@ python tests/test_positions_manager.py
 | `test_config.py` | Config loading, env vars, multi-environment, invalid JSON |
 | `test_data_provider.py` | Alpaca API — bars, positions, orders, snapshots, technical indicators |
 | `test_strategy.py` | RSI backtesting, BacktestResult, signal generation, parameter optimization |
+| `test_strategies_framework.py` | Strategy registry, Strategy ABC, generic optimizer path, RSI parity after the move |
 | `test_trading_engine.py` | Order placement, position sizing, OCO orders, dry-run mode, short selling |
+| `test_engine_multistrategy.py` | Strategy-aware dispatch, cross-strategy symbol dedup, per-strategy capital allocation, position tagging |
+| `test_bar_engine.py` | Intraday bar-loop engine — timeframe parsing, intraday position lifecycle, RTH timing, session-close exits |
 | `test_positions_manager.py` | Position reconciliation (cloud ↔ broker), open/close logic, enrichment |
 | `test_positions_reconcile_regression.py` | Regression tests — reconciliation always returns a list |
 | `test_utils.py` | Trading calendar, logging, date parsing |
@@ -293,7 +314,27 @@ For debugging: use `python -m pytest -v` for verbose output, run individual test
 
 ## Strategy Details
 
-### RSI Strategy
+### Multi-Strategy Framework
+
+Strategies implement the `Strategy` ABC (`app/strategies/base.py`) and
+self-register under a unique `name` in `app/strategies/registry.py`. Enable and
+allocate capital via the `strategies` config section (see below). The default
+config runs only `rsi_mean_reversion`, preserving the original behavior.
+
+Each strategy declares an **execution style**:
+
+| Style | Description | Trading path |
+|-------|-------------|--------------|
+| `session` | Evaluated once per daily cycle (e.g. RSI cross signals) | `TradingEngine.execute_trading_session` |
+| `bar_loop` | Evaluated repeatedly on intraday bars during RTH; positions force-closed at session end | `BarLoopEngine` (started in keep-alive mode) |
+
+To add a strategy: implement the ABC (`backtest`, `get_param_grid`, optionally
+`evaluate_live_signals` / `optimize` / `prepare` / `warmup_days`), register it,
+add it to `config.strategies.enabled` with an allocation weight, and add tests.
+The optimizer, walk-forward, storage, engine dispatch, and dashboard pick it up
+automatically.
+
+### RSI Strategy (`rsi_mean_reversion`)
 
 - **Entry (long)**: RSI crosses below the optimized lower threshold
 - **Entry (short)**: RSI crosses above the optimized upper threshold
@@ -305,7 +346,7 @@ For debugging: use `python -m pytest -v` for verbose output, run individual test
 
 ### Optimization
 
-- Grid search across RSI periods, lower bounds, and upper bounds
+- Grid search per strategy (RSI: periods, lower bounds, upper bounds)
 - Optional two-stage optimization (coarse + fine tuning)
 - Walk-forward validation splits data into IS/OOS windows
 - Evaluates on alpha (excess return vs buy-and-hold), win rate, Sharpe, Calmar
@@ -316,6 +357,8 @@ For debugging: use `python -m pytest -v` for verbose output, run individual test
 - Maximum positions: 10 (default)
 - Maximum new positions per day: 2 (default)
 - Position sizing: 10% of equity each (default)
+- **Per-strategy capital allocation** — each strategy's new notional is capped
+  by its allocation weight × equity (see `strategies.allocation`)
 - Minimum cash reserve: 10% (default)
 - Stop-loss: 5% (default)
 - Take-profit: 15% (default)
@@ -350,6 +393,20 @@ All parameters live in `config/{dev,qa,prod}.json`:
 |-----------|---------|-------------|
 | `init_cash` | 10000 | Initial cash for backtest |
 | `months` | 6–12 | Lookback period |
+
+### Strategies (multi-strategy)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `enabled` | `["rsi_mean_reversion"]` | Ordered list of strategy registry keys to run each cycle |
+| `allocation` | `{"rsi_mean_reversion": 1.0}` | Per-strategy capital weights (normalized to 1.0; unweighted enabled strategies split the remainder; absent → even split) |
+
+```jsonc
+"strategies": {
+  "enabled": ["rsi_mean_reversion", "rvol_orb"],
+  "allocation": { "rsi_mean_reversion": 0.7, "rvol_orb": 0.3 }
+}
+```
 
 ### RSI Optimization
 
@@ -400,7 +457,8 @@ The app uses a pluggable storage backend system. Toggle in `config/{env}.json`:
 
 All persistence goes through the `StorageBackend` ABC (`storage/backend.py`).
 A shared singleton (`storage/__init__.py`) auto-selects the correct backend at startup.
-Both backends expose 9 identical methods — callers never know which is active.
+Both backends expose the same method surface (backtest results, positions, orders,
+metadata) — callers never know which is active.
 
 ### GCS (`storage/gcs.py`)
 
@@ -418,8 +476,8 @@ Set `DATABASE_URL` + toggle the config. Tables auto-create on first use:
 
 | Table | Equivalent GCS Path | Key Columns |
 |-------|---------------------|-------------|
-| `backtest_results` | `{env}/Backtests/*.csv` | `run_timestamp`, `environment`, all 17 BacktestResult fields |
-| `position_snapshots` | `{env}/Positions/*.csv` | `snapshot_timestamp`, `environment`, all 17 Position fields |
+| `backtest_results` | `{env}/Backtests/*.csv` | `run_timestamp`, `environment`, BacktestResult fields incl. `strategy_name` + `params` |
+| `position_snapshots` | `{env}/Positions/*.csv` | `snapshot_timestamp`, `environment`, Position fields incl. `strategy_name` + `intraday` |
 | `session_metadata` | `{env}/Metadata/metadata.csv` | `timestamp`, `environment`, `metadata` (JSONB) |
 
 All tables have an `environment` column — dev/qa/prod data stays isolated.
@@ -430,6 +488,8 @@ All tables have an `environment` column — dev/qa/prod data stays isolated.
 |--------|:---:|
 | `symbol` | ✅ Fetch live RSI/price, place orders |
 | `rsi_period`, `rsi_lower`, `rsi_upper` | ✅ Live RSI recalculation & entry checks |
+| `strategy_name` | ✅ Route results/positions to the owning strategy |
+| `params` | ✅ Exact strategy parameters used (JSONB / JSON string) |
 | `total_return` | ✅ `TradingOpportunity.backtest_return` |
 | `alpha` | ✅ Sort/filter opportunities |
 | `num_trades`, `win_rate` | ✅ Filter low-sample / low-win opportunities |
@@ -442,13 +502,14 @@ All tables have an `environment` column — dev/qa/prod data stays isolated.
 ## Algorithm Workflow
 
 1. **Position Check** — Reconcile cloud/broker positions, update prices
-2. **Exit Signals** — Check existing positions for exit conditions
+2. **Exit Signals** — Check existing positions for exit conditions (intraday positions are managed by the bar loop, not the daily OCO refresh)
 3. **Universe Selection** — Filter stocks by price, volume, market cap
-4. **Backtesting** — Grid-optimize RSI strategies across the universe (optionally with walk-forward validation)
-5. **Entry Signals** — Identify long & short opportunities based on live RSI vs optimized thresholds
-6. **Position Sizing** — Calculate shares based on risk parameters & leverage caps
-7. **Order Execution** — Place bracket/OCO orders (entry + stop-loss + take-profit)
+4. **Backtesting** — For each enabled strategy: grid-optimize across the universe (optionally with walk-forward validation); merge + filter results
+5. **Entry Signals** — Identify long & short opportunities per strategy (session strategies in the daily cycle; bar-loop strategies via the bar engine during RTH)
+6. **Position Sizing** — Calculate shares based on risk parameters, per-strategy allocation budgets & leverage caps
+7. **Order Execution** — Place bracket/OCO orders (entry + stop-loss + take-profit); bar-loop positions close at session end
 8. **Data Persistence** — Save results, positions, and metadata to the active storage backend
+9. **(Keep-alive only)** — Bar-loop worker evaluates intraday strategies every 60s during RTH and force-closes intraday positions after the 16:00 ET close
 
 ## Deployment
 
@@ -473,10 +534,12 @@ The health server listens on port **8080** by default. Override with `HEALTH_POR
 
 ## Todo
 
+- [x] Place OCO order types at day start for existing positions
+- [x] Improve portfolio allocation methodology (per-strategy allocation weights)
 - [ ] Clean up trading engine (limits/stops calculated multiple times)
-- [ ] Improve portfolio allocation methodology
 - [ ] Check that NYSE volumes are not doubled
-- [ ] Place OCO order types at day start for existing positions
 - [ ] Pass 10% of equity to backtester for more accurate position sizing
 - [ ] Improve optimization strategies (look at win rate, not just ROI)
 - [ ] Add better position reconciliation for manual orders
+- [ ] Add daily per-strategy performance tracking + dashboard (see §4.10 of `MULTI_STRATEGY_PLAN.md`)
+- [ ] Implement the RVOL-ORB intraday strategy (see `MULTI_STRATEGY_PLAN.md` Phase E)

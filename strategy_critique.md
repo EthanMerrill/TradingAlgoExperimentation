@@ -1,5 +1,15 @@
 # Trading Strategy Critique
 
+> **Status note (2026-09-01):** This critique describes the RSI strategy as it
+> existed at the time of writing. Since then the codebase has grown a
+> **multi-strategy framework** (see [`MULTI_STRATEGY_PLAN.md`](./MULTI_STRATEGY_PLAN.md),
+> Phases A–D done): strategies now live behind a `Strategy` ABC with a registry,
+> per-strategy capital allocation, strategy-tagged positions, and an intraday
+> bar-loop engine. **Issue #2 (in-sample bias) is resolved** via walk-forward
+> validation; scoring now uses Z-score composites (alpha + Sharpe + Calmar),
+> partially addressing Issue #6. RSI is now one of potentially many strategies;
+> the points below remain a valid critique of the RSI signal itself.
+
 ## Strategy Category
 
 This is a **systematic mean-reversion strategy** driven by RSI thresholds, trading single stocks on daily bars via Alpaca Markets.

@@ -14,6 +14,30 @@ let liveAlpacaData = {};  // keyed by symbol, from /api/live-alpaca
 let currentStatusFilter = 'all';
 const REFRESH_INTERVAL_MS = 30_000;
 
+// Database tab state
+const DB_PAGE_SIZE = 100;
+let dbTables = [];
+let dbCurrentTable = null;
+let dbOffset = 0;
+let dbTable = null;
+
+// Friendly labels + badge classes per strategy registry key.
+const STRATEGY_LABELS = {
+    'rsi_mean_reversion': { label: 'RSI Mean Rev.', cls: 'badge-strategy-rsi' },
+    'rvol_orb': { label: 'RVOL ORB', cls: 'badge-strategy-rvol' },
+};
+
+function strategyInfo(name) {
+    if (!name) return null;
+    return STRATEGY_LABELS[name] || { label: name, cls: 'badge-strategy-other' };
+}
+
+function strategyBadge(name) {
+    const info = strategyInfo(name);
+    if (!info) return '<span class="badge badge-strategy-other">—</span>';
+    return `<span class="badge ${info.cls}">${info.label}</span>`;
+}
+
 // ── DOM refs ──
 
 const $ = (sel) => document.querySelector(sel);
@@ -28,6 +52,14 @@ const dom = {
     lastRefresh: $('#last-refresh'),
     positionCount: $('#position-count'),
     filterBtns: document.querySelectorAll('.filter-btn'),
+    // Database tab
+    dbTableSelect: $('#db-table-select'),
+    dbRefreshBtn: $('#db-refresh-btn'),
+    dbRowCount: $('#db-row-count'),
+    dbError: $('#db-error'),
+    dbPrevBtn: $('#db-prev-btn'),
+    dbNextBtn: $('#db-next-btn'),
+    dbPageLabel: $('#db-page-label'),
 };
 
 // ── Helpers ──
@@ -59,6 +91,28 @@ function pnlClass(val) {
 function sideBadge(side) {
     const cls = side === 'short' ? 'badge badge-short' : 'badge badge-long';
     return `<span class="${cls}">${side || 'long'}</span>`;
+}
+
+function formatPositionCount(rows) {
+    const base = rows.length + ' position' + (rows.length !== 1 ? 's' : '');
+    // Append per-strategy counts of OPEN positions when more than one
+    // strategy is represented.
+    const byStrategy = {};
+    rows.forEach(function (row) {
+        if (row.closed) return;
+        const name = row.strategy_name || 'rsi_mean_reversion';
+        byStrategy[name] = (byStrategy[name] || 0) + 1;
+    });
+    const names = Object.keys(byStrategy);
+    if (names.length > 1) {
+        const parts = names.map(function (name) {
+            const info = strategyInfo(name);
+            const label = info ? info.label : name;
+            return label + ' ' + byStrategy[name];
+        });
+        return base + ' · ' + parts.join(' · ');
+    }
+    return base;
 }
 
 function closedBadge(closed) {
@@ -151,6 +205,16 @@ function groupPositionRecord() {
                 sorter: 'string', headerFilter: 'input',
                 headerFilterPlaceholder: 'Filter…',
                 width: 85,
+            },
+            {
+                title: 'Strategy', field: 'strategy_name',
+                formatter: function (cell) { return strategyBadge(cell.getValue()); },
+                sorter: 'string', hozAlign: 'center', width: 125,
+                headerFilter: 'list',
+                headerFilterParams: {
+                    values: Object.keys(STRATEGY_LABELS),
+                },
+                headerFilterEmptyCheck: function (value) { return value === '' || value == null; },
             },
             {
                 title: 'Side', field: 'side',
@@ -364,6 +428,117 @@ function enrichLiveAlpaca(row) {
     return row;
 }
 
+// ── Tab switching ──
+
+function switchTab(tabName) {
+    document.querySelectorAll('.tab-btn').forEach(function (btn) {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.tab-panel').forEach(function (panel) {
+        panel.classList.toggle('active', panel.id === 'tab-' + tabName);
+    });
+    if (tabName === 'database' && dbTables.length === 0) {
+        loadDbTables();
+    }
+}
+
+// ── Database browser ──
+
+function dbErrorMsg(msg) {
+    dom.dbError.textContent = msg || '';
+}
+
+async function loadDbTables() {
+    dom.dbError.textContent = '';
+    try {
+        const resp = await fetch('/api/db/tables');
+        if (resp.status === 501) {
+            const data = await resp.json();
+            dbErrorMsg(data.error || 'Database browsing not supported by this storage backend.');
+            return;
+        }
+        if (!resp.ok) {
+            dbErrorMsg('Failed to load tables (' + resp.status + ')');
+            return;
+        }
+        const data = await resp.json();
+        dbTables = data.tables || [];
+        dom.dbTableSelect.innerHTML = '';
+        if (dbTables.length === 0) {
+            dbErrorMsg('No browsable tables found.');
+            return;
+        }
+        dbTables.forEach(function (t) {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            dom.dbTableSelect.appendChild(opt);
+        });
+        const saved = dbCurrentTable;
+        if (saved && dbTables.indexOf(saved) !== -1) {
+            dom.dbTableSelect.value = saved;
+        } else {
+            dbCurrentTable = dbTables[0];
+        }
+        await loadDbTable(dbCurrentTable, 0);
+    } catch (err) {
+        console.error('Failed to load DB tables:', err);
+        dbErrorMsg('Failed to load tables.');
+    }
+}
+
+async function loadDbTable(name, offset) {
+    dom.dbError.textContent = '';
+    try {
+        const resp = await fetch(
+            '/api/db/table/' + encodeURIComponent(name) +
+            '?limit=' + DB_PAGE_SIZE + '&offset=' + offset
+        );
+        if (resp.status === 501) {
+            const data = await resp.json();
+            dbErrorMsg(data.error || 'Database browsing not supported by this storage backend.');
+            return;
+        }
+        if (!resp.ok) {
+            const data = await resp.json().catch(function () { return {}; });
+            dbErrorMsg(data.error || 'Failed to fetch table (' + resp.status + ')');
+            return;
+        }
+        const data = await resp.json();
+        dbCurrentTable = name;
+        dbOffset = offset;
+
+        const rows = data.rows || [];
+        const total = data.total || 0;
+        const cols = data.columns || [];
+
+        dom.dbRowCount.textContent = total + ' row' + (total !== 1 ? 's' : '');
+        const pageStart = total === 0 ? 0 : offset + 1;
+        const pageEnd = Math.min(offset + rows.length, total);
+        dom.dbPageLabel.textContent = rows.length ? (pageStart + '–' + pageEnd + ' of ' + total) : '—';
+        dom.dbPrevBtn.disabled = offset <= 0;
+        dom.dbNextBtn.disabled = offset + rows.length >= total;
+
+        const columns = cols.map(function (c) { return { title: c, field: c }; });
+        if (dbTable) {
+            dbTable.setColumns(columns);
+            await dbTable.replaceData(rows);
+        } else {
+            dbTable = new Tabulator('#db-table-container', {
+                data: rows,
+                columns: columns,
+                layout: 'fitDataFill',
+                height: 'calc(100vh - 280px)',
+                selectable: false,
+                columnHeaderVertAlign: 'bottom',
+            });
+        }
+    } catch (err) {
+        console.error('Failed to fetch DB table:', err);
+        dbErrorMsg('Failed to fetch table.');
+    }
+}
+
 // ── Fetch & render ──
 
 async function fetchHealth() {
@@ -460,7 +635,7 @@ async function fetchPositions() {
             filtered = allPositions.filter(function (row) { return row.closed; });
         }
 
-        dom.positionCount.textContent = filtered.length + ' position' + (filtered.length !== 1 ? 's' : '');
+        dom.positionCount.textContent = formatPositionCount(filtered);
 
         if (table) {
             await table.replaceData(filtered);
@@ -495,13 +670,35 @@ dom.filterBtns.forEach((btn) => {
         } else if (currentStatusFilter === 'closed') {
             filtered = allPositions.filter(function (row) { return row.closed; });
         }
-        dom.positionCount.textContent = filtered.length + ' position' + (filtered.length !== 1 ? 's' : '');
+        dom.positionCount.textContent = formatPositionCount(filtered);
         if (table) {
             // Re-enrich live data in case it changed between fetches
             filtered.forEach(enrichLiveAlpaca);
             table.replaceData(filtered);
         }
     });
+});
+
+// ── Tab events ──
+
+document.querySelectorAll('.tab-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        switchTab(this.dataset.tab);
+    });
+});
+
+dom.dbTableSelect.addEventListener('change', function () {
+    dbOffset = 0;
+    loadDbTable(this.value, 0);
+});
+dom.dbRefreshBtn.addEventListener('click', function () {
+    if (dbCurrentTable) loadDbTable(dbCurrentTable, dbOffset);
+});
+dom.dbPrevBtn.addEventListener('click', function () {
+    if (dbCurrentTable) loadDbTable(dbCurrentTable, Math.max(0, dbOffset - DB_PAGE_SIZE));
+});
+dom.dbNextBtn.addEventListener('click', function () {
+    if (dbCurrentTable) loadDbTable(dbCurrentTable, dbOffset + DB_PAGE_SIZE);
 });
 
 // ── Init ──

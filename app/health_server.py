@@ -118,6 +118,11 @@ def _df_row_to_dict(row) -> dict:
     if 'exit_reason' not in d:
         d['exit_reason'] = None
 
+    # Ensure strategy_name is present (legacy rows predate the multi-strategy
+    # column); default to the legacy RSI strategy so the UI always has a tag.
+    if 'strategy_name' not in d or d['strategy_name'] is None:
+        d['strategy_name'] = 'rsi_mean_reversion'
+
     return d
 
 
@@ -254,6 +259,53 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
         except Exception as e:
             logger.error("Error fetching positions from storage: %s", e)
             return jsonify({'error': 'Failed to fetch positions from storage'}), 500
+
+    # ---------- /api/db/tables (auth required, read-only) ----------
+    # Backs the dashboard "Database" tab: lists browsable tables.
+
+    @app.route('/api/db/tables')
+    @_auth_required
+    def api_db_tables():
+        if storage_backend is None or not storage_backend.db_browse_enabled():
+            return jsonify({
+                'enabled': False,
+                'error': 'Table browsing is not supported by the active storage '
+                         'backend (requires STORAGE_BACKEND=postgres).',
+            }), 501
+
+        try:
+            tables = storage_backend.db_list_tables()
+            return jsonify({'enabled': True, 'tables': tables})
+        except Exception as e:
+            logger.error("Error listing database tables: %s", e)
+            return jsonify({'error': 'Failed to list database tables'}), 500
+
+    # ---------- /api/db/table/<name> (auth required, read-only) ----------
+    # Returns a page of rows from a browsable table.
+
+    @app.route('/api/db/table/<path:name>')
+    @_auth_required
+    def api_db_table(name):
+        if storage_backend is None or not storage_backend.db_browse_enabled():
+            return jsonify({
+                'enabled': False,
+                'error': 'Table browsing is not supported by the active storage '
+                         'backend (requires STORAGE_BACKEND=postgres).',
+            }), 501
+
+        try:
+            limit = min(int(request.args.get('limit', 100)), 500)
+            offset = max(int(request.args.get('offset', 0)), 0)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Invalid limit/offset'}), 400
+
+        try:
+            return jsonify(storage_backend.db_fetch_table(name, limit, offset))
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        except Exception as e:
+            logger.error("Error fetching table %s: %s", name, e)
+            return jsonify({'error': f'Failed to fetch table {name}'}), 500
 
     # ---------- /api/open-orders (auth required) ----------
 

@@ -179,6 +179,129 @@ body {
     color: var(--text-secondary);
 }
 
+/* ── Tab bar ── */
+
+#tab-bar {
+    display: flex;
+    gap: 4px;
+    padding: 8px 24px 0;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.tab-btn {
+    padding: 8px 18px;
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.tab-btn:hover {
+    color: var(--text-primary);
+}
+
+.tab-btn.active {
+    background: var(--bg-tertiary);
+    border-color: var(--border);
+    color: var(--text-primary);
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+/* ── Database tab ── */
+
+#db-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 24px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+#db-toolbar label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+#db-table-select {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
+
+#db-refresh-btn {
+    padding: 5px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+
+#db-refresh-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+.db-error {
+    color: var(--red);
+    font-size: 0.8rem;
+}
+
+#db-table-container {
+    padding: 12px 24px;
+}
+
+#db-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 12px 24px;
+}
+
+#db-pager button {
+    padding: 5px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+
+#db-pager button:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+#db-pager button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+#db-page-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
 /* ── Tabulator overrides ── */
 
 #positions-table {
@@ -291,6 +414,11 @@ body {
 .badge-closed { background: var(--bg-tertiary); color: var(--text-secondary); }
 .badge-profit { background: var(--green-bg); color: var(--green); }
 .badge-loss { background: var(--red-bg); color: var(--red); }
+
+/* ── Strategy badges (multi-strategy framework) ── */
+.badge-strategy-rsi { background: var(--blue-bg, rgba(59, 130, 246, 0.15)); color: #60a5fa; }
+.badge-strategy-rvol { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.badge-strategy-other { background: var(--bg-tertiary); color: var(--text-secondary); }
 
 /* ── Live order status badges ── */
 .badge-order-none {

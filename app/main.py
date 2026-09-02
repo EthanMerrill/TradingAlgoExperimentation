@@ -7,7 +7,7 @@ import asyncio
 import logging
 import sys
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from data_provider import data_provider
 from storage import storage
@@ -15,6 +15,7 @@ from positions import PositionsManager
 from optimizer import StrategyOptimizer
 from walk_forward import WalkForwardValidator
 from trading_engine import TradingEngine
+from strategies.registry import get_strategy
 from utils import TradingCalendar, setup_logging
 
 from config import globalConfig  # type: ignore
@@ -44,6 +45,9 @@ class TradingAlgorithm:
             'portfolio_value': 0,
             'results_summary': {}
         }
+        # Backtest results from the most recent cycle — consumed by the
+        # bar-loop worker (Phase D) to evaluate intraday strategies during RTH.
+        self._last_backtest_results: List = []
 
     async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False, test_mode: bool = False) -> dict:
         """
@@ -137,6 +141,9 @@ class TradingAlgorithm:
                 logger.warning(
                     "No backtest results available - processing existing positions only")
 
+            # Keep the latest results for the bar-loop worker (Phase D).
+            self._last_backtest_results = backtest_results
+
             # Step 3: Execute trading session
             logger.info(
                 "🎯 Analyzing trading opportunities and executing orders...")
@@ -218,22 +225,43 @@ class TradingAlgorithm:
         logger.info(
             "🕐 This may take 30-90 minutes depending on market conditions")
 
-        # Step 3: Run optimization for all symbols
-        if globalConfig.WF_ENABLED:
-            logger.info(
-                "🪟 Walk-forward validation enabled — splitting into IS/OOS windows")
-            wf_validator = WalkForwardValidator(self.optimizer)
-            wf_results = await wf_validator.validate_universe(symbols, start_date, end_date)
+        # Step 3: Run optimization per enabled strategy (Phase C multi-strategy).
+        # Each strategy gets its own optimizer (own grid + z-score pool), then
+        # results are merged and filtered together.
+        enabled = globalConfig.STRATEGIES_ENABLED or ["rsi_mean_reversion"]
+        raw_results: List = []
+        filtered_results: List = []
+        for strategy_name in enabled:
+            logger.info("=" * 60)
+            logger.info("🚀 Running backtests for strategy: %s", strategy_name)
+            try:
+                strategy_cls = get_strategy(strategy_name)
+            except ValueError as e:
+                logger.error("Unknown strategy '%s' in config — skipping. %s",
+                             strategy_name, e)
+                continue
+            strategy = strategy_cls.create()
+            optimizer = StrategyOptimizer(strategy=strategy)
 
-            # Convert WalkForwardResult → BacktestResult for downstream compatibility
-            raw_results = [r.to_backtest_result() for r in wf_results]
-        else:
-            raw_results = await self.optimizer.optimize_universe(symbols, start_date, end_date)
+            if globalConfig.WF_ENABLED:
+                logger.info(
+                    "🪟 Walk-forward validation enabled — splitting into IS/OOS windows")
+                wf_validator = WalkForwardValidator(optimizer)
+                wf_results = await wf_validator.validate_universe(
+                    symbols, start_date, end_date)
+
+                # Convert WalkForwardResult → BacktestResult for downstream compatibility
+                raw = [r.to_backtest_result() for r in wf_results]
+            else:
+                raw = await optimizer.optimize_universe(
+                    symbols, start_date, end_date)
+
+            raw_results.extend(raw)
+            # Per-strategy filtering (alpha > 0, profitable, trades, win rate)
+            filtered_results.extend(optimizer.filter_results(raw))
 
         # Step 4: Filter results
         logger.info("🔍 Filtering and analyzing results...")
-        filtered_results = self.optimizer.filter_results(raw_results)
-
         logger.info("📈 Backtest analysis complete!")
         logger.info("   • Total strategies tested: %d", len(raw_results))
         logger.info("   • Profitable strategies: %d", len(filtered_results))
@@ -273,7 +301,19 @@ class TradingAlgorithm:
                     f"{date_part}_{time_part}", '%Y%m%d_%H%M%S')
 
                 if (datetime.now() - file_datetime).total_seconds() < 24 * 3600:
-                    return storage.load_backtest_results(most_recent)
+                    cached = storage.load_backtest_results(most_recent)
+                    # Cache-key guard: never reuse results produced by a
+                    # different strategy set than the one configured now
+                    # (matters once multiple strategies are enabled).
+                    if cached and not all(
+                        getattr(r, "strategy_name", "rsi_mean_reversion")
+                        in globalConfig.STRATEGIES_ENABLED
+                        for r in cached
+                    ):
+                        logger.info(
+                            "Ignoring cached results: strategy set differs from configured strategies")
+                        return []
+                    return cached
             except (IndexError, ValueError):
                 pass
 
@@ -316,13 +356,15 @@ def _daily_scheduler(schedule_time: str, shared_state: dict, algorithm: 'Trading
     """
     import time as _time
 
-    logger.info("⏰ Daily scheduler started — will trigger at %s ET each day", schedule_time)
+    logger.info(
+        "⏰ Daily scheduler started — will trigger at %s ET each day", schedule_time)
 
     while True:
         try:
             now = datetime.now()
             hour, minute = map(int, schedule_time.split(':'))
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            target = now.replace(hour=hour, minute=minute,
+                                 second=0, microsecond=0)
             if target <= now:
                 target += timedelta(days=1)
 
@@ -345,7 +387,8 @@ def _daily_scheduler(schedule_time: str, shared_state: dict, algorithm: 'Trading
             else:
                 # Timer expired cleanly — fire the trigger
                 if not shared_state.get('cycle_running', False):
-                    logger.info("⏰ Scheduled time reached — triggering daily cycle")
+                    logger.info(
+                        "⏰ Scheduled time reached — triggering daily cycle")
                     shared_state['cycle_flags'] = {}
                     trigger = shared_state.get('trigger_event')
                     if trigger:
@@ -353,6 +396,48 @@ def _daily_scheduler(schedule_time: str, shared_state: dict, algorithm: 'Trading
         except Exception as e:
             logger.error("Scheduler error: %s", e)
             _time.sleep(60)  # back off on error
+
+
+def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
+    """Poll bar-loop strategies during RTH; close intraday positions at session end.
+
+    Runs in keep-alive mode alongside the daily scheduler. Evaluates intraday
+    strategies every 60s while the market is open (using the latest cycle's
+    backtest results), and force-closes intraday positions once per day after
+    the 16:00 ET close.
+    """
+    import time as _time
+    from bar_engine import BarLoopEngine  # pylint: disable=import-outside-toplevel
+
+    bar_engine = BarLoopEngine(
+        algorithm.trading_engine, algorithm.positions_manager)
+    bar_engine.set_dry_run_mode(bool(shared_state.get('dry_run', False)))
+    last_close_date: Optional[str] = None
+    logger.info("📈 Bar-loop worker started for intraday strategies")
+
+    while True:
+        try:
+            _time.sleep(60)
+            # Don't interfere with a running daily cycle.
+            if shared_state.get('cycle_running', False):
+                continue
+
+            now = datetime.now()
+            results = algorithm._last_backtest_results or []
+
+            if bar_engine.is_rth(now):
+                summary = bar_engine.run_intraday_cycle(results, as_of=now)
+                if summary.get('signals') or summary.get('orders_placed'):
+                    logger.info("📈 Intraday cycle: %s", summary)
+            elif bar_engine.session_ended(now) and bar_engine.has_open_intraday_positions():
+                today = now.strftime('%Y-%m-%d')
+                if last_close_date != today:
+                    summary = bar_engine.close_intraday_positions(as_of=now)
+                    last_close_date = today
+                    logger.info("🕓 Intraday session close: %s", summary)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Bar-loop worker error: %s", e)
+            _time.sleep(60)
 
 
 async def main():
@@ -425,6 +510,19 @@ async def main():
                     daemon=True,
                 )
                 scheduler_thread.start()
+
+            # Start the bar-loop worker when intraday strategies are enabled
+            from bar_engine import BarLoopEngine  # pylint: disable=import-outside-toplevel
+            if BarLoopEngine(
+                algorithm.trading_engine,
+                algorithm.positions_manager,
+            ).enabled_bar_loop_strategies():
+                bar_loop_thread = threading.Thread(
+                    target=_bar_loop_worker,
+                    args=(algorithm, shared_state),
+                    daemon=True,
+                )
+                bar_loop_thread.start()
 
         session_result = await algorithm.run_full_cycle(
             force_backtest=args.force_backtest,

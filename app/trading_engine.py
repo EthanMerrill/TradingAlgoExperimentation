@@ -20,11 +20,21 @@ from data_provider import TechnicalIndicators, data_provider
 from storage import storage
 from order import Order, generate_client_order_id
 from positions import Position, PositionsManager
+from strategies.base import StrategyContext
+from strategies.registry import get_strategy
 from strategy import BacktestResult, RSIStrategy
 
 from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _strategy_is_bar_loop(strategy_name: str) -> bool:
+    """True if a registered strategy runs on the bar loop (intraday)."""
+    try:
+        return get_strategy(strategy_name).execution_style == "bar_loop"
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -39,12 +49,17 @@ class TradingOpportunity:
     alpha: float
     win_rate: float
     entry_price: float
-    stop_loss_price: float
-    take_profit_price: float
+    stop_loss_price: Optional[float]
+    take_profit_price: Optional[float]
     num_trades: int = 0  # Number of trades in backtest for this symbol
     # Cross-symbol Z-score (alpha + sharpe + calmar, normalised)
     composite_score: float = 0.0
     direction: str = "long"  # "long" or "short"
+    # Owning strategy (registry key). Defaults to the legacy RSI strategy so
+    # existing callers/positions stay backward compatible.
+    strategy_name: str = "rsi_mean_reversion"
+    # Intraday (bar-loop) position — entry/exit managed by BarLoopEngine.
+    intraday: bool = False
 
 
 class TradingEngine:
@@ -79,7 +94,14 @@ class TradingEngine:
     def _identify_opportunities(
         self, backtest_results: List[BacktestResult], direction: str
     ) -> List[TradingOpportunity]:
-        """Unified opportunity identification for long and short directions.
+        """Unified, strategy-aware opportunity identification.
+
+        Groups backtest results by ``strategy_name``. Non-RSI registered
+        strategies are asked for live signals via their ``evaluate_live_signals``
+        hook; the legacy RSI cross logic (engine-native) handles
+        ``rsi_mean_reversion`` results. After merging, shared filters apply:
+        composite-score sort, alpha/win-rate/trade minimums, existing-position
+        dedup, and cross-strategy symbol dedup (highest composite wins).
 
         Args:
             backtest_results: List of backtest results
@@ -88,6 +110,96 @@ class TradingEngine:
         Returns:
             List of trading opportunities sorted by composite_score desc.
         """
+        grouped: Dict[str, List[BacktestResult]] = {}
+        for result in backtest_results:
+            name = getattr(result, "strategy_name", "rsi_mean_reversion")
+            grouped.setdefault(name, []).append(result)
+
+        opportunities: List[TradingOpportunity] = []
+        for name, results in grouped.items():
+            try:
+                strategy_cls = get_strategy(name)
+            except ValueError:
+                strategy_cls = None
+                logger.warning(
+                    "Backtest results reference unknown strategy '%s' — "
+                    "falling back to the legacy RSI opportunity path", name)
+
+            if strategy_cls is not None and strategy_cls.execution_style == "bar_loop":
+                # Bar-loop strategies are evaluated by BarLoopEngine on bar
+                # close during RTH — the daily session does not trade them.
+                logger.debug(
+                    "Strategy '%s' is bar_loop — entries managed by BarLoopEngine", name)
+                continue
+
+            if strategy_cls is not None and name != "rsi_mean_reversion":
+                # Strategy-provided live signals (new framework path).
+                try:
+                    ctx = StrategyContext(
+                        data_provider=data_provider,
+                        positions_manager=self._positions_manager,
+                        config=globalConfig,
+                        as_of=datetime.now(),
+                        ohlcv_cache=self._ohlcv_cache,
+                        strategy_results=list(results),
+                    )
+                    signals = strategy_cls().evaluate_live_signals(ctx) or []
+                    opportunities.extend(
+                        self._signals_to_opportunities(signals, direction, name))
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.error(
+                        "Error evaluating %s signals for strategy '%s': %s",
+                        direction, name, e)
+                    continue
+            else:
+                # Legacy RSI cross path (rsi_mean_reversion + unknown names).
+                opportunities.extend(
+                    self._rsi_opportunities(results, direction))
+
+        # Shared post-loop filtering
+        priority = {
+            s: i for i, s in enumerate(
+                getattr(globalConfig, "STRATEGIES_ENABLED", None) or [])
+        }
+        opportunities.sort(key=lambda x: (
+            -x.composite_score, priority.get(x.strategy_name, 999)))
+        opportunities = [op for op in opportunities if op.alpha > 0]
+        opportunities = [
+            op for op in opportunities if op.win_rate >= globalConfig.MIN_WIN_RATE]
+        opportunities = [
+            op for op in opportunities if op.num_trades >= globalConfig.MIN_NUM_TRADES]
+
+        # Cross-strategy overlap policy: a symbol may only be traded once.
+        # The list is already sorted by (composite_score desc, config order),
+        # so the first occurrence per symbol wins.
+        seen_symbols: set = set()
+        deduped: List[TradingOpportunity] = []
+        for op in opportunities:
+            if op.symbol in seen_symbols:
+                continue
+            seen_symbols.add(op.symbol)
+            deduped.append(op)
+        opportunities = deduped
+
+        # Existing-position dedup: exclude only same-direction open positions.
+        # Opposite-direction holdings are handled as exits (no flip logic).
+        if direction == "long":
+            current_symbols = {
+                pos.symbol for pos in self._positions_manager.positions
+                if not pos.closed and getattr(pos, 'side', 'long') == 'long'}
+        else:
+            current_symbols = {
+                pos.symbol for pos in self._positions_manager.positions
+                if not pos.closed and getattr(pos, 'side', 'long') == 'short'}
+        opportunities = [
+            op for op in opportunities if op.symbol not in current_symbols]
+
+        return opportunities
+
+    def _rsi_opportunities(
+        self, backtest_results: List[BacktestResult], direction: str
+    ) -> List[TradingOpportunity]:
+        """Legacy RSI cross-detection opportunity path (engine-native)."""
         is_long = direction == "long"
         opportunities: List[TradingOpportunity] = []
 
@@ -147,7 +259,9 @@ class TradingEngine:
                         take_profit_price=take_profit_price,
                         num_trades=result.num_trades,
                         composite_score=round(result.composite_score, 2),
-                        **({} if is_long else {"direction": "short"})
+                        direction="long" if is_long else "short",
+                        strategy_name=getattr(
+                            result, "strategy_name", "rsi_mean_reversion"),
                     )
                     opportunities.append(opportunity)
 
@@ -156,27 +270,56 @@ class TradingEngine:
                              direction, result.symbol, e)
                 continue
 
-        # Shared post-loop filtering
-        opportunities.sort(key=lambda x: x.composite_score, reverse=True)
-        opportunities = [op for op in opportunities if op.alpha > 0]
-        opportunities = [
-            op for op in opportunities if op.win_rate >= globalConfig.MIN_WIN_RATE]
-        opportunities = [
-            op for op in opportunities if op.num_trades >= globalConfig.MIN_NUM_TRADES]
+        return opportunities
 
-        # Existing-position dedup: exclude only same-direction open positions.
-        # Opposite-direction holdings are handled as exits (no flip logic).
-        if is_long:
-            current_symbols = {
-                pos.symbol for pos in self._positions_manager.positions
-                if not pos.closed and getattr(pos, 'side', 'long') == 'long'}
-        else:
-            current_symbols = {
-                pos.symbol for pos in self._positions_manager.positions
-                if not pos.closed and getattr(pos, 'side', 'long') == 'short'}
-        opportunities = [
-            op for op in opportunities if op.symbol not in current_symbols]
+    def _signals_to_opportunities(
+        self, signals: List[Any], direction: str, strategy_name: str
+    ) -> List[TradingOpportunity]:
+        """Convert strategy-emitted LiveSignals into TradingOpportunities.
 
+        Strategy-specific fields live in ``signal.extra``; the common fields
+        map 1:1 onto TradingOpportunity (RSI-specific fields are zeroed for
+        non-RSI strategies).
+        """
+        opportunities: List[TradingOpportunity] = []
+        for sig in signals:
+            try:
+                if getattr(sig, "direction", "long") != direction:
+                    continue
+                entry_price = getattr(sig, "entry_price", None)
+                if entry_price is None:
+                    logger.debug(
+                        "Signal for %s has no entry price — skipping", sig.symbol)
+                    continue
+                opportunities.append(TradingOpportunity(
+                    symbol=sig.symbol,
+                    current_rsi=0.0,
+                    target_rsi_lower=0,
+                    target_rsi_upper=0,
+                    rsi_period=14,
+                    backtest_return=round(
+                        getattr(sig, "backtest_return", 0.0), 2),
+                    alpha=round(getattr(sig, "alpha", 0.0), 2),
+                    win_rate=round(getattr(sig, "win_rate", 0.0), 2),
+                    entry_price=round(float(entry_price), 2),
+                    stop_loss_price=(
+                        round(float(sig.stop_loss), 2)
+                        if getattr(sig, "stop_loss", None) is not None else None),
+                    take_profit_price=(
+                        round(float(sig.take_profit), 2)
+                        if getattr(sig, "take_profit", None) is not None else None),
+                    num_trades=int(getattr(sig, "num_trades", 0)),
+                    composite_score=round(
+                        getattr(sig, "composite_score", 0.0), 2),
+                    direction=direction,
+                    strategy_name=strategy_name,
+                    intraday=_strategy_is_bar_loop(strategy_name),
+                ))
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.error(
+                    "Error converting %s signal for strategy '%s': %s",
+                    direction, strategy_name, e)
+                continue
         return opportunities
 
     def identify_buying_opportunities(self, backtest_results: List[BacktestResult]) -> List[TradingOpportunity]:
@@ -186,6 +329,48 @@ class TradingEngine:
     def identify_shorting_opportunities(self, backtest_results: List[BacktestResult]) -> List[TradingOpportunity]:
         """Identify current short-selling opportunities based on backtest results."""
         return self._identify_opportunities(backtest_results, "short")
+
+    def _strategy_budgets(self, equity: float) -> Dict[str, float]:
+        """Return per-strategy capital budgets: ``strategy_name -> notional cap``.
+
+        Weights come from ``globalConfig.STRATEGY_ALLOCATION`` (normalized so
+        explicit weights take priority; unweighted enabled strategies split the
+        leftover equally). With no weights at all, enabled strategies split
+        equity evenly. Strategies with no budget entry get the full equity
+        (legacy single-strategy behavior).
+        """
+        enabled = list(getattr(
+            globalConfig, "STRATEGIES_ENABLED", None) or ["rsi_mean_reversion"])
+        if not enabled:
+            enabled = ["rsi_mean_reversion"]
+        alloc = getattr(globalConfig, "STRATEGY_ALLOCATION", None) or {}
+        explicit = {
+            s: float(alloc[s])
+            for s in enabled
+            if alloc.get(s) is not None and float(alloc[s]) > 0
+        }
+        total_explicit = sum(explicit.values())
+        missing = [s for s in enabled if s not in explicit]
+        leftover_each = 0.0
+        if missing:
+            if total_explicit < 1.0:
+                leftover_each = (1.0 - total_explicit) / len(missing)
+        if not explicit:
+            # No weights configured — even split across enabled strategies.
+            even = 1.0 / len(enabled)
+            return {s: equity * even for s in enabled}
+        return {s: equity * (explicit.get(s, leftover_each)) for s in enabled}
+
+    def _strategy_notional_used(self) -> Dict[str, float]:
+        """Notional currently deployed per strategy (open positions only)."""
+        used: Dict[str, float] = {}
+        for pos in (self._positions_manager.positions or []):
+            if getattr(pos, "closed", False):
+                continue
+            name = getattr(pos, "strategy_name", "rsi_mean_reversion")
+            used[name] = used.get(name, 0.0) + \
+                pos.entry_price * abs(pos.quantity)
+        return used
 
     def calculate_position_sizes(self, opportunities: List[TradingOpportunity]) -> List[Tuple[TradingOpportunity, int]]:
         """
@@ -232,16 +417,39 @@ class TradingEngine:
             # Select top opportunities up to max new positions
             selected_opportunities = opportunities[:max_new_positions]
 
+            # Per-strategy capital budgets (Phase C multi-strategy allocation).
+            budgets = self._strategy_budgets(equity)
+            strategy_used = self._strategy_notional_used()
+
             # Calculate position size for each opportunity
             position_allocations = []
 
             for opportunity in selected_opportunities:
-                # Equal weight allocation
-                position_value = equity * globalConfig.POSITION_SIZE_PCT
+                # Strategy budget cap: never exceed the strategy's allocated
+                # notional (existing open positions + this new position).
+                budget = budgets.get(opportunity.strategy_name, equity)
+                available = budget - strategy_used.get(
+                    opportunity.strategy_name, 0.0)
+                if available <= 0:
+                    logger.info(
+                        "Skipping %s (%s): strategy budget exhausted "
+                        "($%.2f remaining)",
+                        opportunity.symbol, opportunity.strategy_name, available)
+                    continue
+
+                # Equal weight allocation, capped by the strategy budget
+                position_value = min(
+                    equity * globalConfig.POSITION_SIZE_PCT,
+                    available,
+                )
                 shares = int(position_value / opportunity.entry_price)
 
                 if shares > 0:
                     position_allocations.append((opportunity, shares))
+                    strategy_used[opportunity.strategy_name] = (
+                        strategy_used.get(opportunity.strategy_name, 0.0)
+                        + shares * opportunity.entry_price
+                    )
 
             return position_allocations
 
@@ -314,6 +522,10 @@ class TradingEngine:
             if not selected_opportunities:
                 return []
 
+            # Per-strategy capital budgets (Phase C multi-strategy allocation).
+            budgets = self._strategy_budgets(equity)
+            strategy_used = self._strategy_notional_used()
+
             position_allocations = []
 
             # Distribute remaining short capacity evenly
@@ -321,15 +533,32 @@ class TradingEngine:
                 len(selected_opportunities)
 
             for opportunity in selected_opportunities:
-                # Cap each to the per_position_notional or a percentage of equity, whichever is smaller
+                # Strategy budget cap (same rule as longs)
+                budget = budgets.get(opportunity.strategy_name, equity)
+                available = budget - strategy_used.get(
+                    opportunity.strategy_name, 0.0)
+                if available <= 0:
+                    logger.info(
+                        "Skipping short %s (%s): strategy budget exhausted "
+                        "($%.2f remaining)",
+                        opportunity.symbol, opportunity.strategy_name, available)
+                    continue
+
+                # Cap each to the per_position_notional, the strategy budget,
+                # or a percentage of equity, whichever is smaller
                 position_value = min(
                     per_position_notional,
-                    equity * globalConfig.POSITION_SIZE_PCT
+                    equity * globalConfig.POSITION_SIZE_PCT,
+                    available,
                 )
                 shares = int(position_value / opportunity.entry_price)
 
                 if shares > 0:
                     position_allocations.append((opportunity, shares))
+                    strategy_used[opportunity.strategy_name] = (
+                        strategy_used.get(opportunity.strategy_name, 0.0)
+                        + shares * opportunity.entry_price
+                    )
                     logger.info(
                         "Short alloc for %s: %d shares @ $%.2f = $%.2f notional",
                         opportunity.symbol, shares, opportunity.entry_price,
@@ -432,6 +661,8 @@ class TradingEngine:
                     exit_date=None,
                     order_id=placed_order_id,
                     client_order_id=client_order_id,
+                    strategy_name=opportunity.strategy_name,
+                    intraday=opportunity.intraday,
                 )
 
                 self._positions_manager.open_position(new_position)
@@ -930,9 +1161,12 @@ class TradingEngine:
         """
         # First pass: force-close positions that have exceeded max hold days.
         # This matches the backtest's max-hold-day exit for backtest/live parity.
+        # Intraday positions are excluded — their exits are bar-engine-managed.
+        daily_positions = [
+            p for p in current_positions if not getattr(p, 'intraday', False)]
         now = datetime.now()
         positions_to_close = []
-        for position in current_positions:
+        for position in daily_positions:
             days_held = (now - position.entry_date).days
             if days_held >= globalConfig.MAX_HOLD_DAYS:
                 logger.info(
@@ -953,7 +1187,7 @@ class TradingEngine:
 
         # Second pass: update remaining open positions with new OCO orders.
         active_positions = [
-            p for p in current_positions if p.symbol not in positions_to_close
+            p for p in daily_positions if p.symbol not in positions_to_close
         ]
         for position in active_positions:
             # Calculate today's stop loss and take profit based on current price
@@ -981,7 +1215,12 @@ class TradingEngine:
         # Identify buying opportunities
         opportunities = self.identify_buying_opportunities(backtest_results)
         session_summary['opportunities_found'] = len(opportunities)
+        return self._execute_purchases(session_summary, opportunities)
 
+    def _execute_purchases(self, session_summary: Dict[str, Any], opportunities: List[TradingOpportunity]) -> Dict[str, Any]:
+        """Execute long entries for a list of opportunities (shared by the daily
+        session and the bar loop). Handles opposite-position exits, sizing,
+        and order placement."""
         # Partition: opposite-direction holdings are exits, not new entries.
         # Exits do NOT consume new-position slots.
         exit_symbols = {
@@ -1037,7 +1276,11 @@ class TradingEngine:
             backtest_results)
         logger.info("Found %d short-selling opportunities",
                     len(short_opportunities))
+        return self._execute_shorts(session_summary, short_opportunities)
 
+    def _execute_shorts(self, session_summary: Dict[str, Any], short_opportunities: List[TradingOpportunity]) -> Dict[str, Any]:
+        """Execute short entries for a list of opportunities (shared by the daily
+        session and the bar loop)."""
         # Partition: opposite-direction holdings are exits, not new entries.
         exit_symbols = {
             op.symbol for op in short_opportunities

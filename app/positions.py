@@ -35,6 +35,12 @@ class Position:
     side: str = field(init=False, default="long")
     order_id: Optional[str] = None
     client_order_id: Optional[str] = None
+    # Owning strategy (registry key). Defaults to the legacy RSI strategy
+    # so existing persisted rows and callers stay backward compatible.
+    strategy_name: str = "rsi_mean_reversion"
+    # Intraday (bar-loop) positions are opened and closed within one session;
+    # their exits are managed by BarLoopEngine, not the daily OCO refresh.
+    intraday: bool = False
 
     def __post_init__(self):
         """Derive side from quantity: negative qty = short position."""
@@ -154,6 +160,10 @@ class PositionsManager:
                 row['order_id']) and row['order_id'] is not None else None,
             client_order_id=str(row['client_order_id']) if 'client_order_id' in row and pd.notna(
                 row['client_order_id']) and row['client_order_id'] is not None else None,
+            strategy_name=str(row['strategy_name']) if 'strategy_name' in row and pd.notna(
+                row['strategy_name']) else "rsi_mean_reversion",
+            intraday=bool(row['intraday']) if 'intraday' in row and pd.notna(
+                row['intraday']) else False,
         )
 
     def get_and_reconcile_positions(self) -> List[Position]:

@@ -3,6 +3,7 @@ Data provider module for fetching market data from various sources.
 Replaces the legacy networking.py with modern async/await patterns.
 """
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, cast
@@ -18,6 +19,25 @@ from alpaca.data.enums import Adjustment
 from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_timeframe(timeframe: str) -> TimeFrame:
+    """Parse an Alpaca timeframe string (e.g. '5m', '1h', '1d') into a TimeFrame.
+
+    Raises ValueError for unsupported formats.
+    """
+    unit_map = {
+        'm': TimeFrameUnit.Minute,
+        'h': TimeFrameUnit.Hour,
+        'd': TimeFrameUnit.Day,
+    }
+    match = re.match(r'^(\d+)([mhd])$', timeframe.strip().lower())
+    if not match:
+        raise ValueError(
+            f"Unsupported timeframe '{timeframe}'. Use e.g. '5m', '1h', '1d'.")
+    size = int(match.group(1))
+    unit = unit_map[match.group(2)]
+    return TimeFrame(size, unit)
 
 
 def _lower_str(value: Any) -> str:
@@ -70,7 +90,8 @@ class DataProvider:
         self,
         symbol: str,
         start_date: datetime,
-        end_date: datetime
+        end_date: datetime,
+        timeframe: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Get historical data for a single stock (synchronous version).
@@ -79,6 +100,8 @@ class DataProvider:
             symbol: Stock symbol
             start_date: Start date
             end_date: End date
+            timeframe: Optional Alpaca timeframe string, e.g. '5m' for 5-minute
+                bars. Defaults to daily bars (backward compatible).
 
         Returns:
             DataFrame with OHLCV data
@@ -89,9 +112,14 @@ class DataProvider:
             return pd.DataFrame()
 
         try:
+            if timeframe:
+                tf = _parse_timeframe(timeframe)
+            else:
+                tf = TimeFrame(1, cast(TimeFrameUnit, TimeFrameUnit.Day))
+
             request_params = StockBarsRequest(
                 symbol_or_symbols=[symbol],
-                timeframe=TimeFrame(1, cast(TimeFrameUnit, TimeFrameUnit.Day)),
+                timeframe=tf,
                 start=start_date,
                 end=end_date,
                 limit=10000,
