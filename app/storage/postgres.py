@@ -9,7 +9,8 @@ Requires DATABASE_URL env var when STORAGE_BACKEND=postgres.
 import asyncio
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, cast
 
 import asyncpg
@@ -37,32 +38,50 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _sync(coro):
-    """Run an async coroutine and return its result synchronously.
+# ---------------------------------------------------------------------------
+# Persistent event loop
+# ---------------------------------------------------------------------------
 
-    Loop-safe: works from a sync context, an already-running event loop,
-    and (importantly) from worker threads spawned by ``run_in_executor``
-    that inherit loop context.  ``asyncio.run`` fails with
-    ``RuntimeError: Event loop is closed`` in those threads, so when there
-    is no *running* loop we create a fresh loop explicitly and close it
-    ourselves.
+
+class _DBLoop:
+    """Holds the single long-lived event loop (and its thread) for asyncpg."""
+
+    loop: Optional[asyncio.AbstractEventLoop] = None
+    thread: Optional[threading.Thread] = None
+    lock = threading.Lock()
+
+
+def _get_db_loop() -> asyncio.AbstractEventLoop:
+    """Return a single long-lived event loop, starting it on demand.
+
+    asyncpg pools are bound to the event loop that created them.  Running every
+    database call on one persistent loop (instead of a throwaway loop per call)
+    keeps the pool valid for the whole process and eliminates the
+    ``Event loop is closed`` failures that occur when per-call loops are
+    garbage-collected while their pool connections are still alive.
     """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        # No running loop — create a fresh one and drive it directly.
-        # This is safe even in threads that carry stale loop context,
-        # which `asyncio.run` is not.
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+    with _DBLoop.lock:
+        if _DBLoop.loop is None or _DBLoop.loop.is_closed():
+            _DBLoop.loop = asyncio.new_event_loop()
+            _DBLoop.thread = threading.Thread(
+                target=_DBLoop.loop.run_forever,
+                name="asyncpg-loop",
+                daemon=True,
+            )
+            _DBLoop.thread.start()
+        return _DBLoop.loop
 
-    # We're inside an already-running event loop — run in a background thread.
-    import concurrent.futures
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+
+def _sync(coro):
+    """Run a coroutine to completion on the persistent database loop.
+
+    All asyncpg calls are funnelled through a single long-lived loop so the
+    loop-bound pool stays valid for the lifetime of the process.  Safe to call
+    from any thread — the main trading loop and the Waitress health-server
+    daemon thread alike.
+    """
+    loop = _get_db_loop()
+    return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
 
 def _pool_is_closed(pool) -> bool:
@@ -78,6 +97,19 @@ def _pool_is_closed(pool) -> bool:
     except (AttributeError, TypeError):
         return False
     return result is True
+
+
+def _json_default(value):
+    """JSON encoder fallback: convert non-serializable values to primitives."""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (bytes, bytearray)):
+        return str(value)
+    if hasattr(value, "isoformat"):  # pd.Timestamp and other date-likes
+        return value.isoformat()
+    return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -224,11 +256,9 @@ class PostgresStorage(StorageBackend):
     """Storage backend backed by a Postgres database via asyncpg."""
 
     # asyncpg pools are bound to the event loop that created them and cannot
-    # be used from other threads/loops (raises "Event loop is closed").  Since
-    # this backend is called from both the main trading loop and the Waitress
-    # health-server daemon thread, keep one pool per event loop.
-    _pools_by_loop: Dict[int, asyncpg.Pool] = {}
-    _pools_lock: threading.Lock = threading.Lock()
+    # be used from other threads/loops (raises "Event loop is closed").  All
+    # database I/O is therefore funnelled through a single persistent loop
+    # (see _sync/_get_db_loop) so one pool stays valid process-wide.
 
     def __init__(self, database_url: Optional[str] = None):
         # type: ignore # pylint: disable=import-outside-toplevel
@@ -256,60 +286,37 @@ class PostgresStorage(StorageBackend):
     # -- pool & schema -------------------------------------------------------
 
     async def _init_pool_and_schema(self) -> None:
-        self._pool = await asyncpg.create_pool(
-            self._dsn,
-            min_size=1,
-            max_size=4,
-            command_timeout=30,
-        )
-        async with self._pool.acquire() as conn:
+        pool = await self._get_pool()
+        if pool is None:
+            raise RuntimeError("Could not create Postgres pool")
+        async with pool.acquire() as conn:
             await conn.execute(_ALL_DDL)
         self._connected = True
         logger.info(
             "Postgres pool connected & schema ensured (env=%s)", self._env)
 
-    def _get_pool(self) -> Optional[asyncpg.Pool]:
-        """Return a pool bound to the current event loop, creating one if needed.
+    async def _get_pool(self) -> Optional[asyncpg.Pool]:
+        """Return the shared pool, (re)creating it on the persistent loop.
 
-        asyncpg pools cannot be shared across event loops, so keep a pool per
-        loop: the main trading loop and the Waitress health-server daemon
-        thread each get a pool owned by their own loop.
+        Because every call runs on the one persistent loop, a single pool
+        suffices.  Closed pools (e.g. after a database restart) are recreated
+        transparently.
         """
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
+        if self._pool is not None and not _pool_is_closed(self._pool):
             return self._pool
 
-        loop_id = id(loop)
-        with self._pools_lock:
-            # Prefer an explicitly-assigned pool (tests, or the pool created
-            # in __init__).  Mock pools (tests) report a truthy is_closed(),
-            # so only a real pool reporting True is treated as closed.
-            if self._pool is not None and not _pool_is_closed(self._pool):
-                return self._pool
-
-            existing = self._pools_by_loop.get(loop_id)
-            if existing is not None and not _pool_is_closed(existing):
-                return existing
-
-            async def _create() -> asyncpg.Pool:
-                return await asyncpg.create_pool(
-                    self._dsn, min_size=1, max_size=4, command_timeout=30)
-
-            try:
-                pool = _sync(_create())
-            except Exception as exc:  # pylint: disable=broad-exception-caught
-                logger.error(
-                    "Failed to create per-loop Postgres pool: %s", exc)
-                return None
-
-            self._pools_by_loop[loop_id] = pool
-            return pool
+        try:
+            self._pool = await asyncpg.create_pool(
+                self._dsn, min_size=1, max_size=4, command_timeout=30)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Failed to create Postgres pool: %s", exc)
+            return None
+        return self._pool
 
     async def _fetch(self, query: str, *args) -> List[asyncpg.Record]:
         if not self._connected:
             return []
-        pool = self._get_pool()
+        pool = await self._get_pool()
         if pool is None:
             return []
         async with pool.acquire() as conn:
@@ -318,7 +325,7 @@ class PostgresStorage(StorageBackend):
     async def _execute(self, query: str, *args) -> str:
         if not self._connected:
             return "NOT_CONNECTED"
-        pool = self._get_pool()
+        pool = await self._get_pool()
         if pool is None:
             return "NOT_CONNECTED"
         async with pool.acquire() as conn:
@@ -457,7 +464,7 @@ class PostgresStorage(StorageBackend):
     async def _execute_many(self, sql: str, rows: List[tuple]) -> None:
         if not self._connected:
             return
-        pool = self._get_pool()
+        pool = await self._get_pool()
         if pool is None:
             return
         async with pool.acquire() as conn:
@@ -656,7 +663,7 @@ class PostgresStorage(StorageBackend):
             _sync(self._execute(
                 "INSERT INTO session_metadata (timestamp, environment, metadata) "
                 "VALUES ($1, $2, $3)",
-                timestamp, self._env, json.dumps(clean),
+                timestamp, self._env, json.dumps(clean, default=_json_default),
             ))
             logger.info(
                 "Saved session metadata to Postgres (ts=%s)", timestamp)
