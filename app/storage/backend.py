@@ -4,6 +4,7 @@ All persistence operations (GCS, Postgres, etc.) must implement this ABC.
 """
 import json
 import logging
+import math
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -65,13 +66,20 @@ POSITION_FIELDS = [
 
 
 def _safe_round(value: Any, ndigits: int = 2) -> Any:
-    """Round a numeric value safely (passes through non-numerics like Mock)."""
+    """Round a numeric value safely (passes through non-numerics like Mock).
+
+    Non-finite floats (NaN/Infinity) are normalized to None so they never
+    reach a JSON/CSV serializer, which would emit invalid ``NaN`` literals.
+    """
     if value is None:
         return None
     try:
-        return round(float(value), ndigits)
+        result = round(float(value), ndigits)
     except (TypeError, ValueError):
         return value
+    if isinstance(result, float) and not math.isfinite(result):
+        return None
+    return result
 
 
 def _serialize_params(params: Any) -> Optional[str]:

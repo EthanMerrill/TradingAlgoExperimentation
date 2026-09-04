@@ -65,6 +65,26 @@ class TestTradingEngine(unittest.TestCase):
         engine.set_positions_manager(mock_manager)
         self.assertIs(engine._positions_manager, mock_manager)
 
+    def test_execute_trading_session_persists_without_backtest_results(self):
+        """Positions reconciled from the broker must still persist even when
+        there are no new backtest results (regression: the early return used
+        to skip persist_positions entirely)."""
+        self.engine.dry_run = False
+        self.engine._positions_manager.get_and_reconcile_positions.return_value = []
+        self.engine._positions_manager.persist_positions = Mock()
+        # Guard: no entry/short execution should happen without results.
+        self.engine.identify_purchases = Mock()
+        self.engine.identify_and_execute_shorts = Mock()
+        with patch('trading_engine.storage') as mock_storage:
+            mock_storage.get_open_orders_stored.return_value = []
+            summary = self.engine.execute_trading_session([])
+
+        self.engine._positions_manager.persist_positions.assert_called_once()
+        self.engine.identify_purchases.assert_not_called()
+        self.engine.identify_and_execute_shorts.assert_not_called()
+        self.assertEqual(summary['opportunities_found'], 0)
+        self.assertFalse(summary['dry_run'])
+
     def _result(self, symbol, alpha=0.1, win_rate=0.9, num_trades=10):
         r = Mock()
         r.symbol = symbol

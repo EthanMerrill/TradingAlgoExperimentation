@@ -99,6 +99,29 @@ class TestPostgresDbBrowse(unittest.TestCase):
         self.assertEqual(result["limit"], 10)
         self.assertEqual(result["offset"], 0)
 
+    def test_db_fetch_table_sanitizes_nonfinite_floats(self):
+        # Non-finite floats (NaN/Infinity) would be serialized by Flask's
+        # jsonify as invalid JSON (NaN/Infinity literals), breaking the
+        # browser's resp.json(). They must be normalized to None.
+        import math
+        self._conn.fetch = AsyncMock(side_effect=[
+            [dict(table_name="backtest_results")],
+            [dict(n=1)],
+            [dict(symbol="AAPL",
+                  total_return=math.nan,
+                  sharpe_ratio=math.inf,
+                  max_drawdown=-math.inf,
+                  win_rate=0.55)],
+        ])
+        s = self._connected()
+        result = s.db_fetch_table("backtest_results", limit=10, offset=0)
+        row = result["rows"][0]
+        self.assertIsNone(row["total_return"])
+        self.assertIsNone(row["sharpe_ratio"])
+        self.assertIsNone(row["max_drawdown"])
+        # finite floats are preserved
+        self.assertEqual(row["win_rate"], 0.55)
+
 
 class TestHealthDbEndpoints(unittest.TestCase):
     """/api/db/tables + /api/db/table/<name> (auth required)."""

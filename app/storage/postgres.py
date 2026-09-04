@@ -8,6 +8,7 @@ Requires DATABASE_URL env var when STORAGE_BACKEND=postgres.
 """
 import asyncio
 import logging
+import math
 import threading
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -389,16 +390,21 @@ class PostgresStorage(StorageBackend):
         rows = [dict(r) for r in records]
         columns = list(rows[0].keys()) if rows else []
 
-        # JSON-safe value conversion (asyncpg types → primitives)
+        # JSON-safe value conversion (asyncpg types → primitives).
+        # Non-finite floats (NaN/Infinity) would be emitted by Flask's jsonify
+        # as invalid JSON, so normalize them to None before returning.
         import decimal  # pylint: disable=import-outside-toplevel
         for row in rows:
             for key, value in list(row.items()):
                 if value is None:
                     continue
-                if isinstance(value, datetime):
+                if isinstance(value, float) and not math.isfinite(value):
+                    row[key] = None
+                elif isinstance(value, datetime):
                     row[key] = value.isoformat()
                 elif isinstance(value, (decimal.Decimal,)):
-                    row[key] = float(value)
+                    converted = float(value)
+                    row[key] = converted if math.isfinite(converted) else None
                 elif isinstance(value, (bytes, bytearray)):
                     row[key] = str(value)
                 elif hasattr(value, "isoformat"):  # dates, etc.

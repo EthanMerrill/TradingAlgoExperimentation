@@ -1358,18 +1358,19 @@ class TradingEngine:
             if not backtest_results:
                 logger.warning(
                     "No backtest results available - cannot identify buying opportunities")
-                return session_summary
+            else:
+                self.identify_purchases(session_summary, backtest_results)
 
-            self.identify_purchases(session_summary, backtest_results)
+                # Identify short-selling opportunities (when enabled)
+                if globalConfig.ENABLE_SHORT_SELLING:
+                    logger.info(
+                        "📉 Short selling enabled — checking for short opportunities...")
+                    self.identify_and_execute_shorts(
+                        session_summary, backtest_results)
 
-            # Identify short-selling opportunities (when enabled)
-            if globalConfig.ENABLE_SHORT_SELLING:
-                logger.info(
-                    "📉 Short selling enabled — checking for short opportunities...")
-                self.identify_and_execute_shorts(
-                    session_summary, backtest_results)
-
-            # save updated positions to cloud storage
+            # save updated positions to cloud storage (always persist so that
+            # positions reconciled from the broker are not lost on cycles with
+            # no new backtest results).
             if not self.dry_run:
                 self._positions_manager.persist_positions()
             else:

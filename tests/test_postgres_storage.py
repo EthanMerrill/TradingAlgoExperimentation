@@ -94,6 +94,29 @@ class TestPostgresStorage(unittest.TestCase):
         self.assertTrue(s.save_backtest_results(r, "20250610_170000"))
         self._conn.executemany.assert_called()
 
+    def test_backtest_result_to_dict_sanitizes_nan(self):
+        # Non-finite floats must be normalized to None at write time so they
+        # never reach the DB (and later the browser) as NaN/Infinity.
+        import math
+        from storage.backend import backtest_result_to_dict
+        from strategy import BacktestResult
+        r = BacktestResult(symbol="AAPL", rsi_period=14, rsi_lower=30,
+             rsi_upper=70, total_return=math.nan,
+             buy_and_hold_return=math.inf, alpha=0.05, num_trades=5,
+             win_rate=0.6, avg_trade_duration=-math.inf,
+             max_drawdown=0.08, sharpe_ratio=math.nan, profitable=True,
+             current_rsi=math.nan)
+        d = backtest_result_to_dict(r)
+        self.assertIsNone(d["total_return"])
+        self.assertIsNone(d["buy_and_hold_return"])
+        self.assertIsNone(d["avg_trade_duration"])
+        self.assertIsNone(d["sharpe_ratio"])
+        self.assertIsNone(d["current_rsi"])
+        # finite values are preserved
+        self.assertEqual(d["alpha"], 0.05)
+        self.assertEqual(d["win_rate"], 0.6)
+        self.assertEqual(d["max_drawdown"], 0.08)
+
     # --- load_backtest_results ---
 
     def test_load_bt_disconnected(self):
