@@ -29,8 +29,10 @@ class TestPostgresDbBrowse(unittest.TestCase):
         class _FakeAcquire:
             def __init__(self, c):
                 self._c = c
+
             async def __aenter__(self):
                 return self._c
+
             async def __aexit__(self, *args):
                 pass
 
@@ -92,7 +94,8 @@ class TestPostgresDbBrowse(unittest.TestCase):
         s = self._connected()
         result = s.db_fetch_table("backtest_results", limit=10, offset=0)
         self.assertEqual(result["total"], 2)
-        self.assertEqual(result["columns"], ["symbol", "total_return", "created_at"])
+        self.assertEqual(result["columns"], [
+                         "symbol", "total_return", "created_at"])
         self.assertEqual(result["rows"][0]["symbol"], "AAPL")
         # datetimes must be JSON-safe (ISO strings)
         self.assertIsInstance(result["rows"][0]["created_at"], str)
@@ -164,7 +167,8 @@ class TestHealthDbEndpoints(unittest.TestCase):
     def test_tables_supported(self):
         storage_backend = Mock()
         storage_backend.db_browse_enabled.return_value = True
-        storage_backend.db_list_tables.return_value = ['backtest_results', 'orders']
+        storage_backend.db_list_tables.return_value = [
+            'backtest_results', 'orders']
         client = self._make_app(storage_backend).test_client()
         resp = client.get('/api/db/tables', headers=self._auth_headers())
         self.assertEqual(resp.status_code, 200)
@@ -198,7 +202,8 @@ class TestHealthDbEndpoints(unittest.TestCase):
     def test_table_unknown_returns_400(self):
         storage_backend = Mock()
         storage_backend.db_browse_enabled.return_value = True
-        storage_backend.db_fetch_table.side_effect = ValueError("Unknown table")
+        storage_backend.db_fetch_table.side_effect = ValueError(
+            "Unknown table")
         client = self._make_app(storage_backend).test_client()
         resp = client.get('/api/db/table/nope',
                           headers=self._auth_headers())
