@@ -68,6 +68,28 @@ class PositionsManager:
         # Reconciliation cache to avoid duplicate API calls within a cycle
         self._reconciled_at: Optional[float] = None
         self._cached_open_positions: Optional[List[Position]] = None
+        # Stable snapshot timestamp for the current session so repeated
+        # persists (immediate save on every open + end-of-session save)
+        # upsert into a single snapshot instead of appending one per call.
+        self._session_snapshot_timestamp: Optional[str] = None
+
+    def begin_session(self) -> None:
+        """Start a new persistence session with a fresh snapshot timestamp.
+
+        Call once at the start of each trading session.  All subsequent
+        ``persist_positions`` calls within the session upsert into that one
+        snapshot (the storage backend replaces rows for the same timestamp)
+        rather than writing a new snapshot per open.
+        """
+        self._session_snapshot_timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S")
+
+    def _session_timestamp(self) -> str:
+        """Return the current session's snapshot timestamp, lazily creating one."""
+        if self._session_snapshot_timestamp is None:
+            self._session_snapshot_timestamp = datetime.now().strftime(
+                "%Y%m%d_%H%M%S")
+        return self._session_snapshot_timestamp
 
     def _persist_positions(self, positions_df: pd.DataFrame):
         """Save a positions DataFrame while preserving historical closed rows.
@@ -97,7 +119,8 @@ class PositionsManager:
                     [positions_df, historical_closed[common_cols]],
                     ignore_index=True,
                 )
-        self.storage_backend.save_positions(positions_df)
+        self.storage_backend.save_positions(
+            positions_df, timestamp=self._session_timestamp())
 
     def persist_positions(self) -> None:
         """Persist the full in-memory position state (open + closed).
@@ -108,6 +131,8 @@ class PositionsManager:
         calls that silently dropped closed positions.
         """
         if not self.positions:
+            logger.info(
+                "persist_positions: no positions in memory — nothing to save")
             return
         # pylint: disable=import-outside-toplevel
         from storage.backend import normalize_position_for_save
@@ -984,8 +1009,13 @@ class PositionsManager:
         # Invalidate reconciliation cache so the next reconcile picks up
         # the newly opened position from the broker.
         self.invalidate_reconciliation_cache()
-        # Save the updated positions to cloud storage
-        # self.storage_backend.save_positions(self.positions) SAVE AT END
+        # Persist immediately so a newly-opened position survives even if
+        # the end-of-session persist is bypassed (e.g. process exits first).
+        try:
+            self.persist_positions()
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error persisting positions after opening %s: %s",
+                         position.symbol, exc)
         logger.info(
             "Opened new position for %s. Full saved positions: %s", position.symbol, self.positions)
 

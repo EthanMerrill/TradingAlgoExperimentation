@@ -525,7 +525,8 @@ class PostgresStorage(StorageBackend):
         # Normalise to list-of-dicts (same logic as GcsStorage)
         if isinstance(positions_data, list):
             if not positions_data:
-                return True  # Nothing to save
+                logger.info("save_positions: empty list — nothing to save")
+                return True
             rows_list: List[Dict[str, Any]] = [
                 normalize_position_for_save(pos) for pos in positions_data
             ]
@@ -539,10 +540,20 @@ class PostgresStorage(StorageBackend):
             return False
 
         if not rows_list:
+            logger.info("save_positions: empty rows — nothing to save")
             return True
 
         if timestamp is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Idempotence: replace any prior rows for this (snapshot_timestamp,
+        # environment) so repeated saves within the same second (e.g. an
+        # immediate save on open followed by the end-of-session save) do not
+        # leave duplicate symbol rows in a single snapshot.
+        delete_sql = (
+            "DELETE FROM position_snapshots "
+            "WHERE snapshot_timestamp = $1 AND environment = $2"
+        )
 
         col_placeholders = ", ".join(
             f"${i}" for i in range(1, len(_POSITION_COLS) + 3)
@@ -572,6 +583,7 @@ class PostgresStorage(StorageBackend):
             tuples.append(tup)
 
         try:
+            _sync(self._execute(delete_sql, timestamp, self._env))
             _sync(self._execute_many(sql, tuples))
             logger.info("Saved %d positions to Postgres (snapshot=%s)",
                         len(tuples), timestamp)

@@ -1341,6 +1341,10 @@ class TradingEngine:
 
         try:
             logger.info("Starting trading session...")
+            # Begin a new persistence session so every save this session (the
+            # immediate save on each open plus the end-of-session save) upserts
+            # into one snapshot.
+            self._positions_manager.begin_session()
             # Refresh positions once at the beginning of the session
             positions = self._positions_manager.get_and_reconcile_positions()
 
