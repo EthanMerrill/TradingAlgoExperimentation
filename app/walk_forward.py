@@ -155,6 +155,45 @@ class WalkForwardValidator:
         # once per universe run, even if many symbols fall short.
         self._insufficient_windows_explained = False
 
+    def _warmup_days(self) -> int:
+        """Calendar-day warmup for the strategy's largest indicator lookback.
+
+        Falls back to a conservative default for legacy/mock optimizers that
+        have no real ``Strategy`` attached (e.g. unit-test mocks).
+        """
+        strategy = getattr(self.optimizer, "strategy", None)
+        if isinstance(strategy, Strategy):
+            return strategy.warmup_days()
+        return 60
+
+    @staticmethod
+    def _slice_bars(
+        data: Optional[pd.DataFrame], start: datetime, end: datetime
+    ) -> pd.DataFrame:
+        """Slice a bars DataFrame to the inclusive [start, end] label range.
+
+        Alpaca returns tz-aware (UTC) timestamps while window boundaries are
+        tz-naive; align the boundary tz to the index before label slicing so
+        results are bit-identical to a fresh API fetch for the same range.
+        """
+        if data is None or data.empty:
+            return data if data is not None else pd.DataFrame()
+
+        idx_tz = getattr(data.index, "tz", None)
+        if idx_tz is not None:
+            if getattr(start, "tzinfo", None) is None:
+                start = start.replace(tzinfo=idx_tz)
+            if getattr(end, "tzinfo", None) is None:
+                end = end.replace(tzinfo=idx_tz)
+        elif getattr(start, "tzinfo", None) is not None:
+            start = start.replace(tzinfo=None)
+            end = end.replace(tzinfo=None)
+
+        try:
+            return data.loc[start:end]
+        except (KeyError, TypeError):
+            return data[(data.index >= start) & (data.index <= end)]
+
     # ------------------------------------------------------------------
     # Window boundary computation
     # ------------------------------------------------------------------
@@ -200,6 +239,7 @@ class WalkForwardValidator:
         start_date: datetime,
         end_date: datetime,
         direction: str = "long",
+        prefetched_full_data: Optional[pd.DataFrame] = None,
     ) -> Optional[WalkForwardResult]:
         """Run walk-forward validation for a single symbol and direction.
 
@@ -208,6 +248,10 @@ class WalkForwardValidator:
             start_date: Start of the full backtest window
             end_date: End of the full backtest window
             direction: "long" or "short"
+            prefetched_full_data: Optional pre-fetched OHLCV DataFrame covering
+                the full ``[start_date - warmup, end_date]`` range. When
+                provided, every window slices from this shared cache instead of
+                hitting the API (and paying the rate-limit delay) per window.
 
         Returns:
             WalkForwardResult with aggregate OOS metrics, or None if insufficient
@@ -285,6 +329,7 @@ class WalkForwardValidator:
             )
 
             wf_windows: List[WalkForwardWindow] = []
+            warmup_is = self._warmup_days()
 
             for idx, (is_start, is_end, oos_start, oos_end) in enumerate(windows):
                 wf_win = WalkForwardWindow(
@@ -301,11 +346,31 @@ class WalkForwardValidator:
                     is_num_trades=0,
                 )
 
+                # Fetch once per window (a single API call covering IS + OOS),
+                # then slice locally instead of making two separate calls.
+                # When a shared pre-fetched range is available (validate_universe),
+                # reuse it and skip the API entirely.
+                if prefetched_full_data is not None and not prefetched_full_data.empty:
+                    full_data = prefetched_full_data
+                else:
+                    from data_provider import data_provider  # pylint: disable=import-outside-toplevel,reimported
+
+                    full_data = data_provider.get_single_stock_bars(
+                        symbol, is_start - timedelta(days=warmup_is), oos_end)
+
                 # --- Step A: Optimize on IS window ---
                 try:
-                    is_result = self.optimizer.optimize_symbol(
-                        symbol, is_start, is_end, direction
-                    )
+                    is_slice = self._slice_bars(
+                        full_data, is_start - timedelta(days=warmup_is), is_end)
+                    if is_slice is not None and not is_slice.empty:
+                        is_result = self.optimizer.optimize_symbol(
+                            symbol, is_start, is_end, direction,
+                            prefetched_data=is_slice,
+                        )
+                    else:
+                        is_result = self.optimizer.optimize_symbol(
+                            symbol, is_start, is_end, direction
+                        )
                 except Exception as e:
                     wf_win.error = f"IS optimization failed: {e}"
                     wf_windows.append(wf_win)
@@ -337,7 +402,8 @@ class WalkForwardValidator:
                 # --- Step B: Validate on OOS window ---
                 try:
                     oos_result = self._run_oos_backtest(
-                        symbol, oos_start, oos_end, is_result, direction
+                        symbol, oos_start, oos_end, is_result, direction,
+                        full_data=full_data,
                     )
                 except Exception as e:
                     wf_win.error = f"OOS validation failed: {e}"
@@ -402,6 +468,7 @@ class WalkForwardValidator:
         oos_end: datetime,
         is_result,
         direction: str,
+        full_data: Optional[pd.DataFrame] = None,
     ):
         """Run a backtest on OOS data using IS-optimized parameters.
 
@@ -411,6 +478,9 @@ class WalkForwardValidator:
             oos_end: OOS window end date
             is_result: BacktestResult from IS optimization (carries best params)
             direction: "long" or "short"
+            full_data: Optional per-window pre-fetched OHLCV DataFrame covering
+                the whole IS+OOS range. When provided, the OOS slice is taken
+                from it (avoiding a second API call); otherwise fetched fresh.
 
         Returns:
             BacktestResult from OOS evaluation, or None if insufficient data
@@ -443,8 +513,13 @@ class WalkForwardValidator:
         warmup_period = params.get("rsi_period") or 14
         warmup_days = warmup_period * 2
         warmup_start = oos_start - timedelta(days=warmup_days)
-        oos_data = data_provider.get_single_stock_bars(
-            symbol, warmup_start, oos_end)
+
+        # Prefer the locally-sliced OOS range (from the once-per-window fetch);
+        # fall back to a direct fetch only when no overlapping data was cached.
+        oos_data = self._slice_bars(full_data, warmup_start, oos_end)
+        if oos_data is None or oos_data.empty:
+            oos_data = data_provider.get_single_stock_bars(
+                symbol, warmup_start, oos_end)
 
         if oos_data.empty or len(oos_data) < warmup_period + 10:
             logger.debug(
@@ -618,6 +693,12 @@ class WalkForwardValidator:
         )
         total_batches = (total_symbols + batch_size - 1) // batch_size
 
+        # Pre-fetch each symbol's full IS+OOS range ONCE and share it across
+        # both long and short passes (and all windows). This removes the
+        # per-window API call + rate-limit sleep entirely.
+        warmup_is = self._warmup_days()
+        fetch_start = start_date - timedelta(days=warmup_is)
+
         for batch_num, i in enumerate(range(0, len(symbols), batch_size), 1):
             batch = symbols[i:i + batch_size]
             batch_start_time = time.time()
@@ -627,8 +708,33 @@ class WalkForwardValidator:
                 batch_num, total_batches, len(batch), ', '.join(batch),
             )
 
+            # --- Pre-fetch (parallelized across symbols via the executor) ---
+            from data_provider import data_provider  # pylint: disable=import-outside-toplevel
+
+            fetch_tasks = [
+                loop.run_in_executor(
+                    None,
+                    data_provider.get_single_stock_bars,
+                    symbol,
+                    fetch_start,
+                    end_date,
+                )
+                for symbol in batch
+            ]
+            fetched = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+            symbol_data_map: Dict[str, pd.DataFrame] = {}
+            for symbol, data in zip(batch, fetched):
+                if isinstance(data, BaseException):
+                    logger.warning(
+                        "⚠️  Pre-fetch failed for %s: %s", symbol, data,
+                    )
+                    symbol_data_map[symbol] = pd.DataFrame()
+                else:
+                    symbol_data_map[symbol] = data
+
             tasks = []
             for symbol in batch:
+                data = symbol_data_map[symbol]
                 task = loop.run_in_executor(
                     None,
                     self.validate_symbol,
@@ -636,6 +742,7 @@ class WalkForwardValidator:
                     start_date,
                     end_date,
                     "long",
+                    data,
                 )
                 tasks.append(task)
                 if globalConfig.ENABLE_SHORT_SELLING:
@@ -646,6 +753,7 @@ class WalkForwardValidator:
                         start_date,
                         end_date,
                         "short",
+                        data,
                     )
                     tasks.append(short_task)
 
