@@ -482,6 +482,60 @@ Set `DATABASE_URL` + toggle the config. Tables auto-create on first use:
 
 All tables have an `environment` column — dev/qa/prod data stays isolated.
 
+### Spinning up Postgres locally (macOS)
+
+For local runs you don't need GCS — install and start a local Postgres, then point
+the app at it with `DATABASE_URL` + `"storage_backend": "postgres"`. Tables
+auto-create on first connect, so no migrations are needed.
+
+```bash
+# 1. Install (Homebrew)
+brew install postgresql@16
+
+# 2. Start it — either as a one-off (stops when you stop it)…
+/opt/homebrew/opt/postgresql@16/bin/pg_ctl \
+  -D /opt/homebrew/var/postgresql@16 -l /tmp/postgres.log start
+
+#    …or as a background service (survives reboots):
+brew services start postgresql@16
+
+# 3. Create a role + database (password prompted)
+/opt/homebrew/opt/postgresql@16/bin/psql -h localhost -d postgres \
+  -c "CREATE ROLE trading_user LOGIN PASSWORD 'trading_pass';" \
+  -c "CREATE DATABASE trading_algo_dryrun OWNER trading_user;"
+
+# 4. Run the app pointing at local Postgres. Load .env for Alpaca keys first,
+#    then override DATABASE_URL (and KEEP_ALIVE=false so the process exits after
+#    one cycle instead of sleeping until SCHEDULE_TIME):
+export DATABASE_URL='postgresql://trading_user:trading_pass@localhost:5432/trading_algo_dryrun'
+export KEEP_ALIVE=false
+python app/main.py --test-mode --dry-run --force-backtest
+```
+
+> `storage_backend` in `config/dev.json` must be `"postgres"` for the above to
+> persist anything. If `DATABASE_URL` is unset or `storage_backend` is `"gcs"`,
+> persistence silently no-ops (`PostgresStorage` logs `DATABASE_URL not set`).
+
+> **Skip walk-forward for quick local runs.** With `"walk_forward": {"enabled": true}`
+> the cycle runs multi-hour validation over the full universe before reaching the
+> trading/persistence phase. Set `"walk_forward": {"enabled": false}` in
+> `config/{env}.json` (and restore it afterward) — there is no CLI/env override.
+
+To verify a run wrote rows:
+
+```bash
+/opt/homebrew/opt/postgresql@16/bin/psql -h localhost -U trading_user -d trading_algo_dryrun \
+  -c "SELECT count(*) FROM backtest_results;" \
+  -c "SELECT count(*) FROM position_snapshots;" \
+  -c "SELECT count(*) FROM orders;"
+```
+
+Stop the one-off server when done:
+
+```bash
+/opt/homebrew/opt/postgresql@16/bin/pg_ctl -D /opt/homebrew/var/postgresql@16 stop
+```
+
 ### Backtest Results Schema
 
 | Column | Used In Trading? |

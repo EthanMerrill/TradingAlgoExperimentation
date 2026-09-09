@@ -53,7 +53,7 @@
 		}
 	},
 	"walk_forward": {
-		"enabled": true,
+		"enabled": false,
 		"is_months": 4,
 		"oos_months": 2,
 		"step_months": 2,

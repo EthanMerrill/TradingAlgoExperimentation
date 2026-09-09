@@ -6,8 +6,8 @@ import json
 import logging
 import math
 from abc import ABC, abstractmethod
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
 
 import pandas as pd
 
@@ -82,6 +82,76 @@ def _safe_round(value: Any, ndigits: int = 2) -> Any:
     return result
 
 
+def _safe_bool(value: Any) -> Optional[bool]:
+    """Coerce numpy bools (``np.True_``/``np.False_``) to native Python bool.
+
+    asyncpg rejects numpy bool scalars for BOOLEAN columns ("a boolean is
+    required"), and pandas/numpy comparisons in the strategy layer produce
+    them. ``None`` passes through so nullable BOOLEAN columns stay NULL.
+    """
+    if value is None:
+        return None
+    return bool(value)
+
+
+def _safe_str(value: Any) -> Optional[str]:
+    """Coerce scalar identifiers (e.g. ``uuid.UUID``) to ``str``.
+
+    Alpaca's SDK returns ``UUID`` objects for order ids, which asyncpg rejects
+    for TEXT columns ("expected str, got UUID"). ``None`` passes through so
+    nullable columns stay NULL; everything else is stringified.
+    """
+    if value is None:
+        return None
+    return str(value)
+
+
+def _safe_datetime(value: Any) -> Optional[datetime]:
+    """Coerce timestamps to a tz-aware ``datetime`` (UTC) or ``None``.
+
+    asyncpg rejects tz-naive ``datetime``/pandas ``Timestamp`` values for
+    TIMESTAMPTZ columns ("Cannot convert tz-naive Timestamp, use tz_localize").
+    Alpaca/session timestamps are UTC, so naive values are localized to UTC;
+    ``pd.NaT`` and ``None`` become NULL.
+    """
+    if value is None or value is pd.NaT:
+        return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
+def _coerce_na_to_none(value: Any) -> Any:
+    """Map pandas/NumPy missing-value sentinels to ``None``.
+
+    pandas' nullable ``StringDtype`` stores ``None`` as ``pd.NA``, which
+    ``DataFrame.to_dict(orient="records")`` re-materializes as ``float("nan")``.
+    asyncpg then rejects that float for TEXT columns ("expected str, got
+    float"). Normalizing missing sentinels (``pd.NA``, ``pd.NaT``, and
+    non-finite floats) to ``None`` keeps nullable columns NULL.
+    """
+    if value is None:
+        return None
+    if value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def clean_record_for_save(record: Mapping[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``record`` with missing-value sentinels mapped to None.
+
+    Applied to records produced from a pandas DataFrame (which can re-introduce
+    ``float("nan")`` for nullable TEXT columns) before they reach asyncpg.
+    """
+    return {key: _coerce_na_to_none(value) for key, value in record.items()}
+
+
 def _serialize_params(params: Any) -> Optional[str]:
     """Serialize strategy params to a JSON string (None when empty/unserializable).
 
@@ -114,7 +184,7 @@ def backtest_result_to_dict(result: "BacktestResult") -> Dict[str, Any]:
         "calmar_ratio": _safe_round(result.calmar_ratio),
         "composite_score": _safe_round(result.composite_score),
         "direction": result.direction,
-        "profitable": result.profitable,
+        "profitable": _safe_bool(result.profitable),
         "current_rsi": _safe_round(result.current_rsi),
         "strategy_name": result.strategy_name,
         "params": _serialize_params(result.params),
@@ -201,20 +271,20 @@ def normalize_position_for_save(pos: Any) -> Dict[str, Any]:
         "entry_price": pos.entry_price,
         "current_price": pos.current_price,
         "current_rsi": pos.current_rsi,
-        "entry_date": pos.entry_date if isinstance(pos.entry_date, datetime) else pos.entry_date,
+        "entry_date": _safe_datetime(getattr(pos, "entry_date", None)),
         "rsi_period": pos.rsi_period,
         "rsi_lower": pos.rsi_lower,
         "rsi_upper": pos.rsi_upper,
         "alpha": pos.alpha,
         "stop_loss_price": pos.stop_loss_price,
         "take_profit_price": pos.take_profit_price,
-        "closed": getattr(pos, "closed", False),
-        "exit_date": pos.exit_date if isinstance(getattr(pos, "exit_date", None), datetime) else getattr(pos, "exit_date", None),
+        "closed": _safe_bool(getattr(pos, "closed", False)),
+        "exit_date": _safe_datetime(getattr(pos, "exit_date", None)),
         "exit_price": exit_price,
         "realized_return": realized_return,
         "side": getattr(pos, "side", "long"),
-        "order_id": getattr(pos, "order_id", None),
-        "client_order_id": getattr(pos, "client_order_id", None),
+        "order_id": _safe_str(getattr(pos, "order_id", None)),
+        "client_order_id": _safe_str(getattr(pos, "client_order_id", None)),
         "strategy_name": getattr(pos, "strategy_name", "rsi_mean_reversion"),
         "intraday": bool(getattr(pos, "intraday", False)),
     }
@@ -257,8 +327,8 @@ def _parse_optional_datetime(value: Any) -> Optional[datetime]:
 def order_to_dict(order: Any) -> Dict[str, Any]:
     """Convert an Order to a flat, serializable dict."""
     return {
-        "client_order_id": getattr(order, "client_order_id", None),
-        "order_id": getattr(order, "order_id", None),
+        "client_order_id": _safe_str(getattr(order, "client_order_id", None)),
+        "order_id": _safe_str(getattr(order, "order_id", None)),
         "symbol": getattr(order, "symbol", None),
         "side": getattr(order, "side", None),
         "qty": _safe_round(getattr(order, "qty", None)),
@@ -267,8 +337,8 @@ def order_to_dict(order: Any) -> Dict[str, Any]:
         "status": getattr(order, "status", None),
         "stop_price": _safe_round(getattr(order, "stop_price", None)),
         "limit_price": _safe_round(getattr(order, "limit_price", None)),
-        "submitted_at": getattr(order, "submitted_at", None),
-        "filled_at": getattr(order, "filled_at", None),
+        "submitted_at": _safe_datetime(getattr(order, "submitted_at", None)),
+        "filled_at": _safe_datetime(getattr(order, "filled_at", None)),
         "leg": getattr(order, "leg", None),
     }
 

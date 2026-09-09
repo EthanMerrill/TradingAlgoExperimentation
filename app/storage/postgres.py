@@ -20,6 +20,7 @@ import pandas as pd
 from storage.backend import (
     StorageBackend,
     backtest_result_to_dict,
+    clean_record_for_save,
     dict_to_backtest_result,
     normalize_position_for_save,
     order_to_dict,
@@ -531,9 +532,10 @@ class PostgresStorage(StorageBackend):
                 normalize_position_for_save(pos) for pos in positions_data
             ]
         elif isinstance(positions_data, pd.DataFrame):
-            rows_list = cast(List[Dict[str, Any]], positions_data.where(
-                pd.notna(positions_data), None
-            ).to_dict(orient="records"))
+            rows_list = cast(List[Dict[str, Any]], [
+                clean_record_for_save(cast(Dict[str, Any], row))
+                for row in positions_data.to_dict(orient="records")
+            ])
         else:
             logger.error("Unsupported positions_data type: %s",
                          type(positions_data))
