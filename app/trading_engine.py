@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 # pylint: disable=broad-exception-caught
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -20,6 +20,7 @@ from data_provider import TechnicalIndicators, data_provider
 from storage import storage
 from order import Order, generate_client_order_id
 from positions import Position, PositionsManager
+from utils import ensure_utc
 from strategies.base import StrategyContext
 from strategies.registry import get_strategy
 from strategy import BacktestResult, RSIStrategy
@@ -1164,10 +1165,10 @@ class TradingEngine:
         # Intraday positions are excluded — their exits are bar-engine-managed.
         daily_positions = [
             p for p in current_positions if not getattr(p, 'intraday', False)]
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         positions_to_close = []
         for position in daily_positions:
-            days_held = (now - position.entry_date).days
+            days_held = (now - ensure_utc(position.entry_date)).days
             if days_held >= globalConfig.MAX_HOLD_DAYS:
                 logger.info(
                     "⏰ Position %s held for %d days (max: %d) — force closing",

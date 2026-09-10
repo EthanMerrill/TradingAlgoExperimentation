@@ -1,8 +1,8 @@
 """Date/time utilities for the trading algorithm."""
 import importlib
 import logging
-from datetime import datetime
-from typing import Optional, TypeVar, overload
+from datetime import datetime, timezone
+from typing import Any, Optional, TypeVar, overload
 
 import pandas as pd
 from dateutil import parser  # noqa: F401 — kept for caller compatibility
@@ -36,6 +36,35 @@ def parse_dt(value, default=None):
             "Could not parse date value: %s, using default", value
         )
         return default
+
+
+@overload
+def ensure_utc(value: None) -> None: ...
+@overload
+def ensure_utc(value: Any) -> datetime: ...
+
+
+def ensure_utc(value):
+    """Return ``value`` as a timezone-aware UTC ``datetime``.
+
+    Naive datetimes are assumed to be UTC wall-clock (the convention used by
+    Alpaca-derived timestamps after ``tzinfo`` is stripped), so they are
+    localized to UTC.  Aware datetimes are converted to UTC.
+
+    This is DST-safe: ``now - ensure_utc(entry_date)`` yields a correct
+    absolute duration regardless of EDT/EST transitions.
+    """
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if not isinstance(value, datetime):
+        value = parse_dt(value)
+        if value is None:
+            return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def is_trading_day(date: Optional[datetime] = None) -> bool:
