@@ -130,9 +130,9 @@ class TestWalkForwardResult(unittest.TestCase):
 
         bt_result = wf_result.to_backtest_result()
         self.assertEqual(bt_result.symbol, "AAPL")
-        self.assertEqual(bt_result.rsi_period, 14)
-        self.assertEqual(bt_result.rsi_lower, 30)
-        self.assertEqual(bt_result.rsi_upper, 70)
+        self.assertEqual(bt_result.params.get("rsi_period"), 14)
+        self.assertEqual(bt_result.params.get("rsi_lower"), 30)
+        self.assertEqual(bt_result.params.get("rsi_upper"), 70)
         self.assertAlmostEqual(bt_result.total_return, 0.08)
         self.assertAlmostEqual(bt_result.sharpe_ratio, 1.5)
         self.assertAlmostEqual(bt_result.composite_score, 3.5)
@@ -145,9 +145,9 @@ class TestWalkForwardResult(unittest.TestCase):
         wf_result = WalkForwardResult(symbol="TSLA", direction="short")
         bt_result = wf_result.to_backtest_result()
         self.assertEqual(bt_result.symbol, "TSLA")
-        self.assertEqual(bt_result.rsi_period, 14)  # default
-        self.assertEqual(bt_result.rsi_lower, 30)  # default
-        self.assertEqual(bt_result.rsi_upper, 70)  # default
+        self.assertEqual(bt_result.params.get("rsi_period"), 14)  # default
+        self.assertEqual(bt_result.params.get("rsi_lower"), 30)  # default
+        self.assertEqual(bt_result.params.get("rsi_upper"), 70)  # default
         self.assertEqual(bt_result.direction, "short")
 
 
@@ -261,7 +261,7 @@ class TestWalkForwardValidator(unittest.TestCase):
 
         # Mock IS optimizer: returns profitable result
         is_result = BacktestResult(
-            symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.15, buy_and_hold_return=0.10, alpha=0.05,
             num_trades=8, win_rate=0.75, avg_trade_duration=10.0,
             max_drawdown=0.06, sharpe_ratio=1.5, calmar_ratio=2.5,

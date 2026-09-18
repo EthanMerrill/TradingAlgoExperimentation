@@ -108,9 +108,6 @@ class WalkForwardResult:
 
         return BacktestResult(
             symbol=self.symbol,
-            rsi_period=self.best_rsi_period or 14,
-            rsi_lower=self.best_rsi_lower or 30,
-            rsi_upper=self.best_rsi_upper or 70,
             total_return=self.oos_total_return,
             buy_and_hold_return=0.0,  # Not computed in walk-forward
             alpha=self.alpha,
@@ -122,7 +119,6 @@ class WalkForwardResult:
             calmar_ratio=self.oos_calmar_ratio,
             composite_score=self.composite_score,
             profitable=self.profitable,
-            current_rsi=None,
             trade_details=None,
             direction=self.direction,
             strategy_name=self.strategy_name,
@@ -390,11 +386,11 @@ class WalkForwardValidator:
                     continue
 
                 wf_win.is_optimized = True
-                wf_win.best_period = is_result.rsi_period
-                wf_win.best_lower = is_result.rsi_lower
-                wf_win.best_upper = is_result.rsi_upper
-                wf_win.best_params = dict(
-                    getattr(is_result, "params", None) or {})
+                win_params = dict(getattr(is_result, "params", None) or {})
+                wf_win.best_period = int(win_params.get("rsi_period", 14))
+                wf_win.best_lower = int(win_params.get("rsi_lower", 30))
+                wf_win.best_upper = int(win_params.get("rsi_upper", 70))
+                wf_win.best_params = win_params
                 wf_win.is_total_return = is_result.total_return
                 wf_win.is_sharpe_ratio = is_result.sharpe_ratio
                 wf_win.is_num_trades = is_result.num_trades
@@ -488,15 +484,10 @@ class WalkForwardValidator:
         from data_provider import data_provider  # pylint: disable=import-outside-toplevel,reimported
         from strategies.rsi import RSIStrategy  # pylint: disable=import-outside-toplevel
 
-        # Best params from the IS result; fall back to legacy rsi_* fields.
+        # Best params from the IS result (strategy-agnostic source of truth).
         params = dict(getattr(is_result, "params", None) or {})
-        if not params and hasattr(is_result, "rsi_period"):
-            params = {
-                "rsi_period": is_result.rsi_period,
-                "rsi_lower": is_result.rsi_lower,
-                "rsi_upper": is_result.rsi_upper,
-                "direction": direction,
-            }
+        if not params:
+            params = {"direction": direction}
 
         strategy = getattr(self.optimizer, "strategy", None)
         if not isinstance(strategy, Strategy):

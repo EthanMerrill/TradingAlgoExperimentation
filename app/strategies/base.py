@@ -17,16 +17,11 @@ import pandas as pd
 class BacktestResult:
     """Result of a single backtest run.
 
-    The ``rsi_*``/``current_rsi`` fields are legacy RSI-strategy leftovers,
-    kept optional for backward compatibility with persisted rows and older
-    callers. New strategies should put strategy-specific values in ``params``
-    instead. Prefer ``result.params.get("rsi_period", ...)`` style access in
-    generic code.
+    Strategy-agnostic: strategy-specific values (e.g. ``rsi_period`` for the
+    RSI strategy) live in the ``params`` dict. Shared layers (engine, storage,
+    walk-forward, UI) must read strategy specifics via ``params``.
     """
     symbol: str
-    rsi_period: int = 0
-    rsi_lower: int = 0
-    rsi_upper: int = 0
     total_return: float = 0.0
     buy_and_hold_return: float = 0.0
     alpha: float = 0.0
@@ -38,9 +33,7 @@ class BacktestResult:
     profitable: bool = True
     calmar_ratio: float = 0.0
     composite_score: float = 0.0
-    # Current RSI value at time of backtest (RSI strategies only)
-    current_rsi: Optional[float] = None
-    # Add trade details to the result
+    # Trade details (per-trade entries) — optional
     trade_details: Optional[List[Dict]] = None
     direction: str = "long"
     # Owning strategy (registry key) and exact params used for this run.

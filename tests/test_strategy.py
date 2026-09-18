@@ -24,9 +24,6 @@ class TestBacktestResult(unittest.TestCase):
         """Test creating a BacktestResult object."""
         result = BacktestResult(
             symbol="AAPL",
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
             total_return=0.15,
             buy_and_hold_return=0.10,
             alpha=0.05,
@@ -36,25 +33,23 @@ class TestBacktestResult(unittest.TestCase):
             max_drawdown=0.08,
             sharpe_ratio=1.2,
             profitable=True,
-            current_rsi=45.0
+            params={"rsi_period": 14, "rsi_lower": 30,
+                    "rsi_upper": 70, "current_rsi": 45.0},
         )
 
-        self.assertEqual(result.symbol, "AAPL")
-        self.assertEqual(result.rsi_period, 14)
-        self.assertEqual(result.rsi_lower, 30)
-        self.assertEqual(result.rsi_upper, 70)
+        self.assertEqual(result.params.get("rsi_period"), 14)
+        self.assertEqual(result.params.get("rsi_lower"), 30)
+        self.assertEqual(result.params.get("rsi_upper"), 70)
         self.assertEqual(result.total_return, 0.15)
         self.assertEqual(result.alpha, 0.05)
         self.assertTrue(result.profitable)
-        self.assertEqual(result.current_rsi, 45.0)
+        self.assertEqual(result.params.get("current_rsi"), 45.0)
 
     def test_backtest_result_optional_fields(self):
         """Test BacktestResult with optional fields."""
         result = BacktestResult(
             symbol="TSLA",
-            rsi_period=21,
-            rsi_lower=25,
-            rsi_upper=75,
+            params={"rsi_period": 21, "rsi_lower": 25, "rsi_upper": 75},
             total_return=0.20,
             buy_and_hold_return=0.15,
             alpha=0.05,
@@ -66,7 +61,7 @@ class TestBacktestResult(unittest.TestCase):
             profitable=True
         )
 
-        self.assertIsNone(result.current_rsi)
+        self.assertIsNone(result.params.get("current_rsi"))
         self.assertIsNone(result.trade_details)
 
 
@@ -182,9 +177,9 @@ class TestRSIStrategy(unittest.TestCase):
 
         self.assertIsInstance(result, BacktestResult)
         self.assertEqual(result.symbol, "TEST")
-        self.assertEqual(result.rsi_period, 14)
-        self.assertEqual(result.rsi_lower, 30)
-        self.assertEqual(result.rsi_upper, 70)
+        self.assertEqual(result.params.get("rsi_period"), 14)
+        self.assertEqual(result.params.get("rsi_lower"), 30)
+        self.assertEqual(result.params.get("rsi_upper"), 70)
 
     def test_short_generate_signals_cross_above_entry(self):
         """Test short signals: RSI cross-above rsi_upper fires entry."""

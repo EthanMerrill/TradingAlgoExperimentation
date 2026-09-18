@@ -215,12 +215,21 @@ def _serialize_params(params: Any) -> Optional[str]:
 
 
 def backtest_result_to_dict(result: "BacktestResult") -> Dict[str, Any]:
-    """Convert a BacktestResult to a flat, rounded dict for serialization."""
+    """Convert a BacktestResult to a flat, rounded dict for serialization.
+
+    The legacy ``rsi_*``/``current_rsi`` DB columns are still populated (the
+    existing table schema requires them) but derived from ``result.params`` —
+    the strategy-agnostic source of truth on BacktestResult.
+    """
+    params = result.params or {}
+    rsi_period = params.get("rsi_period")
+    rsi_lower = params.get("rsi_lower")
+    rsi_upper = params.get("rsi_upper")
     return {
         "symbol": result.symbol,
-        "rsi_period": result.rsi_period,
-        "rsi_lower": result.rsi_lower,
-        "rsi_upper": result.rsi_upper,
+        "rsi_period": int(rsi_period) if rsi_period is not None else 0,
+        "rsi_lower": int(rsi_lower) if rsi_lower is not None else 0,
+        "rsi_upper": int(rsi_upper) if rsi_upper is not None else 0,
         "total_return": _safe_round(result.total_return),
         "buy_and_hold_return": _safe_round(result.buy_and_hold_return),
         "alpha": _safe_round(result.alpha),
@@ -233,7 +242,7 @@ def backtest_result_to_dict(result: "BacktestResult") -> Dict[str, Any]:
         "composite_score": _safe_round(result.composite_score),
         "direction": result.direction,
         "profitable": _safe_bool(result.profitable),
-        "current_rsi": _safe_round(result.current_rsi),
+        "current_rsi": _safe_round(params.get("current_rsi")),
         "strategy_name": result.strategy_name,
         "params": _serialize_params(result.params),
     }
@@ -243,11 +252,19 @@ def dict_to_backtest_result(d: Dict[str, Any]) -> "BacktestResult":
     """Reconstruct a BacktestResult from a flat dict (CSV row / DB row)."""
     from strategies.base import BacktestResult  # pylint: disable=import-outside-toplevel
 
+    params = _deserialize_params(d.get("params"))
+    # Legacy rows: params column may be empty — fall back to the rsi_* columns.
+    if not params:
+        params = {
+            "rsi_period": int(d.get("rsi_period", 0) or 0),
+            "rsi_lower": int(d.get("rsi_lower", 0) or 0),
+            "rsi_upper": int(d.get("rsi_upper", 0) or 0),
+            "direction": str(d.get("direction", "long")),
+        }
+        if d.get("current_rsi") is not None:
+            params["current_rsi"] = float(d["current_rsi"])
     return BacktestResult(
         symbol=str(d["symbol"]),
-        rsi_period=int(d["rsi_period"]),
-        rsi_lower=int(d["rsi_lower"]),
-        rsi_upper=int(d["rsi_upper"]),
         total_return=float(d["total_return"]) if d.get(
             "total_return") is not None else 0.0,
         buy_and_hold_return=float(d["buy_and_hold_return"]) if d.get(
@@ -267,10 +284,8 @@ def dict_to_backtest_result(d: Dict[str, Any]) -> "BacktestResult":
         composite_score=float(d.get("composite_score", 0)),
         direction=str(d.get("direction", "long")),
         profitable=bool(d["profitable"]),
-        current_rsi=float(d["current_rsi"]) if d.get("current_rsi") is not None and not (
-            isinstance(d.get("current_rsi"), float) and pd.isna(d["current_rsi"])) else None,
         strategy_name=str(d.get("strategy_name", "rsi_mean_reversion")),
-        params=_deserialize_params(d.get("params")),
+        params=params,
     )
 
 

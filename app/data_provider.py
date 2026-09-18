@@ -976,10 +976,4 @@ class DataProvider:
         return result
 
 
-# TechnicalIndicators moved to indicators.py (no Alpaca dependency).
-# Re-exported here so ``from data_provider import TechnicalIndicators``
-# keeps working for existing callers/tests.
-from indicators import TechnicalIndicators  # noqa: E402,F401
-
-
 data_provider = DataProvider()

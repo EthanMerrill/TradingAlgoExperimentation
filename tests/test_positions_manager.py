@@ -70,9 +70,7 @@ class TestPosition(unittest.TestCase):
             current_rsi=45.0,
             entry_date=datetime(2025, 6, 14),
             alpha=0.1,
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
             stop_loss_price=140.0,
             take_profit_price=165.0,
         )
@@ -90,9 +88,7 @@ class TestPosition(unittest.TestCase):
             current_rsi=40.0,
             entry_date=datetime(2025, 6, 14),
             alpha=0.2,
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
         )
 
         self.assertIsNone(position.stop_loss_price)
@@ -124,9 +120,7 @@ class TestPositionsManager(unittest.TestCase):
             current_rsi=45.0,
             entry_date=datetime.now(),
             alpha=0.1,
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
             closed=False,
         )
 
@@ -205,9 +199,7 @@ class TestPositionsManager(unittest.TestCase):
             current_rsi=45.0,
             entry_date=datetime.now(),
             alpha=0.1,
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
             stop_loss_price=95.0,
             take_profit_price=110.0,
             closed=False,
@@ -240,9 +232,7 @@ class TestPositionsManager(unittest.TestCase):
             current_rsi=70.0,
             entry_date=datetime.now(),
             alpha=0.1,
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
             stop_loss_price=105.0,
             take_profit_price=90.0,
             closed=False,
@@ -383,9 +373,8 @@ class TestPositionsManager(unittest.TestCase):
 
             backtest_result = BacktestResult(
                 symbol='AAPL',
-                rsi_period=14,
-                rsi_lower=25,
-                rsi_upper=75,
+                params={"rsi_period": 14, "rsi_lower": 25,
+                        "rsi_upper": 75, "current_rsi": 35.0},
                 total_return=0.05,
                 buy_and_hold_return=0.03,
                 alpha=0.02,
@@ -396,7 +385,6 @@ class TestPositionsManager(unittest.TestCase):
                 sharpe_ratio=1.2,
                 calmar_ratio=0.8,
                 profitable=True,
-                current_rsi=35.0,
                 composite_score=1.5,
                 direction='long',
             )
@@ -491,9 +479,8 @@ class TestPositionsManager(unittest.TestCase):
 
             backtest_result = BacktestResult(
                 symbol='AAPL',
-                rsi_period=7,
-                rsi_lower=20,
-                rsi_upper=80,
+                params={"rsi_period": 7, "rsi_lower": 20,
+                        "rsi_upper": 80, "current_rsi": 42.0},
                 total_return=0.10,
                 buy_and_hold_return=0.02,
                 alpha=0.08,
@@ -503,7 +490,6 @@ class TestPositionsManager(unittest.TestCase):
                 max_drawdown=0.03,
                 sharpe_ratio=1.5,
                 profitable=True,
-                current_rsi=42.0,
                 direction='long',
             )
             mock_opt.optimize_symbol.return_value = backtest_result
@@ -671,9 +657,8 @@ class TestPositionsManager(unittest.TestCase):
 
             backtest_result = BacktestResult(
                 symbol='SQQQ',
-                rsi_period=10,
-                rsi_lower=40,
-                rsi_upper=60,
+                params={"rsi_period": 10, "rsi_lower": 40,
+                        "rsi_upper": 60, "current_rsi": 65.0},
                 total_return=0.08,
                 buy_and_hold_return=-0.02,
                 alpha=0.10,
@@ -683,7 +668,6 @@ class TestPositionsManager(unittest.TestCase):
                 max_drawdown=0.01,
                 sharpe_ratio=2.0,
                 profitable=True,
-                current_rsi=65.0,
                 composite_score=1.8,
                 direction='short',
             )
@@ -807,9 +791,8 @@ class TestPositionsManager(unittest.TestCase):
 
             enrich_result = BacktestResult(
                 symbol='AAPL',
-                rsi_period=14,
-                rsi_lower=25,
-                rsi_upper=75,
+                params={"rsi_period": 14, "rsi_lower": 25,
+                        "rsi_upper": 75, "current_rsi": 35.0},
                 total_return=0.05,
                 buy_and_hold_return=0.03,
                 alpha=0.02,
@@ -819,7 +802,6 @@ class TestPositionsManager(unittest.TestCase):
                 max_drawdown=0.02,
                 sharpe_ratio=1.2,
                 profitable=True,
-                current_rsi=35.0,
                 composite_score=1.5,
                 direction='long',
             )
@@ -995,9 +977,8 @@ class TestPositionsManager(unittest.TestCase):
 
             backtest_result = BacktestResult(
                 symbol='PHANTOM',
-                rsi_period=14,
-                rsi_lower=30,
-                rsi_upper=70,
+                params={"rsi_period": 14, "rsi_lower": 30,
+                        "rsi_upper": 70, "current_rsi": 50.0},
                 total_return=0.0,
                 buy_and_hold_return=0.0,
                 alpha=0.0,
@@ -1007,7 +988,6 @@ class TestPositionsManager(unittest.TestCase):
                 max_drawdown=0.0,
                 sharpe_ratio=0.0,
                 profitable=False,
-                current_rsi=50.0,
                 composite_score=0.0,
                 direction='long',
             )

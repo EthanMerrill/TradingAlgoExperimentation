@@ -532,8 +532,9 @@ class RSIStrategy(Strategy):
                 "✅ %s: Optimization complete — "
                 "Best: RSI(%d, %d, %d) Z-Score: %.2f "
                 "(α=%.2f%%, Sharpe=%.2f, Calmar=%.2f), Trades: %d (tested %d combos)",
-                symbol, best_result.rsi_period, best_result.rsi_lower,
-                best_result.rsi_upper, best_score,
+                symbol, best_result.params.get("rsi_period", 0),
+                best_result.params.get("rsi_lower", 0),
+                best_result.params.get("rsi_upper", 0), best_score,
                 best_result.alpha * 100, best_result.sharpe_ratio,
                 best_result.calmar_ratio,
                 best_result.num_trades, tested_combinations
@@ -575,9 +576,6 @@ class RSIStrategy(Strategy):
 
         return BacktestResult(
             symbol=symbol,
-            rsi_period=self.rsi_period,
-            rsi_lower=self.rsi_lower,
-            rsi_upper=self.rsi_upper,
             total_return=total_return,
             buy_and_hold_return=buy_and_hold_return,
             alpha=alpha,
@@ -589,7 +587,6 @@ class RSIStrategy(Strategy):
             sharpe_ratio=sharpe,
             calmar_ratio=calmar,
             profitable=total_return > 0,
-            current_rsi=current_rsi,
             trade_details=trade_details,
             direction=self.direction,
             strategy_name=self.name,
@@ -597,6 +594,7 @@ class RSIStrategy(Strategy):
                 "rsi_period": self.rsi_period,
                 "rsi_lower": self.rsi_lower,
                 "rsi_upper": self.rsi_upper,
+                "current_rsi": current_rsi,
                 "direction": self.direction,
                 "max_hold_days": self.max_hold_days,
             }
@@ -881,9 +879,6 @@ class RSIStrategy(Strategy):
         """Create null result for failed backtests."""
         return BacktestResult(
             symbol=symbol,
-            rsi_period=self.rsi_period,
-            rsi_lower=self.rsi_lower,
-            rsi_upper=self.rsi_upper,
             total_return=0.0,
             buy_and_hold_return=0.0,
             alpha=0.0,
@@ -895,7 +890,6 @@ class RSIStrategy(Strategy):
             calmar_ratio=0.0,
             composite_score=0.0,
             profitable=False,
-            current_rsi=None,
             direction=self.direction,
             strategy_name=self.name,
             params={
@@ -927,9 +921,9 @@ class RSIStrategy(Strategy):
                         # Add strategy and symbol info to each trade
                         trade_record = {
                             'symbol': result.symbol,
-                            'rsi_period': result.rsi_period,
-                            'rsi_lower': result.rsi_lower,
-                            'rsi_upper': result.rsi_upper,
+                            'rsi_period': (result.params or {}).get('rsi_period'),
+                            'rsi_lower': (result.params or {}).get('rsi_lower'),
+                            'rsi_upper': (result.params or {}).get('rsi_upper'),
                             'entry_date': trade['entry_date'],
                             'entry_price': trade['entry_price'],
                             'exit_date': trade['exit_date'],
@@ -989,10 +983,6 @@ class RSIStrategy(Strategy):
         except Exception as e:
             logger.error(f"Error building consolidated trade DataFrame: {e}")
             return pd.DataFrame()
-
-    # Legacy alias kept for backward compatibility with callers of the
-    # pre-framework method name.
-    build_consolidated_trades_df = build_consolidated_trades
 
     @staticmethod
     def _get_price_column(data: pd.DataFrame) -> str:

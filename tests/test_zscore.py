@@ -53,12 +53,15 @@ class TestComputeMetricTripleZscores(unittest.TestCase):
         zscore.compute_cross_symbol_zscores(results)
 
         for triple_score, result in zip(triple_scores, results):
-            self.assertAlmostEqual(triple_score, result.composite_score, places=9)
+            self.assertAlmostEqual(
+                triple_score, result.composite_score, places=9)
 
     def test_calmar_capped(self):
         """Walk-forward previously hardcoded a 10.0 cap; shared scorer must too."""
-        low = zscore.compute_metric_triple_zscores([(0.05, 1.0, 2.0), (0.05, 1.0, 5.0)])
-        high = zscore.compute_metric_triple_zscores([(0.05, 1.0, 2.0), (0.05, 1.0, 500.0)])
+        low = zscore.compute_metric_triple_zscores(
+            [(0.05, 1.0, 2.0), (0.05, 1.0, 5.0)])
+        high = zscore.compute_metric_triple_zscores(
+            [(0.05, 1.0, 2.0), (0.05, 1.0, 500.0)])
         self.assertAlmostEqual(low[0], high[0], places=9)
         self.assertAlmostEqual(low[1], high[1], places=9)
 

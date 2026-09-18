@@ -70,7 +70,7 @@ class TestStrategyAwareDispatch(unittest.TestCase):
 
     def _result(self, symbol, strategy_name):
         return BacktestResult(
-            symbol=symbol, rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol=symbol, params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.2, buy_and_hold_return=0.1, alpha=0.05,
             num_trades=10, win_rate=0.9, avg_trade_duration=5.0,
             max_drawdown=0.05, sharpe_ratio=1.5, profitable=True,

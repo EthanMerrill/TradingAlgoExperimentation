@@ -384,11 +384,10 @@ class PositionsManager:
                                 symbol, start_date, end_date, direction=position_side
                             )
                             if backtest_result is not None:
-                                current_rsi = float(
-                                    backtest_result.current_rsi) if backtest_result.current_rsi is not None else 0.0
-                                rsi_period = int(backtest_result.rsi_period)
-                                rsi_lower = int(backtest_result.rsi_lower)
-                                rsi_upper = int(backtest_result.rsi_upper)
+                                bp = backtest_result.params or {}
+                                rsi_period = int(bp.get("rsi_period", 14))
+                                rsi_lower = int(bp.get("rsi_lower", 30))
+                                rsi_upper = int(bp.get("rsi_upper", 70))
                                 alpha = float(backtest_result.alpha)
                         else:
                             logger.warning(
@@ -519,12 +518,10 @@ class PositionsManager:
                                     symbol, start_date, end_date, direction=position_side
                                 )
                                 if backtest_result is not None:
-                                    current_rsi = float(
-                                        backtest_result.current_rsi) if backtest_result.current_rsi is not None else 0.0
-                                    rsi_period = int(
-                                        backtest_result.rsi_period)
-                                    rsi_lower = int(backtest_result.rsi_lower)
-                                    rsi_upper = int(backtest_result.rsi_upper)
+                                    bp = backtest_result.params or {}
+                                    rsi_period = int(bp.get("rsi_period", 14))
+                                    rsi_lower = int(bp.get("rsi_lower", 30))
+                                    rsi_upper = int(bp.get("rsi_upper", 70))
                                     alpha = float(backtest_result.alpha)
                                     composite_score = float(
                                         backtest_result.composite_score)

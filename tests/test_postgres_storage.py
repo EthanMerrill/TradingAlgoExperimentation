@@ -87,10 +87,9 @@ class TestPostgresStorage(unittest.TestCase):
     def test_save_bt_success(self):
         from strategies.base import BacktestResult
         s = self._connected()
-        r = [BacktestResult(symbol="AAPL", rsi_period=14, rsi_lower=30,
-             rsi_upper=70, total_return=0.15, buy_and_hold_return=0.1, alpha=0.05,
+        r = [BacktestResult(symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70, "current_rsi": 45.0}, total_return=0.15, buy_and_hold_return=0.1, alpha=0.05,
              num_trades=5, win_rate=0.6, avg_trade_duration=10.5, max_drawdown=0.08,
-             sharpe_ratio=1.2, profitable=True, current_rsi=45.0)]
+             sharpe_ratio=1.2, profitable=True)]
         self.assertTrue(s.save_backtest_results(r, "20250610_170000"))
         self._conn.executemany.assert_called()
 
@@ -133,7 +132,8 @@ class TestPostgresStorage(unittest.TestCase):
         self.assertIn(
             cutoff,
             {expected,
-             retention_cutoff_timestamp(30, now=datetime.now() + timedelta(seconds=1)),
+             retention_cutoff_timestamp(
+                 30, now=datetime.now() + timedelta(seconds=1)),
              retention_cutoff_timestamp(30, now=datetime.now() - timedelta(seconds=1))},
         )
 
@@ -148,12 +148,13 @@ class TestPostgresStorage(unittest.TestCase):
         import math
         from storage.backend import backtest_result_to_dict
         from strategies.base import BacktestResult
-        r = BacktestResult(symbol="AAPL", rsi_period=14, rsi_lower=30,
-                           rsi_upper=70, total_return=math.nan,
+        r = BacktestResult(symbol="AAPL",
+                           params={"rsi_period": 14, "rsi_lower": 30,
+                                   "rsi_upper": 70, "current_rsi": math.nan},
+                           total_return=math.nan,
                            buy_and_hold_return=math.inf, alpha=0.05, num_trades=5,
                            win_rate=0.6, avg_trade_duration=-math.inf,
-                           max_drawdown=0.08, sharpe_ratio=math.nan, profitable=True,
-                           current_rsi=math.nan)
+                           max_drawdown=0.08, sharpe_ratio=math.nan, profitable=True)
         d = backtest_result_to_dict(r)
         self.assertIsNone(d["total_return"])
         self.assertIsNone(d["buy_and_hold_return"])
@@ -173,7 +174,7 @@ class TestPostgresStorage(unittest.TestCase):
 
     def test_load_bt_success(self):
         self._conn.fetch = AsyncMock(return_value=[dict(
-            symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.15, buy_and_hold_return=0.1, alpha=0.05,
             num_trades=5, win_rate=0.6, avg_trade_duration=10.5,
             max_drawdown=0.08, sharpe_ratio=1.2, calmar_ratio=1.5,
@@ -306,7 +307,7 @@ class TestPostgresStorage(unittest.TestCase):
         self._conn.fetch = AsyncMock(return_value=[dict(
             symbol="AAPL", shares=10.0, entry_price=150.0, current_price=151.0,
             current_rsi=45.0, entry_date=datetime(2025, 6, 10, tzinfo=timezone.utc),
-            rsi_period=14, rsi_lower=30, rsi_upper=70, alpha=0.05,
+            params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70}, alpha=0.05,
             stop_loss_price=140.0, take_profit_price=160.0, closed=False,
             exit_date=None, exit_price=None, realized_return=None, side="long")])
         df = self._connected().load_position_entries("positions_20250610_170000.csv")
@@ -322,7 +323,7 @@ class TestPostgresStorage(unittest.TestCase):
         self._conn.fetch = AsyncMock(return_value=[dict(
             symbol="AAPL", shares=10.0, entry_price=150.0, current_price=151.0,
             current_rsi=45.0, entry_date=datetime(2025, 6, 7, tzinfo=timezone.utc),
-            rsi_period=14, rsi_lower=30, rsi_upper=70, alpha=0.05,
+            params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70}, alpha=0.05,
             stop_loss_price=None, take_profit_price=None, closed=False,
             exit_date=None, exit_price=None, realized_return=None, side="long")])
         df = self._connected().load_position_entries("positions_20250610_170000.csv")
@@ -352,7 +353,7 @@ class TestPostgresStorage(unittest.TestCase):
             return [dict(symbol="AAPL", shares=10.0, entry_price=150.0,
                          current_price=151.0, current_rsi=45.0,
                          entry_date=datetime(2025, 6, 10, tzinfo=timezone.utc),
-                         rsi_period=14, rsi_lower=30, rsi_upper=70, alpha=0.05,
+                         params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70}, alpha=0.05,
                          stop_loss_price=140.0, take_profit_price=160.0, closed=False,
                          exit_date=None, exit_price=None, realized_return=None, side="long")]
         self._conn.fetch = AsyncMock(side_effect=side)
@@ -371,13 +372,13 @@ class TestPostgresStorage(unittest.TestCase):
                 dict(symbol="AAPL", shares=10.0, entry_price=150.0,
                      current_price=151.0, current_rsi=45.0,
                      entry_date=datetime(2025, 6, 10, tzinfo=timezone.utc),
-                     rsi_period=14, rsi_lower=30, rsi_upper=70, alpha=0.05,
+                     params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70}, alpha=0.05,
                      stop_loss_price=140.0, take_profit_price=160.0, closed=False,
                      exit_date=None, exit_price=None, realized_return=None, side="long"),
                 dict(symbol="TSLA", shares=5.0, entry_price=800.0,
                      current_price=810.0, current_rsi=40.0,
                      entry_date=datetime(2025, 6, 9, tzinfo=timezone.utc),
-                     rsi_period=14, rsi_lower=30, rsi_upper=70, alpha=0.08,
+                     params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70}, alpha=0.08,
                      stop_loss_price=750.0, take_profit_price=850.0, closed=True,
                      exit_date=datetime(2025, 6, 14, tzinfo=timezone.utc),
                      exit_price=820.0, realized_return=0.025, side="long"),

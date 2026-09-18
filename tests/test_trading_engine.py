@@ -94,9 +94,7 @@ class TestTradingEngine(unittest.TestCase):
     def _result(self, symbol, alpha=0.1, win_rate=0.9, num_trades=10):
         r = Mock()
         r.symbol = symbol
-        r.rsi_period = 14
-        r.rsi_lower = 30
-        r.rsi_upper = 70
+        r.params = {"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70}
         r.total_return = 0.2
         r.alpha = alpha
         r.win_rate = win_rate
@@ -114,9 +112,7 @@ class TestTradingEngine(unittest.TestCase):
             current_rsi=40.0,
             entry_date=datetime.now() - timedelta(days=days_ago),
             alpha=0.1,
-            rsi_period=14,
-            rsi_lower=30,
-            rsi_upper=70,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
             stop_loss_price=95.0,
             take_profit_price=110.0,
             closed=False,

@@ -37,14 +37,14 @@ class TestStrategyOptimizer(unittest.TestCase):
         """Test that filter_results removes unprofitable results."""
         results = [
             BacktestResult(
-                symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+                symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
                 total_return=0.15, buy_and_hold_return=0.10, alpha=0.05,
                 num_trades=5, win_rate=0.6, avg_trade_duration=10.5,
                 max_drawdown=0.08, sharpe_ratio=1.2, calmar_ratio=2.0,
                 profitable=True,
             ),
             BacktestResult(
-                symbol="TSLA", rsi_period=14, rsi_lower=30, rsi_upper=70,
+                symbol="TSLA", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
                 total_return=-0.10, buy_and_hold_return=0.05, alpha=-0.15,
                 num_trades=3, win_rate=0.33, avg_trade_duration=5.0,
                 max_drawdown=0.20, sharpe_ratio=-0.5, calmar_ratio=-0.5,
@@ -61,7 +61,7 @@ class TestStrategyOptimizer(unittest.TestCase):
     def test_filter_results_sorts_by_composite_score(self):
         """Test that filter_results sorts by composite_score descending."""
         r1 = BacktestResult(
-            symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.15, buy_and_hold_return=0.10, alpha=0.05,
             num_trades=5, win_rate=0.6, avg_trade_duration=10.5,
             max_drawdown=0.08, sharpe_ratio=1.2, calmar_ratio=2.0,
@@ -70,7 +70,7 @@ class TestStrategyOptimizer(unittest.TestCase):
         r1.composite_score = 2.0
 
         r2 = BacktestResult(
-            symbol="MSFT", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="MSFT", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.20, buy_and_hold_return=0.10, alpha=0.10,
             num_trades=8, win_rate=0.75, avg_trade_duration=12.0,
             max_drawdown=0.06, sharpe_ratio=1.8, calmar_ratio=3.0,
@@ -86,7 +86,7 @@ class TestStrategyOptimizer(unittest.TestCase):
     def test_filter_results_requires_min_win_rate(self):
         """Test that filter_results rejects results with win_rate <= 0.3."""
         result = BacktestResult(
-            symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.15, buy_and_hold_return=0.10, alpha=0.05,
             num_trades=10, win_rate=0.2, avg_trade_duration=10.5,
             max_drawdown=0.08, sharpe_ratio=1.2, calmar_ratio=2.0,
@@ -100,7 +100,7 @@ class TestStrategyOptimizer(unittest.TestCase):
     def test_filter_results_requires_trades(self):
         """Test that filter_results rejects results with zero trades."""
         result = BacktestResult(
-            symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.0, buy_and_hold_return=0.10, alpha=-0.10,
             num_trades=0, win_rate=0.0, avg_trade_duration=0.0,
             max_drawdown=0.0, sharpe_ratio=0.0, calmar_ratio=0.0,
@@ -138,7 +138,7 @@ class TestStrategyOptimizer(unittest.TestCase):
             'direction': 'long',
         }]
         result = BacktestResult(
-            symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.15, buy_and_hold_return=0.10, alpha=0.05,
             num_trades=1, win_rate=1.0, avg_trade_duration=5.0,
             max_drawdown=0.03, sharpe_ratio=1.5, calmar_ratio=2.0,

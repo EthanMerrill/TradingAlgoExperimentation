@@ -91,18 +91,24 @@ def _strategy_is_bar_loop(strategy_name: str) -> bool:
 
 @dataclass
 class TradingOpportunity:
-    """Trading opportunity based on strategy results."""
+    """Trading opportunity based on strategy results.
+
+    The ``current_rsi``/``target_rsi_*``/``rsi_period`` fields are RSI-specific
+    (used by the engine-native RSI cross path and the RSI-implied SL/TP calc)
+    with neutral defaults so non-RSI strategies can construct opportunities
+    without them.
+    """
     symbol: str
-    current_rsi: float
-    target_rsi_lower: int
-    target_rsi_upper: int
-    rsi_period: int
     backtest_return: float
     alpha: float
     win_rate: float
     entry_price: float
     stop_loss_price: Optional[float]
     take_profit_price: Optional[float]
+    current_rsi: float = 0.0
+    target_rsi_lower: int = 0
+    target_rsi_upper: int = 0
+    rsi_period: int = 14
     num_trades: int = 0  # Number of trades in backtest for this symbol
     # Cross-symbol Z-score (alpha + sharpe + calmar, normalised)
     composite_score: float = 0.0
@@ -268,23 +274,30 @@ class TradingEngine:
 
         for result in backtest_results:
             try:
+                # Strategy params (RSI lives in result.params, not on the
+                # strategy-agnostic BacktestResult).
+                p = result.params or {}
+                rsi_period = int(p.get("rsi_period", 14))
+                rsi_lower = int(p.get("rsi_lower", 30))
+                rsi_upper = int(p.get("rsi_upper", 70))
+
                 # Direction filter
                 if not is_long and result.direction != "short":
                     continue
 
                 current_rsi, previous_rsi = self._get_rsi_with_previous(
-                    result.symbol, result.rsi_period)
+                    result.symbol, rsi_period)
                 if current_rsi is None:
                     continue
 
                 # Cross-detection
                 if is_long:
-                    is_cross = current_rsi < result.rsi_lower and (
-                        previous_rsi is None or previous_rsi >= result.rsi_lower
+                    is_cross = current_rsi < rsi_lower and (
+                        previous_rsi is None or previous_rsi >= rsi_lower
                     )
                 else:
-                    is_cross = current_rsi > result.rsi_upper and (
-                        previous_rsi is None or previous_rsi <= result.rsi_upper
+                    is_cross = current_rsi > rsi_upper and (
+                        previous_rsi is None or previous_rsi <= rsi_upper
                     )
 
                 if previous_rsi is None:
@@ -301,19 +314,19 @@ class TradingEngine:
                         stop_loss_price = round(
                             entry_price * (1 - globalConfig.STOP_LOSS_PCT), 2)
                         take_profit_price = self._compute_rsi_take_profit(
-                            result.symbol, result.rsi_upper, result.rsi_period, entry_price)
+                            result.symbol, rsi_upper, rsi_period, entry_price)
                     else:
                         stop_loss_price = round(
                             entry_price * (1 + globalConfig.STOP_LOSS_PCT), 2)
                         take_profit_price = self._compute_rsi_cover_price(
-                            result.symbol, result.rsi_lower, result.rsi_period, entry_price)
+                            result.symbol, rsi_lower, rsi_period, entry_price)
 
                     opportunity = TradingOpportunity(
                         symbol=result.symbol,
                         current_rsi=round(current_rsi, 2),
-                        target_rsi_lower=result.rsi_lower,
-                        target_rsi_upper=result.rsi_upper,
-                        rsi_period=result.rsi_period,
+                        target_rsi_lower=rsi_lower,
+                        target_rsi_upper=rsi_upper,
+                        rsi_period=rsi_period,
                         backtest_return=round(result.total_return, 2),
                         alpha=round(result.alpha, 2),
                         win_rate=round(result.win_rate, 2),
@@ -356,10 +369,6 @@ class TradingEngine:
                     continue
                 opportunities.append(TradingOpportunity(
                     symbol=sig.symbol,
-                    current_rsi=0.0,
-                    target_rsi_lower=0,
-                    target_rsi_upper=0,
-                    rsi_period=14,
                     backtest_return=round(
                         getattr(sig, "backtest_return", 0.0), 2),
                     alpha=round(getattr(sig, "alpha", 0.0), 2),

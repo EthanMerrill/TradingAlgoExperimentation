@@ -47,7 +47,10 @@ class _FakeStrategy(Strategy):
         total_return = self.base_return * quality
         return BacktestResult(
             symbol=symbol,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
+            params={
+                "rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70,
+                **dict(params),
+            },
             total_return=total_return,
             buy_and_hold_return=0.02,
             alpha=total_return - 0.02,
@@ -56,7 +59,6 @@ class _FakeStrategy(Strategy):
             calmar_ratio=1.0, profitable=total_return > 0,
             direction=params.get("direction", "long"),
             strategy_name=self.name,
-            params=dict(params),
         )
 
 
@@ -152,18 +154,16 @@ class TestRsiParity(unittest.TestCase):
             "direction": "long",
         }]
         result = BacktestResult(
-            symbol="AAPL", rsi_period=14, rsi_lower=30, rsi_upper=70,
+            symbol="AAPL", params={"rsi_period": 14, "rsi_lower": 30, "rsi_upper": 70},
             total_return=0.15, buy_and_hold_return=0.10, alpha=0.05,
             num_trades=1, win_rate=1.0, avg_trade_duration=5.0,
             max_drawdown=0.03, sharpe_ratio=1.5, calmar_ratio=2.0,
             profitable=True, trade_details=trade_details,
         )
         df = strategy.build_consolidated_trades([result])
-        df_legacy = strategy.build_consolidated_trades_df([result])
         self.assertEqual(len(df), 1)
         self.assertEqual(df.iloc[0]["symbol"], "AAPL")
         self.assertEqual(df.iloc[0]["exit_reason"], "rsi_cross")
-        pd.testing.assert_frame_equal(df, df_legacy)
 
 
 if __name__ == "__main__":
