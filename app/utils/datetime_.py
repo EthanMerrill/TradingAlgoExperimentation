@@ -67,6 +67,21 @@ def ensure_utc(value):
     return value.astimezone(timezone.utc)
 
 
+def utc_now() -> datetime:
+    """Current time as a timezone-aware UTC ``datetime``.
+
+    Use this — not ``datetime.now()`` — for any timestamp that is persisted or
+    compared against broker timestamps.
+
+    ``datetime.now()`` returns naive LOCAL time. Persistence paths treat a
+    naive value as UTC wall-clock (see ``storage.backend._safe_datetime``), so
+    a local timestamp silently lands in the database shifted by the machine's
+    UTC offset — e.g. 4 hours during EDT. That produced order rows whose
+    ``submitted_at`` was 4h behind the row's own ``created_at``.
+    """
+    return datetime.now(timezone.utc)
+
+
 def is_trading_day(date: Optional[datetime] = None) -> bool:
     """
     Check if a given date is a trading day (market open).

@@ -383,17 +383,26 @@ class PostgresStorage(StorageBackend):
             f'SELECT * FROM "{table}" '
             "ORDER BY 1 LIMIT $1 OFFSET $2"
         )
+        # Column names come from the catalog, NOT from the returned rows: an
+        # empty page (or a table with no rows at all) would otherwise report
+        # zero columns, and the dashboard would render a header-less grid.
+        cols_sql = (
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = $1 "
+            "ORDER BY ordinal_position"
+        )
 
         try:
             count_rows = _sync(self._fetch(count_sql))
             total = int(count_rows[0]["n"]) if count_rows else 0
             records = _sync(self._fetch(rows_sql, limit, offset))
+            col_rows = _sync(self._fetch(cols_sql, table))
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("db_fetch_table(%s) failed: %s", table, exc)
             raise
 
         rows = [dict(r) for r in records]
-        columns = list(rows[0].keys()) if rows else []
+        columns = [str(r["column_name"]) for r in col_rows]
 
         # JSON-safe value conversion (asyncpg types → primitives).
         # Non-finite floats (NaN/Infinity) would be emitted by Flask's jsonify

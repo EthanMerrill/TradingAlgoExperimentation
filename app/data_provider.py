@@ -83,8 +83,37 @@ class DataProvider:
                 self.trading_client = None
 
         self._rate_limit_delay: float = globalConfig.API_RATE_LIMIT_DELAY
+        # Per-symbol shortability cache: symbol -> Optional[bool].
+        self._shortable_cache: Dict[str, Optional[bool]] = {}
         print("DataProvider initialized with rate limit delay of",
               self._rate_limit_delay)
+
+    def get_asset_shortable(self, symbol: str) -> Optional[bool]:
+        """Whether the broker permits shorting ``symbol``.
+
+        Returns True/False when the asset metadata says so, or ``None`` when it
+        is unavailable (unknown symbol, API/network failure, or a client that
+        is not configured). Callers should treat ``None`` as "don't block" so a
+        metadata hiccup never silently disables short selling, while an explicit
+        ``False`` correctly prevents a guaranteed order rejection
+        (``42210000 asset cannot be sold short``).
+        """
+        if symbol in self._shortable_cache:
+            return self._shortable_cache[symbol]
+
+        result: Optional[bool] = None
+        if self.trading_client is not None:
+            try:
+                asset = self.trading_client.get_asset(symbol)
+                raw = getattr(asset, 'shortable', None)
+                if raw is not None:
+                    result = bool(raw)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.debug(
+                    "Could not resolve shortability for %s: %s", symbol, e)
+
+        self._shortable_cache[symbol] = result
+        return result
 
     def get_single_stock_bars(
         self,

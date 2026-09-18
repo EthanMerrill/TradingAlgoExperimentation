@@ -188,10 +188,12 @@ function unrealizedPnl(row) {
     const qty = row.quantity;
     const side = row.side || 'long';
     if (!entry || !current || !qty) return null;
-    if (side === 'short') {
-        return ((entry - current) / entry) * Math.abs(qty) * current;
-    }
-    return ((current - entry) / entry) * Math.abs(qty) * current;
+    // Dollar P&L is the price move times share count. Multiplying the percent
+    // move by `current` instead would scale the result by current/entry, which
+    // understates a loss (and a gain) whenever price has moved.
+    return side === 'short'
+        ? (entry - current) * Math.abs(qty)
+        : (current - entry) * Math.abs(qty);
 }
 
 function unrealizedPnlPct(row) {

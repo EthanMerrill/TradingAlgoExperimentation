@@ -20,7 +20,7 @@ from data_provider import TechnicalIndicators, data_provider
 from storage import storage
 from order import Order, generate_client_order_id
 from positions import Position, PositionsManager
-from utils import ensure_utc
+from utils import ensure_utc, utc_now
 from strategies.base import StrategyContext
 from strategies.registry import get_strategy
 from strategy import BacktestResult, RSIStrategy
@@ -115,6 +115,13 @@ class TradingOpportunity:
 class TradingEngine:
     """Main trading execution engine."""
 
+    # Best-effort wait (seconds) for an ENTRY order to report its fill price.
+    # Bounded deliberately: an entry that cannot fill yet (e.g. submitted while
+    # the market is closed, so it queues) must not stall the trading cycle.
+    # Exits use a longer wait because the realized return depends on it.
+    ENTRY_FILL_WAIT_SECONDS = 5.0
+
+
     def __init__(self):
         self.trading_client: Optional[TradingClient] = data_provider.trading_client
         # PositionsManager is injected after construction via
@@ -123,6 +130,10 @@ class TradingEngine:
         self._positions_manager: Optional[PositionsManager] = None
         self._last_position_update: Optional[datetime] = None
         self.dry_run: bool = False
+        # Most recent order-placement failure, surfaced into the session
+        # summary's `errors` so failures are visible in the dashboard instead
+        # of only appearing in the log.
+        self._last_order_error: Optional[str] = None
         # Per-cycle OHLCV cache: avoids redundant API calls when multiple
         # methods (price, RSI, take-profit) need data for the same symbol.
         # Keyed by symbol, cleared at the start of each run cycle.
@@ -471,6 +482,19 @@ class TradingEngine:
             budgets = self._strategy_budgets(equity)
             strategy_used = self._strategy_notional_used()
 
+            # Cash guard: never commit more than the cash actually available
+            # after reserving the configured minimum cash buffer. Without this
+            # sizing was driven purely by equity (POSITION_SIZE_PCT), so a run
+            # could attempt orders exceeding available cash — and `cash` was
+            # only ever logged, never used.
+            min_cash_pct = getattr(globalConfig, 'MIN_CASH_PCT', 0.0) or 0.0
+            investable_cash = max(0.0, cash - equity * min_cash_pct)
+            if investable_cash <= 0:
+                logger.info(
+                    "No investable cash available (cash=$%.2f, min buffer $%.2f)",
+                    cash, equity * min_cash_pct)
+                return []
+
             # Calculate position size for each opportunity
             position_allocations = []
 
@@ -487,19 +511,29 @@ class TradingEngine:
                         opportunity.symbol, opportunity.strategy_name, available)
                     continue
 
-                # Equal weight allocation, capped by the strategy budget
+                # Equal weight allocation, capped by the strategy budget and by
+                # the cash still available for new positions.
                 position_value = min(
                     equity * globalConfig.POSITION_SIZE_PCT,
                     available,
+                    investable_cash,
                 )
+                if position_value <= 0:
+                    logger.info(
+                        "Skipping %s: no cash remaining for new positions",
+                        opportunity.symbol)
+                    break
+
                 shares = int(position_value / opportunity.entry_price)
 
                 if shares > 0:
                     position_allocations.append((opportunity, shares))
+                    notional = shares * opportunity.entry_price
                     strategy_used[opportunity.strategy_name] = (
                         strategy_used.get(opportunity.strategy_name, 0.0)
-                        + shares * opportunity.entry_price
+                        + notional
                     )
+                    investable_cash -= notional
 
             return position_allocations
 
@@ -639,6 +673,8 @@ class TradingEngine:
         order_success = False
         client_order_id: Optional[str] = None
         placed_order_id: Optional[str] = None
+        entry_fill_price: Optional[float] = None
+        self._last_order_error = None
         try:
             if self.dry_run:
                 logger.info("🔍 DRY RUN: Would place %s order for %d shares of %s at $%.2f",
@@ -652,6 +688,9 @@ class TradingEngine:
                 if self.trading_client is None:
                     logger.error(
                         "Trading client not available - cannot place order")
+                    self._last_order_error = (
+                        f"trading client unavailable — could not place "
+                        f"{label} order for {opportunity.symbol}")
                     return False
 
                 client_order_id = self._make_unique_client_order_id(
@@ -685,22 +724,44 @@ class TradingEngine:
 
                 order_success = True
 
+                # Use the broker's actual fill as the recorded entry price.
+                # `opportunity.entry_price` is a heuristic (the last OHLCV
+                # close), so recording it misstates P&L — the same class of
+                # error fixed for exits.
+                entry_fill_price = self._wait_for_order_fill(
+                    placed_order_id, timeout=self.ENTRY_FILL_WAIT_SECONDS)
+                if entry_fill_price is not None:
+                    logger.info(
+                        "Confirmed entry fill for %s: %d shares @ $%.2f "
+                        "(estimated $%.2f)",
+                        opportunity.symbol, shares, entry_fill_price,
+                        opportunity.entry_price)
+                else:
+                    logger.warning(
+                        "Could not confirm entry fill for %s; recording the "
+                        "estimated price $%.2f",
+                        opportunity.symbol, opportunity.entry_price)
+
         except Exception as e:
             error_msg = "Error placing %s order for %s: %s" % (
                 label, opportunity.symbol, e)
             if self.dry_run:
                 error_msg = "🔍 DRY RUN: " + error_msg
             logger.error(error_msg)
+            self._last_order_error = error_msg
 
         if order_success:
+            recorded_entry_price = (
+                entry_fill_price if entry_fill_price is not None
+                else opportunity.entry_price)
             try:
                 new_position = Position(
                     symbol=opportunity.symbol,
                     quantity=float(shares) * quantity_sign,
-                    entry_price=opportunity.entry_price,
-                    current_price=opportunity.entry_price,
+                    entry_price=recorded_entry_price,
+                    current_price=recorded_entry_price,
                     current_rsi=opportunity.current_rsi,
-                    entry_date=datetime.now(),
+                    entry_date=utc_now(),
                     alpha=opportunity.alpha,
                     rsi_period=opportunity.rsi_period,
                     rsi_lower=opportunity.target_rsi_lower,
@@ -735,7 +796,7 @@ class TradingEngine:
                             status="new",
                             stop_price=opportunity.stop_loss_price,
                             limit_price=opportunity.take_profit_price,
-                            submitted_at=datetime.now(),
+                            submitted_at=utc_now(),
                             leg="entry",
                         )
                     ])
@@ -755,6 +816,21 @@ class TradingEngine:
     def place_short_order(self, opportunity: TradingOpportunity, shares: int) -> bool:
         """Place a short-sell order for a trading opportunity."""
         return self._place_order(opportunity, shares, OrderSide.SELL, -1, "SHORT", "Cover target")
+
+    def _is_shortable(self, symbol: str) -> bool:
+        """Whether ``symbol`` may be shorted, per the broker's asset metadata.
+
+        Unknown metadata is treated as shortable so a lookup hiccup never
+        disables short selling; an explicit ``shortable=False`` is respected,
+        since attempting it is a guaranteed rejection
+        (``42210000 asset cannot be sold short``).
+        """
+        try:
+            shortable = data_provider.get_asset_shortable(symbol)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.debug("Shortability lookup failed for %s: %s", symbol, e)
+            return True
+        return shortable is not False
 
     def _find_open_position(self, symbol: str) -> Optional[Position]:
         """Return the open position for a symbol, or None."""
@@ -1436,7 +1512,7 @@ class TradingEngine:
                         status="new",
                         stop_price=stop_loss_price,
                         limit_price=take_profit_price,
-                        submitted_at=datetime.now(),
+                        submitted_at=utc_now(),
                         leg="oco",
                     )
                 ])
@@ -1541,7 +1617,7 @@ class TradingEngine:
                         order_type="market",
                         order_class="simple",
                         status="new",
-                        submitted_at=datetime.now(),
+                        submitted_at=utc_now(),
                         leg="market_exit",
                     )
                 ])
@@ -1744,6 +1820,8 @@ class TradingEngine:
                         action='BUY', shares=shares,
                         price=opportunity.entry_price, order_type='entry',
                         strategy=opportunity.strategy_name)
+                else:
+                    self._record_order_failure(session_summary, opportunity.symbol)
         return session_summary
 
     def identify_and_execute_shorts(self, session_summary: Dict[str, Any], backtest_results: List[BacktestResult]) -> Dict[str, Any]:
@@ -1785,6 +1863,19 @@ class TradingEngine:
             op for op in short_opportunities if op.symbol not in exit_symbols
         ]
 
+        # Shortability filter: shorting an asset the broker flags
+        # shortable=False is a guaranteed rejection (42210000). Drop those up
+        # front so we don't size a position we cannot fill.
+        shortable_entries = []
+        for op in entry_opportunities:
+            if self._is_shortable(op.symbol):
+                shortable_entries.append(op)
+            else:
+                logger.warning(
+                    "Skipping short %s: broker reports the asset is not "
+                    "shortable", op.symbol)
+        entry_opportunities = shortable_entries
+
         # Calculate position sizes (respects leverage cap; new entries only)
         position_allocations = self.calculate_short_position_sizes(
             entry_opportunities)
@@ -1812,7 +1903,21 @@ class TradingEngine:
                         action='SHORT', shares=shares,
                         price=opportunity.entry_price, order_type='entry',
                         strategy=opportunity.strategy_name)
+                else:
+                    self._record_order_failure(session_summary, opportunity.symbol)
         return session_summary
+
+    def _record_order_failure(self, session_summary: Dict[str, Any],
+                              symbol: str) -> None:
+        """Surface the most recent order failure into the session summary.
+
+        Without this an order rejection (e.g. non-shortable asset or
+        insufficient buying power) appeared only in the log while the dashboard
+        reported a clean run with ``errors: []``.
+        """
+        detail = self._last_order_error or f"order for {symbol} was rejected"
+        session_summary.setdefault('errors', []).append(detail)
+        logger.warning("Order failure recorded: %s", detail)
 
     def _record_order(self, session_summary: Dict[str, Any], *, symbol: str,
                       action: str, shares=None, price=None, order_type: str = "entry",
@@ -1841,7 +1946,7 @@ class TradingEngine:
             'type': order_type,
             'strategy': strategy,
             'reason': reason,
-            'timestamp': datetime.now().isoformat(),
+            'timestamp': utc_now().isoformat(),
         })
 
     def execute_trading_session(self, backtest_results: List[BacktestResult]) -> Dict[str, Any]:
@@ -1855,7 +1960,7 @@ class TradingEngine:
             Dictionary with session summary
         """
         session_summary = {
-            'timestamp': datetime.now(),
+            'timestamp': utc_now(),
             'opportunities_found': 0,
             'new_positions': 0,
             'orders_placed': 0,

@@ -16,7 +16,7 @@ from optimizer import StrategyOptimizer
 from walk_forward import WalkForwardValidator
 from trading_engine import TradingEngine
 from strategies.registry import get_strategy
-from utils import TradingCalendar, setup_logging
+from utils import TradingCalendar, setup_logging, utc_now
 
 from config import globalConfig  # type: ignore
 from health_server import start_health_server
@@ -64,7 +64,7 @@ class TradingAlgorithm:
         Returns:
             Dictionary with session results
         """
-        self.session_metadata['start_time'] = datetime.now()
+        self.session_metadata['start_time'] = utc_now()
 
         # Clear per-cycle caches to avoid stale data
         self.trading_engine._clear_ohlcv_cache()
@@ -169,7 +169,7 @@ class TradingAlgorithm:
                 backtest_results)
 
             # Step 4: Save results and metadata
-            self.session_metadata['end_time'] = datetime.now()
+            self.session_metadata['end_time'] = utc_now()
             self.session_metadata['results_summary'] = trading_summary
             logger.info("💾 Saving session results and metadata...")
             await self._save_session_results(dry_run, account_info, backtest_results, trading_summary)

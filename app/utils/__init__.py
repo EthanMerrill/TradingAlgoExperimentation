@@ -2,7 +2,7 @@
 Utility package for the trading algorithm.
 Re-exports all symbols for backward compatibility with `from utils import ...`.
 """
-from .datetime_ import parse_dt, is_trading_day, ensure_utc
+from .datetime_ import parse_dt, is_trading_day, ensure_utc, utc_now
 from .logging_ import setup_logging
 from .calendar import TradingCalendar
 from .metrics import PerformanceMetrics
@@ -13,6 +13,7 @@ __all__ = [
     "parse_dt",
     "is_trading_day",
     "ensure_utc",
+    "utc_now",
     "setup_logging",
     "TradingCalendar",
     "PerformanceMetrics",

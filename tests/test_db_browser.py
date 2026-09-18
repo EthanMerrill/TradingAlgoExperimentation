@@ -83,13 +83,52 @@ class TestPostgresDbBrowse(unittest.TestCase):
         with self.assertRaises(ValueError):
             s.db_fetch_table("users")
 
+    def test_db_fetch_table_reports_columns_for_empty_page(self):
+        """Regression: an empty page returned zero columns.
+
+        Columns were derived from `rows[0]`, so any empty page (or a table with
+        no rows at all) reported `columns: []`. The dashboard then called
+        `setColumns([])` and rendered a header-less grid, while still showing
+        the row count.
+        """
+        self._conn.fetch = AsyncMock(side_effect=[
+            [dict(table_name="orders")],   # db_list_tables
+            [dict(n=0)],                   # COUNT(*) -> genuinely empty
+            [],                            # SELECT * -> no rows
+            [dict(column_name="id"), dict(column_name="symbol")],  # catalog
+        ])
+        s = self._connected()
+        result = s.db_fetch_table("orders", limit=100, offset=0)
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["columns"], ["id", "symbol"])
+        self.assertEqual(result["total"], 0)
+
+    def test_db_fetch_table_reports_columns_past_the_last_page(self):
+        """Paging beyond the data (e.g. after retention prunes rows) keeps it."""
+        self._conn.fetch = AsyncMock(side_effect=[
+            [dict(table_name="orders")],
+            [dict(n=5)],
+            [],                            # offset far past the end
+            [dict(column_name="id")],
+        ])
+        s = self._connected()
+        result = s.db_fetch_table("orders", limit=100, offset=100000)
+
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["columns"], ["id"])
+        self.assertEqual(result["total"], 5)
+
     def test_db_fetch_table_success(self):
-        # Sequential fetch responses: list tables → count → rows
+        # Sequential fetch responses: list tables → count → rows → columns
         self._conn.fetch = AsyncMock(side_effect=[
             [dict(table_name="backtest_results")],
             [dict(n=2)],
             [dict(symbol="AAPL", total_return=0.15,
                   created_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))],
+            [dict(column_name="symbol"),
+             dict(column_name="total_return"),
+             dict(column_name="created_at")],
         ])
         s = self._connected()
         result = s.db_fetch_table("backtest_results", limit=10, offset=0)
@@ -115,6 +154,11 @@ class TestPostgresDbBrowse(unittest.TestCase):
                   sharpe_ratio=math.inf,
                   max_drawdown=-math.inf,
                   win_rate=0.55)],
+            [dict(column_name="symbol"),
+             dict(column_name="total_return"),
+             dict(column_name="sharpe_ratio"),
+             dict(column_name="max_drawdown"),
+             dict(column_name="win_rate")],
         ])
         s = self._connected()
         result = s.db_fetch_table("backtest_results", limit=10, offset=0)

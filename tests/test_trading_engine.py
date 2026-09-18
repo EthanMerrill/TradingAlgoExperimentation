@@ -52,6 +52,10 @@ class TestTradingEngine(unittest.TestCase):
         self.engine._positions_manager.positions = []
         self.engine._positions_manager.open_position = Mock()
         self.engine._positions_manager.close_position = Mock()
+        # Unit tests must not block on the best-effort entry fill wait, nor
+        # reach the real broker to resolve asset shortability.
+        self.engine.ENTRY_FILL_WAIT_SECONDS = 0
+        self.engine._is_shortable = Mock(return_value=True)
 
     def test_positions_manager_starts_none(self):
         """Before injection, _positions_manager is None."""
@@ -637,7 +641,6 @@ class TestTradingEngine(unittest.TestCase):
         existing_long = self._position("EXIT")
         existing_long.side = "long"
         self.engine._positions_manager.positions = [existing_long]
-
         exit_op = TradingOpportunity(
             symbol="EXIT", current_rsi=75.0, target_rsi_lower=30,
             target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
@@ -658,6 +661,8 @@ class TestTradingEngine(unittest.TestCase):
 
         with patch.object(self.engine, 'identify_shorting_opportunities',
                           return_value=[exit_op, entry_op]), \
+                patch.object(self.engine, '_is_shortable',
+                             return_value=True), \
                 patch.object(self.engine, '_exit_opposite_position',
                              return_value=True) as mock_exit, \
                 patch.object(self.engine, 'calculate_short_position_sizes',
@@ -930,6 +935,7 @@ class TestBreachedStopHandling(unittest.TestCase):
         self.engine._positions_manager = Mock()
         self.engine._positions_manager.close_position = Mock()
         self.engine.dry_run = False
+        self.engine.ENTRY_FILL_WAIT_SECONDS = 0
 
     def _summary(self):
         return {
@@ -1261,6 +1267,251 @@ class TestExitFillAccuracy(unittest.TestCase):
 
         self.assertTrue(ok)
         self.engine._positions_manager.close_position.assert_not_called()
+
+
+class TestAuditFixes(unittest.TestCase):
+    """Regression tests for the audit findings (see commit message)."""
+
+    def setUp(self):
+        with patch('trading_engine.data_provider'):
+            self.engine = TradingEngine()
+        self.engine._positions_manager = Mock()
+        self.engine._positions_manager.positions = []
+        self.engine._positions_manager.open_position = Mock()
+        self.engine._positions_manager.close_position = Mock()
+        self.engine.ENTRY_FILL_WAIT_SECONDS = 0
+        self.engine.dry_run = False
+
+    def _summary(self):
+        return {
+            'opportunities_found': 0, 'new_positions': 0,
+            'orders_placed': 0, 'positions_exited': 0,
+            'errors': [], 'orders': [],
+        }
+
+    def _opp(self, symbol="AAPL", price=100.0):
+        return TradingOpportunity(
+            symbol=symbol, current_rsi=0.0, target_rsi_lower=0,
+            target_rsi_upper=0, rsi_period=14, backtest_return=0.2,
+            alpha=0.05, win_rate=0.9, entry_price=price,
+            stop_loss_price=price * 0.95, take_profit_price=price * 1.1,
+            num_trades=10, direction="long",
+        )
+
+    # -- shortability -------------------------------------------------------
+
+    def test_is_shortable_false_is_respected(self):
+        with patch('trading_engine.data_provider') as dp:
+            dp.get_asset_shortable.return_value = False
+            self.assertFalse(self.engine._is_shortable("QETH"))
+
+    def test_is_shortable_true(self):
+        with patch('trading_engine.data_provider') as dp:
+            dp.get_asset_shortable.return_value = True
+            self.assertTrue(self.engine._is_shortable("AAPL"))
+
+    def test_unknown_shortability_does_not_block(self):
+        """A metadata hiccup must not silently disable short selling."""
+        with patch('trading_engine.data_provider') as dp:
+            dp.get_asset_shortable.return_value = None
+            self.assertTrue(self.engine._is_shortable("AAPL"))
+
+    def test_is_shortable_survives_lookup_error(self):
+        with patch('trading_engine.data_provider') as dp:
+            dp.get_asset_shortable.side_effect = RuntimeError("api down")
+            self.assertTrue(self.engine._is_shortable("AAPL"))
+
+    def test_non_shortable_symbol_is_dropped_before_sizing(self):
+        """The regression: a non-shortable symbol was sized then rejected."""
+        non_shortable = self._opp("QETH", price=25.61)
+        summary = self._summary()
+
+        with patch.object(self.engine, 'identify_shorting_opportunities',
+                          return_value=[non_shortable]), \
+                patch.object(self.engine, '_is_shortable',
+                             return_value=False), \
+                patch.object(self.engine, 'calculate_short_position_sizes',
+                             return_value=[]) as mock_size, \
+                patch.object(self.engine, 'place_short_order') as mock_place:
+            self.engine.identify_and_execute_shorts(summary, [])
+
+        # Never offered to the sizer, and never submitted.
+        self.assertEqual(mock_size.call_args[0][0], [])
+        mock_place.assert_not_called()
+        self.assertEqual(summary['orders_placed'], 0)
+
+    def test_shortable_symbol_still_proceeds(self):
+        op = self._opp("AAPL")
+        summary = self._summary()
+
+        with patch.object(self.engine, 'identify_shorting_opportunities',
+                          return_value=[op]), \
+                patch.object(self.engine, '_is_shortable', return_value=True), \
+                patch.object(self.engine, 'calculate_short_position_sizes',
+                             return_value=[(op, 10)]), \
+                patch.object(self.engine, 'place_short_order',
+                             return_value=True):
+            self.engine.identify_and_execute_shorts(summary, [])
+
+        self.assertEqual(summary['orders_placed'], 1)
+
+    # -- order failures are surfaced ---------------------------------------
+
+    def test_failed_short_is_recorded_in_errors(self):
+        """A rejected order must not leave the session looking clean."""
+        op = self._opp("AAPL")
+        summary = self._summary()
+        self.engine._last_order_error = "Error placing SHORT order for AAPL: boom"
+
+        with patch.object(self.engine, 'identify_shorting_opportunities',
+                          return_value=[op]), \
+                patch.object(self.engine, '_is_shortable', return_value=True), \
+                patch.object(self.engine, 'calculate_short_position_sizes',
+                             return_value=[(op, 10)]), \
+                patch.object(self.engine, 'place_short_order',
+                             return_value=False):
+            self.engine.identify_and_execute_shorts(summary, [])
+
+        self.assertEqual(len(summary['errors']), 1)
+        self.assertIn("boom", summary['errors'][0])
+        self.assertEqual(summary['orders_placed'], 0)
+
+    def test_failed_buy_is_recorded_in_errors(self):
+        op = self._opp("AAPL")
+        summary = self._summary()
+        self.engine._last_order_error = "Error placing buy order for AAPL: nope"
+
+        with patch.object(self.engine, 'identify_buying_opportunities',
+                          return_value=[op]), \
+                patch.object(self.engine, 'calculate_position_sizes',
+                             return_value=[(op, 10)]), \
+                patch.object(self.engine, 'place_buy_order', return_value=False):
+            self.engine.identify_purchases(summary, [])
+
+        self.assertEqual(len(summary['errors']), 1)
+        self.assertIn("nope", summary['errors'][0])
+
+    def test_record_order_failure_falls_back_without_detail(self):
+        summary = self._summary()
+        self.engine._last_order_error = None
+        self.engine._record_order_failure(summary, "AAPL")
+        self.assertEqual(len(summary['errors']), 1)
+        self.assertIn("AAPL", summary['errors'][0])
+
+    def test_stale_error_is_replaced_by_the_current_failure(self):
+        """An attempt must report its own failure, not a previous one."""
+        self.engine._last_order_error = "old failure"
+        self.engine.trading_client = None  # forces the early-failure path
+
+        self.assertFalse(self.engine.place_buy_order(self._opp(), 1))
+
+        self.assertIsNotNone(self.engine._last_order_error)
+        self.assertNotIn("old failure", self.engine._last_order_error)
+        self.assertIn("trading client", self.engine._last_order_error.lower())
+
+    # -- entry price from the real fill ------------------------------------
+
+    def test_entry_price_uses_confirmed_fill(self):
+        """Recorded entry price must be the broker fill, not the estimate."""
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = Mock(id="o1")
+        op = self._opp("AAPL", price=100.0)  # heuristic estimate
+
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="cid-1"), \
+                patch.object(self.engine, '_wait_for_order_fill',
+                             return_value=101.37), \
+                patch('trading_engine.storage'):
+            self.assertTrue(self.engine.place_buy_order(op, 10))
+
+        recorded = self.engine._positions_manager.open_position.call_args[0][0]
+        self.assertEqual(recorded.entry_price, 101.37)
+        self.assertEqual(recorded.current_price, 101.37)
+
+    def test_entry_price_falls_back_to_estimate(self):
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = Mock(id="o1")
+        op = self._opp("AAPL", price=100.0)
+
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="cid-1"), \
+                patch.object(self.engine, '_wait_for_order_fill',
+                             return_value=None), \
+                patch('trading_engine.storage'):
+            self.assertTrue(self.engine.place_buy_order(op, 10))
+
+        recorded = self.engine._positions_manager.open_position.call_args[0][0]
+        self.assertEqual(recorded.entry_price, 100.0)
+
+    def test_entry_position_entry_date_is_tz_aware(self):
+        """entry_date feeds a TIMESTAMPTZ column; naive local time shifts it."""
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = Mock(id="o1")
+
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="cid-1"), \
+                patch.object(self.engine, '_wait_for_order_fill',
+                             return_value=None), \
+                patch('trading_engine.storage'):
+            self.engine.place_buy_order(self._opp(), 10)
+
+        recorded = self.engine._positions_manager.open_position.call_args[0][0]
+        self.assertIsNotNone(recorded.entry_date.tzinfo)
+        self.assertEqual(recorded.entry_date.utcoffset(), timedelta(0))
+
+    # -- cash guard --------------------------------------------------------
+
+    def test_sizing_respects_available_cash(self):
+        """Sizing must not commit more than cash minus the min-cash buffer."""
+        self.engine._positions_manager.positions = []
+        opps = [self._opp("A", 10.0), self._opp("B", 10.0)]
+
+        with patch('trading_engine.data_provider') as dp, \
+                patch('trading_engine.globalConfig') as cfg:
+            # equity 1000 -> 10% per position = $100 -> 10 shares each.
+            # cash 150 - 5% buffer (50) = $100 investable => only ONE position.
+            dp.get_account_info.return_value = {
+                'cash': 150.0, 'equity': 1000.0, 'buying_power': 1000.0}
+            cfg.MAX_NEW_POSITIONS_PER_DAY = 5
+            cfg.MAX_POSITIONS = 10
+            cfg.POSITION_SIZE_PCT = 0.10
+            cfg.MIN_CASH_PCT = 0.05
+            cfg.STRATEGIES_ENABLED = ['rsi_mean_reversion']
+            cfg.STRATEGY_ALLOCATION = {'rsi_mean_reversion': 1.0}
+
+            allocs = self.engine.calculate_position_sizes(opps)
+
+        total = sum(shares * op.entry_price for op, shares in allocs)
+        self.assertLessEqual(total, 100.0 + 1e-6)
+        self.assertEqual(len(allocs), 1)
+
+    def test_sizing_returns_empty_when_no_investable_cash(self):
+        with patch('trading_engine.data_provider') as dp, \
+                patch('trading_engine.globalConfig') as cfg:
+            dp.get_account_info.return_value = {
+                'cash': 10.0, 'equity': 1000.0, 'buying_power': 1000.0}
+            cfg.MAX_NEW_POSITIONS_PER_DAY = 5
+            cfg.MAX_POSITIONS = 10
+            cfg.POSITION_SIZE_PCT = 0.10
+            cfg.MIN_CASH_PCT = 0.10  # buffer $100 > cash $10
+            cfg.STRATEGIES_ENABLED = ['rsi_mean_reversion']
+            cfg.STRATEGY_ALLOCATION = {'rsi_mean_reversion': 1.0}
+
+            allocs = self.engine.calculate_position_sizes([self._opp()])
+
+        self.assertEqual(allocs, [])
+
+    # -- timestamps --------------------------------------------------------
+
+    def test_session_summary_timestamp_is_utc(self):
+        ts = self.engine.execute_trading_session([]).get('timestamp')
+        self.assertIsNotNone(ts.tzinfo)
+        self.assertEqual(ts.utcoffset(), timedelta(0))
+
+    def test_record_order_timestamps_are_utc(self):
+        summary = self._summary()
+        self.engine._record_order(summary, symbol="AAPL", action="BUY")
+        self.assertTrue(summary['orders'][0]['timestamp'].endswith("+00:00"))
 
 
 if __name__ == '__main__':

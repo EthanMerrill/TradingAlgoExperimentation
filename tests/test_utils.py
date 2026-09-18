@@ -3,7 +3,7 @@
 import os
 import sys
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -17,6 +17,7 @@ from utils import (  # noqa: E402
     is_trading_day,
     parse_dt,
     setup_logging,
+    utc_now,
 )
 
 
@@ -150,6 +151,49 @@ class TestParseDt(unittest.TestCase):
         """Unix-style float timestamps should parse correctly."""
         result = parse_dt(1718312400.0)  # 2024-06-14 midnight UTC
         self.assertIsInstance(result, datetime)
+
+
+class TestUtcNow(unittest.TestCase):
+    """`utc_now` exists because `datetime.now()` is naive LOCAL time.
+
+    Persistence treats naive values as UTC wall-clock, so a local timestamp
+    lands in the database shifted by the machine's UTC offset — which produced
+    order rows whose `submitted_at` sat 4 hours behind their `created_at`.
+    """
+
+    def test_returns_aware_utc_datetime(self):
+        now = utc_now()
+        self.assertIsInstance(now, datetime)
+        self.assertIsNotNone(now.tzinfo)
+        self.assertEqual(now.utcoffset(), timedelta(0))
+
+    def test_matches_utc_now_within_tolerance(self):
+        before = datetime.now(timezone.utc)
+        value = utc_now()
+        after = datetime.now(timezone.utc)
+        self.assertLessEqual(before, value)
+        self.assertLessEqual(value, after)
+
+    def test_differs_from_naive_local_now(self):
+        """Sanity: the helper must not be a naive local timestamp.
+
+        Skipped in UTC zones, where the two are indistinguishable in wall clock.
+        """
+        if datetime.now().astimezone().utcoffset() == timedelta(0):
+            self.skipTest("local timezone is UTC")
+        # as a naive wall clock the UTC value must not equal local wall clock
+        self.assertNotEqual(
+            utc_now().replace(tzinfo=None).replace(microsecond=0),
+            datetime.now().replace(microsecond=0),
+        )
+
+    def test_is_accepted_by_the_storage_coercion(self):
+        """The value must survive `_safe_datetime` unchanged (still UTC)."""
+        from storage.backend import _safe_datetime
+        value = utc_now()
+        coerced = _safe_datetime(value)
+        self.assertEqual(coerced, value)
+        self.assertEqual(coerced.utcoffset(), timedelta(0))
 
 
 if __name__ == '__main__':
