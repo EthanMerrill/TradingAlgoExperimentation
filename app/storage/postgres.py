@@ -25,6 +25,7 @@ from storage.backend import (
     normalize_position_for_save,
     order_to_dict,
     dict_to_order,
+    retention_cutoff_timestamp,
     POSITION_FIELDS,
     ORDER_FIELDS,
 )
@@ -479,6 +480,46 @@ class PostgresStorage(StorageBackend):
             return
         async with pool.acquire() as conn:
             await conn.executemany(sql, rows)
+
+    # -- prune_backtest_results ----------------------------------------------
+
+    def prune_backtest_results(self, retention_days: int) -> int:
+        """Delete this environment's backtest results older than the window.
+
+        Scoped to ``self._env`` so one environment's retention can never delete
+        another's history. ``run_timestamp`` is a fixed-width
+        ``YYYYMMDD_HHMMSS`` string, so the ``<`` comparison is chronological.
+        """
+        if not self._connected:
+            logger.error(
+                "Postgres not connected — cannot prune backtest results")
+            return 0
+
+        if not retention_days or retention_days <= 0:
+            return 0
+
+        cutoff = retention_cutoff_timestamp(retention_days)
+        # A CTE DELETE ... RETURNING lets us count the removed rows in one
+        # round-trip (a plain DELETE only reports a "DELETE n" status tag).
+        sql = (
+            "WITH deleted AS ("
+            "  DELETE FROM backtest_results "
+            "  WHERE environment = $1 AND run_timestamp < $2 "
+            "  RETURNING 1"
+            ") SELECT count(*) AS n FROM deleted"
+        )
+        try:
+            rows = _sync(self._fetch(sql, self._env, cutoff))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error pruning backtest results from Postgres: %s", exc)
+            return 0
+
+        deleted = int(rows[0]["n"] or 0) if rows else 0
+        if deleted:
+            logger.info(
+                "Pruned %d backtest results older than %d days (cutoff=%s)",
+                deleted, retention_days, cutoff)
+        return deleted
 
     # -- load_backtest_results -----------------------------------------------
 

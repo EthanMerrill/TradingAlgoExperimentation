@@ -292,7 +292,61 @@ class TradingAlgorithm:
         storage.save_backtest_results(
             filtered_results, timestamp)
 
+        # Step 6: Enforce retention so the results store cannot grow without
+        # bound. Runs once per backtest pass (after the new results are saved).
+        self._prune_old_backtest_results()
+
         return filtered_results
+
+    def _prune_old_backtest_results(self) -> None:
+        """Delete backtest results older than the configured retention window.
+
+        Retention is best-effort: a failure here is logged and swallowed so it
+        can never fail an otherwise-successful trading cycle.
+        """
+        retention_days = getattr(
+            globalConfig, 'BACKTEST_RESULTS_RETENTION_DAYS', 0)
+
+        # Coerce defensively. A missing or malformed setting must never crash
+        # the cycle, and must fail *closed* (keep the data) rather than guess
+        # a window. Note that a thrown-away type (e.g. a test double) or an
+        # unexpected JSON type lands here as invalid.
+        parsed_days: Optional[int] = None
+        if isinstance(retention_days, bool):
+            parsed_days = None                      # bool is not a day count
+        elif isinstance(retention_days, (int, float)):
+            parsed_days = int(retention_days)
+        elif isinstance(retention_days, str):
+            try:
+                parsed_days = int(retention_days.strip())
+            except ValueError:
+                parsed_days = None
+
+        if parsed_days is None:
+            logger.warning(
+                "🗑️  Invalid backtest retention setting %r — skipping prune",
+                retention_days)
+            return
+
+        if parsed_days <= 0:
+            logger.info(
+                "🗑️  Backtest retention disabled — keeping all results")
+            return
+
+        try:
+            deleted = storage.prune_backtest_results(parsed_days)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Backtest retention prune failed: %s", e)
+            return
+
+        if deleted:
+            logger.info(
+                "🗑️  Pruned %d backtest result rows older than %d days",
+                deleted, parsed_days)
+        else:
+            logger.info(
+                "🗑️  No backtest results older than %d days to prune",
+                parsed_days)
 
     def _load_recent_backtest_results(self, max_age_seconds: Optional[float] = 24 * 3600) -> List:
         """Load the most recent backtest results from storage.

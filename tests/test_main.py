@@ -182,5 +182,124 @@ class TestMainModule(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config_valid)
 
 
+class TestBacktestRetention(unittest.TestCase):
+    """Retention pruning runs at the end of every backtest pass."""
+
+    def _algorithm(self):
+        with patch('main.StrategyOptimizer'), \
+                patch('main.PositionsManager'), \
+                patch('main.TradingEngine'), \
+                patch('main.WalkForwardValidator'), \
+                patch('main.start_health_server'), \
+                patch('main.data_provider'):
+            from main import TradingAlgorithm
+            return TradingAlgorithm()
+
+    def _call(self, algorithm, retention_days, prune_return=0, prune_error=None):
+        with patch('main.globalConfig') as cfg, \
+                patch('main.storage') as mock_storage:
+            cfg.BACKTEST_RESULTS_RETENTION_DAYS = retention_days
+            if prune_error is not None:
+                mock_storage.prune_backtest_results.side_effect = prune_error
+            else:
+                mock_storage.prune_backtest_results.return_value = prune_return
+            algorithm._prune_old_backtest_results()
+        return mock_storage
+
+    def test_prunes_with_configured_window(self):
+        algorithm = self._algorithm()
+        mock_storage = self._call(algorithm, 30, prune_return=12)
+        mock_storage.prune_backtest_results.assert_called_once_with(30)
+
+    def test_disabled_when_zero(self):
+        algorithm = self._algorithm()
+        mock_storage = self._call(algorithm, 0)
+        mock_storage.prune_backtest_results.assert_not_called()
+
+    def test_disabled_when_negative(self):
+        algorithm = self._algorithm()
+        mock_storage = self._call(algorithm, -7)
+        mock_storage.prune_backtest_results.assert_not_called()
+
+    def test_disabled_when_attribute_missing(self):
+        """An older config without the setting must not crash the cycle."""
+        algorithm = self._algorithm()
+        with patch('main.globalConfig') as cfg, \
+                patch('main.storage') as mock_storage:
+            del cfg.BACKTEST_RESULTS_RETENTION_DAYS
+            algorithm._prune_old_backtest_results()
+        mock_storage.prune_backtest_results.assert_not_called()
+
+    def test_prune_failure_never_raises(self):
+        """Retention is best-effort and must not fail a trading cycle."""
+        algorithm = self._algorithm()
+        self._call(algorithm, 30, prune_error=RuntimeError("db down"))
+
+    def test_malformed_value_is_rejected_not_crashed(self):
+        """A non-numeric setting must warn and skip, never raise."""
+        algorithm = self._algorithm()
+        for bad in ("thirty", object(), None):
+            mock_storage = self._call(algorithm, bad)
+            mock_storage.prune_backtest_results.assert_not_called()
+
+    def test_numeric_string_value_is_accepted(self):
+        algorithm = self._algorithm()
+        mock_storage = self._call(algorithm, "30", prune_return=1)
+        mock_storage.prune_backtest_results.assert_called_once_with(30)
+
+    def test_bool_value_is_rejected(self):
+        """True is an int in Python but is not a valid day count."""
+        algorithm = self._algorithm()
+        mock_storage = self._call(algorithm, True)
+        mock_storage.prune_backtest_results.assert_not_called()
+
+
+class TestBacktestRetentionAsync(unittest.IsolatedAsyncioTestCase):
+    """The prune hook runs on the backtest path, after the results are saved."""
+
+    def _algorithm(self):
+        with patch('main.StrategyOptimizer'), \
+                patch('main.PositionsManager'), \
+                patch('main.TradingEngine'), \
+                patch('main.WalkForwardValidator'), \
+                patch('main.start_health_server'), \
+                patch('main.data_provider'):
+            from main import TradingAlgorithm
+            return TradingAlgorithm()
+
+    async def test_prune_runs_after_saving_results(self):
+        algorithm = self._algorithm()
+        calls = []
+
+        with patch('main.globalConfig') as cfg, \
+                patch('main.storage') as mock_storage, \
+                patch('main.StrategyOptimizer') as opt_cls, \
+                patch('main.data_provider') as dp:
+            cfg.WF_ENABLED = False
+            cfg.STRATEGIES_ENABLED = ['rsi_mean_reversion']
+            cfg.BACKTEST_START_DATE = Mock()
+            cfg.BACKTEST_RESULTS_RETENTION_DAYS = 30
+
+            optimizer = Mock()
+            optimizer.optimize_universe = AsyncMock(return_value=[])
+            optimizer.filter_results.return_value = []
+            opt_cls.return_value = optimizer
+
+            universe = MagicMock()
+            universe.empty = False
+            universe.__getitem__ = MagicMock(return_value=MagicMock())
+            universe['symbol'].tolist.return_value = ['AAPL']
+            dp.get_stock_universe.return_value = universe
+
+            mock_storage.save_backtest_results.side_effect = (
+                lambda *a, **k: calls.append('save') or True)
+            mock_storage.prune_backtest_results.side_effect = (
+                lambda *a, **k: calls.append('prune') or 0)
+
+            await algorithm._get_backtest_results(force_backtest=True)
+
+        self.assertEqual(calls, ['save', 'prune'])
+
+
 if __name__ == '__main__':
     unittest.main()

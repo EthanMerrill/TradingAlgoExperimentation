@@ -5,8 +5,9 @@ All persistence operations (GCS, Postgres, etc.) must implement this ABC.
 import json
 import logging
 import math
+import re
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
 
 import pandas as pd
@@ -39,6 +40,44 @@ BACKTEST_FIELDS = [
     "strategy_name",
     "params",
 ]
+
+# Run timestamps are stored as fixed-width ``YYYYMMDD_HHMMSS`` strings (e.g.
+# '20260917_210855'), both as the Postgres ``run_timestamp`` column and inside
+# backtest filenames (``backtest_results_20260917_210855.csv``).
+# Because the format is fixed-width and big-endian, comparing two of these as
+# strings is equivalent to comparing them chronologically — which is what makes
+# the retention cutoff a plain ``run_timestamp < cutoff`` comparison.
+RUN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+_RUN_TIMESTAMP_RE = re.compile(r"(\d{8}_\d{6})")
+
+
+def parse_run_timestamp(value: Any) -> Optional[datetime]:
+    """Extract the ``YYYYMMDD_HHMMSS`` run timestamp from a name or raw value.
+
+    Accepts a bare timestamp ('20260917_210855') or a filename
+    ('backtest_results_20260917_210855.csv'). Returns None when no parseable
+    timestamp is present.
+    """
+    if value is None:
+        return None
+    match = _RUN_TIMESTAMP_RE.search(str(value))
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), RUN_TIMESTAMP_FORMAT)
+    except ValueError:
+        return None
+
+
+def retention_cutoff_timestamp(retention_days: int,
+                               now: Optional[datetime] = None) -> str:
+    """Return the ``YYYYMMDD_HHMMSS`` cutoff for a retention window.
+
+    Anything with a run timestamp strictly *before* this value is expired.
+    """
+    reference = now or datetime.now()
+    return (reference - timedelta(days=retention_days)).strftime(
+        RUN_TIMESTAMP_FORMAT)
 
 POSITION_FIELDS = [
     "symbol",
@@ -428,6 +467,17 @@ class StorageBackend(ABC):
     @abstractmethod
     def get_latest_positions_df(self, openPosition: bool = True) -> pd.DataFrame:
         """Get the most recent position DataFrame."""
+
+    def prune_backtest_results(self, retention_days: int) -> int:
+        """Delete backtest results older than ``retention_days`` days.
+
+        Called at the end of every backtest run so the results store cannot
+        grow without bound. Returns the number of rows/files deleted.
+
+        ``retention_days`` <= 0 (or None) disables pruning. Backends that
+        cannot enforce retention inherit this no-op.
+        """
+        return 0
 
     def save_orders(self, orders, timestamp: Optional[str] = None) -> bool:
         """Persist broker orders. Default no-op; backends may override."""

@@ -6,6 +6,7 @@ import io
 import os
 import sys
 import unittest
+from datetime import datetime
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -486,6 +487,106 @@ class TestCloudStorage(unittest.TestCase):
 
         cloud_storage = CloudStorage()
         self.assertFalse(cloud_storage.save_orders([]))
+
+
+class TestRetentionHelpers(unittest.TestCase):
+    """Tests for the shared run-timestamp / retention helpers."""
+
+    def test_parse_bare_timestamp(self):
+        from storage.backend import parse_run_timestamp
+        self.assertEqual(parse_run_timestamp('20260917_210855'),
+                         datetime(2026, 9, 17, 21, 8, 55))
+
+    def test_parse_filename(self):
+        from storage.backend import parse_run_timestamp
+        self.assertEqual(
+            parse_run_timestamp('backtest_results_20260917_210855.csv'),
+            datetime(2026, 9, 17, 21, 8, 55))
+
+    def test_parse_returns_none_for_junk(self):
+        from storage.backend import parse_run_timestamp
+        for value in ('garbage.csv', '', None, 'no-timestamp-here'):
+            self.assertIsNone(parse_run_timestamp(value), value)
+
+    def test_cutoff_is_now_minus_window(self):
+        from storage.backend import retention_cutoff_timestamp
+        self.assertEqual(
+            retention_cutoff_timestamp(30, now=datetime(2026, 9, 18, 12, 0, 0)),
+            '20260819_120000')
+
+    def test_cutoff_string_compare_is_chronological(self):
+        """The fixed-width format makes lexicographic order == time order."""
+        from storage.backend import retention_cutoff_timestamp
+        cutoff = retention_cutoff_timestamp(
+            30, now=datetime(2026, 9, 18, 12, 0, 0))
+        self.assertFalse('20260917_210855' < cutoff)   # yesterday -> kept
+        self.assertTrue('20260701_090000' < cutoff)    # ~79 days -> pruned
+        # Strictly-before means the exact boundary is kept.
+        self.assertFalse(cutoff < cutoff)
+
+    def test_default_prune_is_noop(self):
+        """Backends that don't support retention inherit a safe no-op."""
+        from storage.backend import StorageBackend
+        self.assertEqual(StorageBackend.prune_backtest_results(Mock(), 30), 0)
+
+
+class TestGcsPrune(unittest.TestCase):
+    """Tests for GcsStorage.prune_backtest_results."""
+
+    def _storage(self, blob_names):
+        storage = GcsStorage.__new__(GcsStorage)
+        storage.bucket = Mock()
+        blobs = []
+        for name in blob_names:
+            blob = Mock()
+            blob.name = name
+            blobs.append(blob)
+        storage.bucket.list_blobs.return_value = blobs
+        return storage, blobs
+
+    @patch('storage.gcs.globalConfig')
+    def test_prune_deletes_only_expired(self, mock_config):
+        mock_config.get_environment_path.return_value = 'dev/Backtests'
+        old = 'dev/Backtests/backtest_results_20200101_000000.csv'
+        recent = 'dev/Backtests/backtest_results_20990101_000000.csv'
+        storage, blobs = self._storage([old, recent])
+
+        deleted = storage.prune_backtest_results(30)
+
+        self.assertEqual(deleted, 1)
+        blobs[0].delete.assert_called_once()
+        blobs[1].delete.assert_not_called()
+
+    @patch('storage.gcs.globalConfig')
+    def test_prune_skips_unparseable_names(self, mock_config):
+        mock_config.get_environment_path.return_value = 'dev/Backtests'
+        storage, blobs = self._storage(
+            ['dev/Backtests/weird.csv', 'dev/Backtests/notes.txt'])
+
+        self.assertEqual(storage.prune_backtest_results(30), 0)
+        blobs[0].delete.assert_not_called()
+
+    @patch('storage.gcs.globalConfig')
+    def test_prune_disabled_when_not_positive(self, mock_config):
+        mock_config.get_environment_path.return_value = 'dev/Backtests'
+        storage, _ = self._storage(['dev/Backtests/backtest_results_20200101_000000.csv'])
+        self.assertEqual(storage.prune_backtest_results(0), 0)
+        self.assertEqual(storage.prune_backtest_results(-1), 0)
+        storage.bucket.list_blobs.assert_not_called()
+
+    def test_prune_without_bucket_is_noop(self):
+        storage = GcsStorage.__new__(GcsStorage)
+        storage.bucket = None
+        self.assertEqual(storage.prune_backtest_results(30), 0)
+
+    @patch('storage.gcs.globalConfig')
+    def test_prune_survives_delete_errors(self, mock_config):
+        mock_config.get_environment_path.return_value = 'dev/Backtests'
+        storage, blobs = self._storage(
+            ['dev/Backtests/backtest_results_20200101_000000.csv'])
+        blobs[0].delete.side_effect = RuntimeError("boom")
+
+        self.assertEqual(storage.prune_backtest_results(30), 0)
 
 
 if __name__ == '__main__':

@@ -153,6 +153,17 @@ class Config:
             # Storage backend selection
             self.STORAGE_BACKEND = config_data.get('storage_backend', 'gcs')
 
+            # Data retention: old backtest results are deleted at the end of
+            # every backtest run so the results table cannot grow without
+            # bound. Set 'backtest_results_days' to 0 (or negative) to keep
+            # everything.
+            data_retention = config_data.get('data_retention', {})
+            self.BACKTEST_RESULTS_RETENTION_DAYS = data_retention.get(
+                'backtest_results_days', 30)
+            print(
+                f"Info: Backtest results retention = "
+                f"{self.BACKTEST_RESULTS_RETENTION_DAYS} day(s)")
+
             # Walk-forward validation parameters
             walk_forward = config_data.get('walk_forward', {})
             self.WF_ENABLED = walk_forward.get('enabled', False)

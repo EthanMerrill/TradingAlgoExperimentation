@@ -9,13 +9,13 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, List, Optional
 
 import numpy as np
 # pylint: disable=broad-exception-caught
 import pandas as pd
-from storage.backend import StorageBackend, backtest_result_to_dict, dict_to_backtest_result, normalize_position_for_save, order_to_dict, dict_to_order
+from storage.backend import StorageBackend, backtest_result_to_dict, dict_to_backtest_result, normalize_position_for_save, order_to_dict, dict_to_order, parse_run_timestamp
 from strategy import BacktestResult
 
 from config import globalConfig  # type: ignore
@@ -445,6 +445,37 @@ class GcsStorage(StorageBackend):
         except Exception as e:
             logger.error("Error listing backtest files: %s", e)
             return []
+
+    def prune_backtest_results(self, retention_days: int) -> int:
+        """Delete backtest result files older than the retention window.
+
+        The run timestamp is parsed out of each blob name; files whose
+        timestamp cannot be parsed are left alone rather than deleted.
+        """
+        if not self.bucket or not retention_days or retention_days <= 0:
+            return 0
+
+        cutoff = datetime.now() - timedelta(days=retention_days)
+        prefix = f"{globalConfig.get_environment_path('Backtests')}/"
+        deleted = 0
+        try:
+            for blob in self.bucket.list_blobs(prefix=prefix):
+                if not blob.name.endswith('.csv'):
+                    continue
+                run_at = parse_run_timestamp(blob.name)
+                if run_at is None or run_at >= cutoff:
+                    continue
+                blob.delete()
+                deleted += 1
+        except Exception as e:
+            logger.error("Error pruning backtest results: %s", e)
+            return deleted
+
+        if deleted:
+            logger.info(
+                "Pruned %d backtest files older than %d days",
+                deleted, retention_days)
+        return deleted
 
     def list_position_files(self) -> List[str]:
         """List all position entry files in cloud storage."""

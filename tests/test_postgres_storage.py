@@ -94,6 +94,54 @@ class TestPostgresStorage(unittest.TestCase):
         self.assertTrue(s.save_backtest_results(r, "20250610_170000"))
         self._conn.executemany.assert_called()
 
+    # --- prune_backtest_results ---
+
+    def test_prune_disconnected(self):
+        self.assertEqual(self._disconnected().prune_backtest_results(30), 0)
+
+    def test_prune_disabled_when_zero_or_negative(self):
+        s = self._connected()
+        self.assertEqual(s.prune_backtest_results(0), 0)
+        self.assertEqual(s.prune_backtest_results(-1), 0)
+        # A disabled retention must not even hit the database.
+        self._conn.fetch.assert_not_called()
+
+    def test_prune_deletes_and_returns_count(self):
+        s = self._connected()
+        self._conn.fetch = AsyncMock(return_value=[{"n": 7}])
+        self.assertEqual(s.prune_backtest_results(30), 7)
+        sql = self._conn.fetch.call_args[0][0]
+        self.assertIn("DELETE FROM backtest_results", sql)
+        self.assertIn("RETURNING 1", sql)
+
+    def test_prune_is_environment_scoped(self):
+        s = self._connected(env="qa")
+        self._conn.fetch = AsyncMock(return_value=[{"n": 1}])
+        s.prune_backtest_results(30)
+        args = self._conn.fetch.call_args[0][1:]
+        self.assertEqual(args[0], "qa")
+
+    def test_prune_uses_current_window_cutoff(self):
+        from datetime import datetime, timedelta
+        from storage.backend import retention_cutoff_timestamp
+        s = self._connected()
+        self._conn.fetch = AsyncMock(return_value=[{"n": 0}])
+        s.prune_backtest_results(30)
+        cutoff = self._conn.fetch.call_args[0][2]
+        expected = retention_cutoff_timestamp(30)
+        # Allow for a second boundary crossing between the two calls.
+        self.assertIn(
+            cutoff,
+            {expected,
+             retention_cutoff_timestamp(30, now=datetime.now() + timedelta(seconds=1)),
+             retention_cutoff_timestamp(30, now=datetime.now() - timedelta(seconds=1))},
+        )
+
+    def test_prune_swallows_db_errors(self):
+        s = self._connected()
+        self._conn.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+        self.assertEqual(s.prune_backtest_results(30), 0)
+
     def test_backtest_result_to_dict_sanitizes_nan(self):
         # Non-finite floats must be normalized to None at write time so they
         # never reach the DB (and later the browser) as NaN/Infinity.
