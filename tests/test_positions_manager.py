@@ -13,7 +13,51 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from positions import Position, PositionsManager  # noqa: E402
+from positions import _as_utc_timestamp, _ensure_utc_datetime_column  # noqa: E402
 from strategy import BacktestResult  # noqa: E402
+
+
+class TestUtcTimestampHelpers(unittest.TestCase):
+    """Regression: assigning a *naive* datetime into a tz-aware cloud column
+    (or an aware value into a naive one) raised
+    "Invalid value '...' for dtype 'datetime64[s, UTC]'"."""
+
+    def test_as_utc_timestamp_localizes_naive(self):
+        ts = _as_utc_timestamp(datetime(2026, 9, 18, 9, 46, 1))
+        self.assertIsNotNone(ts.tzinfo)
+        self.assertEqual(ts, pd.Timestamp('2026-09-18 09:46:01+00:00'))
+
+    def test_as_utc_timestamp_preserves_aware(self):
+        from datetime import timezone
+        aware = datetime(2026, 9, 18, 9, 46, 1, tzinfo=timezone.utc)
+        self.assertEqual(_as_utc_timestamp(aware),
+                         pd.Timestamp('2026-09-18 09:46:01+00:00'))
+
+    def test_as_utc_timestamp_defaults_to_now(self):
+        ts = _as_utc_timestamp()
+        self.assertIsNotNone(ts.tzinfo)
+
+    def test_ensure_utc_converts_naive_column(self):
+        df = pd.DataFrame({'exit_date': [datetime(2026, 9, 1)]})
+        _ensure_utc_datetime_column(df, 'exit_date')
+        # The whole point: an aware value can now be assigned without raising.
+        df.loc[df.index[0], 'exit_date'] = _as_utc_timestamp()
+        self.assertIsNotNone(df.loc[df.index[0], 'exit_date'].tzinfo)
+
+    def test_ensure_utc_creates_aware_column_when_missing(self):
+        df = pd.DataFrame({'symbol': ['AAPL']})
+        _ensure_utc_datetime_column(df, 'exit_date')
+        self.assertIn('exit_date', df.columns)
+        # Must accept an aware assignment (a naive pd.NaT column would not).
+        df.loc[df.index[0], 'exit_date'] = _as_utc_timestamp()
+        self.assertIsNotNone(df.loc[df.index[0], 'exit_date'].tzinfo)
+
+    def test_ensure_utc_keeps_already_aware_column(self):
+        df = pd.DataFrame({'exit_date': pd.to_datetime(
+            ['2026-09-01'], utc=True)})
+        _ensure_utc_datetime_column(df, 'exit_date')
+        df.loc[df.index[0], 'exit_date'] = _as_utc_timestamp()
+        self.assertIsNotNone(df.loc[df.index[0], 'exit_date'].tzinfo)
 
 
 class TestPosition(unittest.TestCase):
@@ -90,6 +134,67 @@ class TestPositionsManager(unittest.TestCase):
         self.manager.open_position(p)
 
         self.assertEqual(len(self.manager.positions), 1)
+
+    def test_close_position_handles_tz_aware_cloud_column(self):
+        """Regression: Postgres-loaded frames have tz-aware datetime columns.
+
+        ``close_position`` used to assign a *naive* ``datetime.now()`` into the
+        ``datetime64[*, UTC]`` ``exit_date`` column, raising
+        "Invalid value '...' for dtype 'datetime64[s, UTC]'" and aborting the
+        session with an error after the close order had already been placed.
+        """
+        p = Position(
+            symbol="AAPL", quantity=10.0, entry_price=100.0,
+            current_price=101.0, current_rsi=45.0,
+            entry_date=datetime(2025, 6, 14), alpha=0.1,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
+            stop_loss_price=95.0, take_profit_price=110.0, closed=False,
+        )
+        self.manager.positions = [p]
+        # Mirror what PostgresStorage.load_position_entries produces.
+        cloud_df = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'entry_price': [100.0],
+            'current_price': [101.0],
+            'stop_loss_price': [95.0],
+            'take_profit_price': [110.0],
+            'closed': [False],
+            'exit_date': pd.to_datetime([None], utc=True),
+        })
+        self.cloud.get_latest_positions_df.return_value = cloud_df
+
+        self.manager.close_position("AAPL")  # must not raise
+
+        self.assertTrue(self.manager.positions[0].closed)
+        self.assertIsNotNone(self.manager.positions[0].exit_date)
+        self.assertIsNotNone(self.manager.positions[0].exit_date.tzinfo)
+        # The write actually reached storage (persist path completed).
+        self.cloud.save_positions.assert_called()
+
+    def test_close_position_creates_exit_date_when_absent(self):
+        """A cloud frame without an exit_date column must still be closeable.
+
+        The column is created tz-aware, otherwise the aware assignment used
+        below would be rejected by a naive datetime64 column.
+        """
+        p = Position(
+            symbol="AAPL", quantity=10.0, entry_price=100.0,
+            current_price=101.0, current_rsi=45.0,
+            entry_date=datetime(2025, 6, 14), alpha=0.1,
+            rsi_period=14, rsi_lower=30, rsi_upper=70, closed=False,
+        )
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
+            'symbol': ['AAPL'],
+            'entry_price': [100.0],
+            'current_price': [101.0],
+            'closed': [False],
+        })
+
+        self.manager.close_position("AAPL")  # must not raise
+
+        self.assertTrue(self.manager.positions[0].closed)
+        self.cloud.save_positions.assert_called()
 
     def test_close_position_marks_closed_in_place(self):
         p = Position(
@@ -972,8 +1077,10 @@ class TestPositionsManager(unittest.TestCase):
         rfg = closed[0]
         self.assertEqual(rfg.exit_reason, 'oco_take_profit')
         self.assertEqual(rfg.exit_price, 60.82)
-        # exit_date should come from the fill, not datetime.now()
-        self.assertEqual(rfg.exit_date, fill_time)
+        # exit_date should come from the fill, not datetime.now().
+        # It is stored tz-aware (UTC) so it can be assigned into the cloud
+        # DataFrame's datetime64[*, UTC] column.
+        self.assertEqual(rfg.exit_date, pd.Timestamp(fill_time, tz='UTC'))
         # Long: (60.82 - 62.30) / 62.30 = -0.0238
         self.assertAlmostEqual(rfg.realized_return, -0.0238, places=3)
 
@@ -1028,7 +1135,7 @@ class TestPositionsManager(unittest.TestCase):
         self.assertEqual(shorty.side, 'short')
         self.assertEqual(shorty.exit_reason, 'oco_stop_loss')
         self.assertEqual(shorty.exit_price, 47.25)
-        self.assertEqual(shorty.exit_date, fill_time)
+        self.assertEqual(shorty.exit_date, pd.Timestamp(fill_time, tz='UTC'))
         # Short: (45 - 47.25) / 45 = -0.05
         self.assertAlmostEqual(shorty.realized_return, -0.05, places=4)
 

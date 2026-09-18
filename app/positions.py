@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import numpy as np
@@ -27,6 +27,47 @@ def _clean_identifier(value) -> Optional[str]:
     if not text or text.lower() in ("nan", "nat", "none", "<na>"):
         return None
     return text
+
+
+def _utc_now() -> datetime:
+    """Timezone-aware "now" for timestamps that reach cloud DataFrames.
+
+    Position snapshots loaded from Postgres carry timezone-aware
+    ``datetime64[*, UTC]`` columns, so assigning a *naive* datetime raises
+    ``Invalid value '...' for dtype 'datetime64[s, UTC]'``. Always use this
+    when writing a timestamp into such a column.
+    """
+    return datetime.now(timezone.utc)
+
+
+def _as_utc_timestamp(value: Optional[datetime] = None) -> pd.Timestamp:
+    """Coerce ``value`` (or now) into a tz-aware, second-precision Timestamp.
+
+    Naive values are localized to UTC so they can be assigned into the
+    tz-aware datetime columns of a cloud position DataFrame.
+    """
+    ts = pd.Timestamp(value) if value is not None else pd.Timestamp(_utc_now())
+    if ts.tzinfo is None:
+        ts = ts.tz_localize('UTC')
+    return ts.floor('s')
+
+
+def _ensure_utc_datetime_column(df: pd.DataFrame, column: str) -> None:
+    """Normalize ``df[column]`` to a tz-aware UTC datetime column (in place).
+
+    Postgres-loaded frames already carry ``datetime64[*, UTC]`` columns, while
+    frames built from GCS/CSV or in tests may be naive.  Assigning a tz-aware
+    value into a naive column (or a naive value into an aware column) raises
+    ``Invalid value '...' for dtype 'datetime64[s, UTC]'``, so the column is
+    coerced first and missing columns are created as ``NaT``.
+    """
+    if column in df.columns:
+        df[column] = pd.to_datetime(df[column], utc=True, errors='coerce')
+    else:
+        # Create the column explicitly tz-aware; `df[col] = pd.NaT` would
+        # produce a NAIVE datetime column that rejects aware assignments.
+        df[column] = pd.Series(pd.NaT, index=df.index,
+                               dtype='datetime64[ns, UTC]')
 
 
 @dataclass
@@ -672,13 +713,10 @@ class PositionsManager:
                     cloud_positions.loc[symbol_mask,
                                         'exit_price'] = exit_price_val
 
-                    if 'exit_date' not in cloud_positions.columns:
-                        cloud_positions['exit_date'] = pd.NaT
+                    _ensure_utc_datetime_column(cloud_positions, 'exit_date')
                     cloud_positions.loc[symbol_mask,
-                                        'exit_date'] = pd.Timestamp(
-                                            exit_date_val if exit_date_val is not None
-                                            else datetime.now()
-                    ).floor('s')
+                                        'exit_date'] = _as_utc_timestamp(
+                                            exit_date_val)
 
                     if 'entry_price' in cloud_positions.columns:
                         if 'realized_return' not in cloud_positions.columns:
@@ -907,7 +945,7 @@ class PositionsManager:
         # Mark the position closed in-place (keep in self.positions so
         # the end-of-session save picks up the realized return).
         target_position.closed = True
-        target_position.exit_date = datetime.now()
+        target_position.exit_date = _utc_now()
         target_position.exit_price = exit_price
         target_position.realized_return = realized_return
         target_position.exit_reason = target_position.exit_reason or "manual"
@@ -918,7 +956,8 @@ class PositionsManager:
             symbol_mask = cloud_positions['symbol'] == symbol
 
             cloud_positions.loc[symbol_mask, 'exit_price'] = exit_price
-            cloud_positions.loc[symbol_mask, 'exit_date'] = datetime.now()
+            _ensure_utc_datetime_column(cloud_positions, 'exit_date')
+            cloud_positions.loc[symbol_mask, 'exit_date'] = _as_utc_timestamp()
             cloud_positions.loc[symbol_mask, 'closed'] = True
             cloud_positions['closed'] = cloud_positions['closed'].astype(bool)
 

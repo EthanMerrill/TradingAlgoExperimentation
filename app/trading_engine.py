@@ -814,6 +814,102 @@ class TradingEngine:
         logger.error("Failed to exit opposite position for %s", symbol)
         return False
 
+    # -- position exit helpers ----------------------------------------------
+
+    @staticmethod
+    def _is_stop_breached(side: str, stop_loss_price: Any,
+                          current_price: Any) -> bool:
+        """True when a protective stop is already at/through the market price.
+
+        Stops are anchored to the *entry* price, so a position that has moved
+        further than ``STOP_LOSS_PCT`` against us produces a stop that has
+        already been triggered.  Alpaca will not hold such a level as an OCO
+        leg — it cancels the sibling take-profit leg and leaves a standalone
+        stop — so the position keeps running past its risk limit instead of
+        exiting.  Such positions must be closed at market instead.
+
+        Non-numeric/unknown prices return False (treated as "not breached") so
+        a missing quote never triggers an unintended liquidation.
+        """
+        if stop_loss_price is None or current_price is None:
+            return False
+        try:
+            stop = float(stop_loss_price)
+            current = float(current_price)
+        except (TypeError, ValueError):
+            return False
+
+        if side == "short":
+            # A short's stop sits ABOVE entry; it is breached once the market
+            # rises to (or past) it.
+            return current >= stop
+        # A long's stop sits BELOW entry; it is breached once the market
+        # falls to (or past) it.
+        return current <= stop
+
+    def _release_shares_for_exit(self, symbol: str, shares: float) -> bool:
+        """Free a position's shares so a market exit can be submitted.
+
+        A live stop/TP order reserves the shares, so a market close is rejected
+        with 40310000 until those orders are cancelled.  Unlike an OCO
+        *refresh* (which must keep protection when it cannot replace it), an
+        exit is terminal — cancelling the protective orders is the correct
+        move, and the position is about to be flat anyway.
+        """
+        if self.dry_run:
+            return True
+
+        try:
+            blocking = self._get_active_orders_for_symbol(symbol)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "Could not list orders blocking exit of %s: %s", symbol, e)
+            return True
+
+        if not blocking:
+            return True  # nothing reserved — the shares are already free
+
+        cancelled = self._cancel_open_orders_for_symbol(symbol)
+        if cancelled and not self._wait_for_orders_cancelled(cancelled):
+            logger.warning(
+                "Cancel of %s for %s did not settle in time — attempting the "
+                "exit anyway", cancelled, symbol)
+        self._wait_for_position_qty_available(symbol, abs(float(shares)))
+        return True
+
+    def _force_close_position(self, session_summary: Dict[str, Any],
+                              position: Position, reason: str) -> bool:
+        """Exit ``position`` at market, recording the exit ``reason``.
+
+        Shared by the max-hold-day and breached-stop paths.  Returns True when
+        the close order was accepted.
+        """
+        side = getattr(position, 'side', 'long')
+        shares = abs(position.quantity)
+
+        # Release any protective orders holding the shares, otherwise the
+        # market exit is rejected with 40310000 "insufficient qty".
+        self._release_shares_for_exit(position.symbol, shares)
+
+        if not self.place_market_sell_order(
+            position.symbol, shares, reason, side=side
+        ):
+            logger.error(
+                "Failed to force-close %s (%s)", position.symbol, reason)
+            return False
+
+        session_summary['positions_exited'] += 1
+        self._record_order(
+            session_summary, symbol=position.symbol,
+            action='CLOSE', shares=shares,
+            order_type='exit',
+            strategy=getattr(position, 'strategy_name', None),
+            reason=reason)
+        if not self.dry_run:
+            position.exit_reason = reason
+            self._positions_manager.close_position(position.symbol)
+        return True
+
     def calculate_todays_stop_loss_and_take_profit(self, position: Position) -> Tuple[float, float]:
         """
         Calculate today's stop loss and take profit / cover prices.
@@ -968,8 +1064,13 @@ class TradingEngine:
             logger.warning("Error fetching orders for %s: %s", symbol, e)
             return []
 
+        # Guard against a non-sequence response (e.g. a mock/None) so callers
+        # can iterate the result unconditionally.
+        if not isinstance(orders, (list, tuple)):
+            return []
+
         active: List[Any] = []
-        for order in (orders or []):
+        for order in orders:
             order_symbol = getattr(order, 'symbol', None) or (
                 order.get('symbol') if isinstance(order, dict) else None)
             if order_symbol != symbol:
@@ -1428,24 +1529,9 @@ class TradingEngine:
                 logger.info(
                     "⏰ Position %s held for %d days (max: %d) — force closing",
                     position.symbol, days_held, globalConfig.MAX_HOLD_DAYS)
-                if self.place_market_sell_order(
-                    position.symbol, abs(position.quantity),
-                    "max_hold_days", side=getattr(position, 'side', 'long')
-                ):
-                    session_summary['positions_exited'] += 1
+                if self._force_close_position(
+                        session_summary, position, "max_hold_days"):
                     positions_to_close.append(position.symbol)
-                    self._record_order(
-                        session_summary, symbol=position.symbol,
-                        action='CLOSE', shares=abs(position.quantity),
-                        order_type='exit',
-                        strategy=getattr(position, 'strategy_name', None),
-                        reason='max_hold_days')
-                    if not self.dry_run:
-                        position.exit_reason = "max_hold_days"
-                        self._positions_manager.close_position(position.symbol)
-                else:
-                    logger.error(
-                        "Failed to force-close expired position: %s", position.symbol)
 
         # Second pass: update remaining open positions with new OCO orders.
         active_positions = [
@@ -1455,12 +1541,36 @@ class TradingEngine:
             # Calculate today's stop loss and take profit based on current price
             position.stop_loss_price, position.take_profit_price = self.calculate_todays_stop_loss_and_take_profit(
                 position)
+
+            pos_side = getattr(position, 'side', 'long')
+
+            # Breached-stop guard: the stop is anchored to the entry price, so
+            # a position that has moved past STOP_LOSS_PCT already has a
+            # triggered stop. Submitting it provides no working protection —
+            # Alpaca cancels the OCO take-profit leg and keeps only an
+            # already-live stop — so the position would run past its risk
+            # limit. Exit at market instead.
+            try:
+                current_price = self._get_current_price(position.symbol)
+            except Exception:  # pylint: disable=broad-exception-caught
+                current_price = None
+
+            if self._is_stop_breached(pos_side, position.stop_loss_price,
+                                      current_price):
+                logger.warning(
+                    "⛔ %s %s stop already breached (stop $%.2f vs market "
+                    "$%.2f) — force closing instead of placing an invalid stop",
+                    pos_side, position.symbol, float(position.stop_loss_price),
+                    float(current_price))
+                self._force_close_position(
+                    session_summary, position, "stop_loss_breached")
+                continue
+
             if self.dry_run:
                 logger.info("🔍 DRY RUN: Would update stop loss for %s to $%.2f and take profit to $%.2f",
                             position.symbol, position.stop_loss_price, position.take_profit_price)
             else:
                 # Place OCO close order with updated stop loss and take profit
-                pos_side = getattr(position, 'side', 'long')
                 if self.place_oco_close_order(position.symbol, abs(position.quantity), position.stop_loss_price, position.take_profit_price, side=pos_side):
                     session_summary['orders_placed'] += 1
                     self._record_order(

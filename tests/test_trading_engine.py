@@ -917,5 +917,196 @@ class TestOcoQtyReleaseHandling(unittest.TestCase):
         mock_submit.assert_not_called()
 
 
+class TestBreachedStopHandling(unittest.TestCase):
+    """A stop anchored to entry price can already be breached when a position
+    has moved past STOP_LOSS_PCT. Such positions must be exited at market
+    instead of submitting a stop that is already live (which makes Alpaca drop
+    the OCO take-profit leg and lets the position run past its risk limit)."""
+
+    def setUp(self):
+        with patch('trading_engine.data_provider'):
+            self.engine = TradingEngine()
+        self.engine._positions_manager = Mock()
+        self.engine._positions_manager.close_position = Mock()
+        self.engine.dry_run = False
+
+    def _summary(self):
+        return {
+            'orders_placed': 0, 'positions_exited': 0, 'new_positions': 0,
+            'opportunities_found': 0, 'errors': [], 'orders': [],
+            'dry_run': False,
+        }
+
+    def _position(self, symbol="CRCO", side="long", entry=15.97, qty=52.0):
+        return Position(
+            symbol=symbol, quantity=qty if side == "long" else -qty,
+            entry_price=entry, current_price=entry, current_rsi=40.0,
+            entry_date=datetime.now() - timedelta(days=2), alpha=0.1,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
+            stop_loss_price=entry * 0.95, take_profit_price=entry * 1.15,
+            closed=False,
+        )
+
+    # -- _is_stop_breached -------------------------------------------------
+
+    def test_long_stop_breached_when_price_below_stop(self):
+        self.assertTrue(TradingEngine._is_stop_breached("long", 15.17, 13.70))
+
+    def test_long_stop_breached_at_exact_stop(self):
+        self.assertTrue(TradingEngine._is_stop_breached("long", 15.17, 15.17))
+
+    def test_long_stop_healthy_when_price_above_stop(self):
+        self.assertFalse(TradingEngine._is_stop_breached("long", 15.17, 16.00))
+
+    def test_short_stop_breached_when_price_above_stop(self):
+        self.assertTrue(TradingEngine._is_stop_breached("short", 28.04, 29.00))
+
+    def test_short_stop_healthy_when_price_below_stop(self):
+        self.assertFalse(TradingEngine._is_stop_breached("short", 28.04, 26.00))
+
+    def test_unknown_prices_are_not_breached(self):
+        """A missing quote must never trigger an unintended liquidation."""
+        self.assertFalse(TradingEngine._is_stop_breached("long", None, 10.0))
+        self.assertFalse(TradingEngine._is_stop_breached("long", 10.0, None))
+        self.assertFalse(TradingEngine._is_stop_breached("long", "x", 10.0))
+        self.assertFalse(TradingEngine._is_stop_breached("long", 10.0, object()))
+
+    # -- update_portfolio_orders integration -------------------------------
+
+    def test_breached_stop_force_closes_instead_of_placing_oco(self):
+        pos = self._position()
+        summary = self._summary()
+
+        with patch.object(self.engine,
+                          'calculate_todays_stop_loss_and_take_profit',
+                          return_value=(15.17, 18.36)), \
+                patch.object(self.engine, '_get_current_price',
+                             return_value=13.70), \
+                patch.object(self.engine, 'place_oco_close_order') as mock_oco, \
+                patch.object(self.engine, 'place_market_sell_order',
+                             return_value=True) as mock_market, \
+                patch.object(self.engine, '_release_shares_for_exit',
+                             return_value=True):
+            out = self.engine.update_portfolio_orders(summary, [pos])
+
+        mock_market.assert_called_once()
+        mock_oco.assert_not_called()
+        self.assertEqual(out['positions_exited'], 1)
+        self.assertEqual(out['orders_placed'], 0)
+        self.assertEqual(pos.exit_reason, "stop_loss_breached")
+        self.engine._positions_manager.close_position.assert_called_once_with(
+            "CRCO")
+
+    def test_breached_stop_records_exit_order_event(self):
+        pos = self._position()
+        summary = self._summary()
+
+        with patch.object(self.engine,
+                          'calculate_todays_stop_loss_and_take_profit',
+                          return_value=(15.17, 18.36)), \
+                patch.object(self.engine, '_get_current_price',
+                             return_value=13.70), \
+                patch.object(self.engine, 'place_market_sell_order',
+                             return_value=True), \
+                patch.object(self.engine, '_release_shares_for_exit',
+                             return_value=True):
+            self.engine.update_portfolio_orders(summary, [pos])
+
+        self.assertEqual(len(summary['orders']), 1)
+        self.assertEqual(summary['orders'][0]['reason'], 'stop_loss_breached')
+        self.assertEqual(summary['orders'][0]['action'], 'CLOSE')
+
+    def test_healthy_stop_still_places_oco(self):
+        pos = self._position()
+        summary = self._summary()
+
+        with patch.object(self.engine,
+                          'calculate_todays_stop_loss_and_take_profit',
+                          return_value=(15.17, 18.36)), \
+                patch.object(self.engine, '_get_current_price',
+                             return_value=16.50), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True) as mock_oco, \
+                patch.object(self.engine, 'place_market_sell_order') as mock_market:
+            out = self.engine.update_portfolio_orders(summary, [pos])
+
+        mock_oco.assert_called_once()
+        mock_market.assert_not_called()
+        self.assertEqual(out['orders_placed'], 1)
+        self.assertEqual(out['positions_exited'], 0)
+
+    def test_breached_stop_is_not_closed_when_quote_unavailable(self):
+        """Unknown price => no breach => normal OCO path (no liquidation)."""
+        pos = self._position()
+        summary = self._summary()
+
+        with patch.object(self.engine,
+                          'calculate_todays_stop_loss_and_take_profit',
+                          return_value=(15.17, 18.36)), \
+                patch.object(self.engine, '_get_current_price',
+                             return_value=None), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True) as mock_oco, \
+                patch.object(self.engine, 'place_market_sell_order') as mock_market:
+            self.engine.update_portfolio_orders(summary, [pos])
+
+        mock_oco.assert_called_once()
+        mock_market.assert_not_called()
+
+    def test_force_close_skipped_when_market_order_fails(self):
+        pos = self._position()
+        summary = self._summary()
+
+        with patch.object(self.engine, 'place_market_sell_order',
+                          return_value=False), \
+                patch.object(self.engine, '_release_shares_for_exit',
+                             return_value=True):
+            ok = self.engine._force_close_position(
+                summary, pos, "stop_loss_breached")
+
+        self.assertFalse(ok)
+        self.assertEqual(summary['positions_exited'], 0)
+        self.engine._positions_manager.close_position.assert_not_called()
+
+    # -- _release_shares_for_exit ------------------------------------------
+
+    def test_release_cancels_blocking_orders(self):
+        client = Mock()
+        self.engine.trading_client = client
+        blocking = Mock()
+        blocking.symbol = "CRCO"
+        blocking.id = "ord-1"
+        blocking.status = "new"
+        client.get_orders.return_value = [blocking]
+        client.get_open_position.return_value = Mock(qty_available=52.0)
+
+        with patch.object(self.engine, '_wait_for_orders_cancelled',
+                          return_value=True), \
+                patch.object(self.engine, '_wait_for_position_qty_available',
+                             return_value=True):
+            self.engine._release_shares_for_exit("CRCO", 52.0)
+
+        client.cancel_order_by_id.assert_called_once_with("ord-1")
+
+    def test_release_is_noop_when_nothing_blocks(self):
+        client = Mock()
+        self.engine.trading_client = client
+        client.get_orders.return_value = []
+
+        self.engine._release_shares_for_exit("CRCO", 52.0)
+
+        client.cancel_order_by_id.assert_not_called()
+
+    def test_release_does_not_cancel_in_dry_run(self):
+        client = Mock()
+        self.engine.trading_client = client
+        self.engine.dry_run = True
+
+        self.engine._release_shares_for_exit("CRCO", 52.0)
+
+        client.get_orders.assert_not_called()
+        client.cancel_order_by_id.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
