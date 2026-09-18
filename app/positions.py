@@ -12,6 +12,23 @@ from utils import parse_dt
 logger = logging.getLogger(__name__)
 
 
+def _clean_identifier(value) -> Optional[str]:
+    """Normalize an identifier (order_id/client_order_id) or return None.
+
+    Guards against the literal string ``"nan"``/``"<NA>"``/``"NaT"`` that a
+    past serialization bug could persist into TEXT columns. ``pd.notna`` alone
+    is insufficient because ``pd.notna("nan")`` is True for a non-empty string.
+    """
+    if value is None:
+        return None
+    if not pd.notna(value):
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in ("nan", "nat", "none", "<na>"):
+        return None
+    return text
+
+
 @dataclass
 class Position:
     """Current position information."""
@@ -181,10 +198,10 @@ class PositionsManager:
                 row['exit_reason']) and row['exit_reason'] is not None else None,
             closed=closed,
             exit_date=exit_date,
-            order_id=str(row['order_id']) if 'order_id' in row and pd.notna(
-                row['order_id']) and row['order_id'] is not None else None,
-            client_order_id=str(row['client_order_id']) if 'client_order_id' in row and pd.notna(
-                row['client_order_id']) and row['client_order_id'] is not None else None,
+            order_id=_clean_identifier(
+                row['order_id']) if 'order_id' in row else None,
+            client_order_id=_clean_identifier(
+                row['client_order_id']) if 'client_order_id' in row else None,
             strategy_name=str(row['strategy_name']) if 'strategy_name' in row and pd.notna(
                 row['strategy_name']) else "rsi_mean_reversion",
             intraday=bool(row['intraday']) if 'intraday' in row and pd.notna(

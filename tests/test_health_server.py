@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the Flask health server and dashboard endpoints."""
+import json
 import os
 import sys
 import unittest
@@ -352,6 +353,46 @@ class TestDfRowToDict(unittest.TestCase):
         })
         result = _df_row_to_dict(row)
         self.assertIsNone(result['exit_reason'])
+
+    def test_nat_exit_date_becomes_none(self):
+        """pd.NaT must serialize as None — never the literal string 'NaT'.
+
+        pd.NaT is an instance of datetime, so an NA check that only looks for
+        pd.NA/NaN lets it reach isoformat() and emit the string 'NaT', which
+        is invalid for any JSON consumer (the frontend masked this bug).
+        """
+        row = pd.Series({
+            'symbol': 'ABC', 'shares': 1.0, 'entry_price': 10.0,
+            'current_price': 12.0, 'current_rsi': 50.0,
+            'entry_date': pd.Timestamp('2025-01-01'),
+            'alpha': 0.0, 'rsi_period': 14, 'rsi_lower': 30, 'rsi_upper': 70,
+            'stop_loss_price': np.nan, 'take_profit_price': np.nan,
+            'closed': False, 'exit_date': pd.NaT,
+            'exit_price': np.nan, 'realized_return': np.nan,
+        })
+        result = _df_row_to_dict(row)
+        self.assertIsNone(result['exit_date'])
+        self.assertNotEqual(result['exit_date'], 'NaT')
+        # entry_date is a real timestamp and must still serialize
+        self.assertIsInstance(result['entry_date'], str)
+
+    def test_non_finite_floats_become_none(self):
+        """±Infinity must be normalized to None (Flask can't serialize it)."""
+        row = pd.Series({
+            'symbol': 'ABC', 'shares': 1.0, 'entry_price': 10.0,
+            'current_price': 12.0, 'current_rsi': 50.0,
+            'entry_date': pd.Timestamp('2025-01-01'),
+            'alpha': float('inf'), 'rsi_period': 14,
+            'rsi_lower': 30, 'rsi_upper': 70,
+            'stop_loss_price': float('-inf'), 'take_profit_price': np.nan,
+            'closed': False, 'exit_date': pd.NaT,
+            'exit_price': np.nan, 'realized_return': np.nan,
+        })
+        result = _df_row_to_dict(row)
+        self.assertIsNone(result['alpha'])
+        self.assertIsNone(result['stop_loss_price'])
+        # The whole row must be JSON-serializable (no NaN/Infinity literals)
+        json.dumps(result)
 
     def test_closed_string_to_bool_true(self):
         """CSV string 'True' should become Python bool True."""

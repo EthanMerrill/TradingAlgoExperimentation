@@ -158,6 +158,34 @@ class TestPostgresStorage(unittest.TestCase):
         self.assertTrue(s.save_positions(pos, timestamp="20250610_170000"))
         self._conn.executemany.assert_called()
 
+    def test_position_schema_includes_exit_reason(self):
+        """exit_reason must be a first-class, persisted position column."""
+        from storage.postgres import _POSITION_COLS, _DDL_POSITION_SNAPSHOTS
+        self.assertIn("exit_reason", _POSITION_COLS)
+        self.assertIn("exit_reason", _DDL_POSITION_SNAPSHOTS)
+        # Also needs a migration so pre-existing tables gain the column.
+        self.assertIn(
+            "ADD COLUMN IF NOT EXISTS exit_reason", _DDL_POSITION_SNAPSHOTS)
+
+    def test_save_positions_persists_exit_reason(self):
+        """The exit_reason value must reach the INSERT tuple (not dropped)."""
+        from positions import Position
+        from storage.postgres import _POSITION_COLS
+        s = self._connected()
+        pos = [Position(
+            symbol="AAPL", quantity=10.0, entry_price=150.0,
+            current_price=151.0, current_rsi=45.0,
+            entry_date=datetime.now(timezone.utc), alpha=0.05,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
+            closed=True, exit_price=160.0, realized_return=0.0667,
+            exit_reason="oco_take_profit")]
+        self.assertTrue(s.save_positions(pos, timestamp="20250610_170000"))
+
+        rows = self._conn.executemany.call_args[0][1]
+        # Tuple shape is (snapshot_timestamp, environment, *_POSITION_COLS)
+        idx = _POSITION_COLS.index("exit_reason") + 2
+        self.assertEqual(rows[0][idx], "oco_take_profit")
+
     # --- save_orders ---
 
     def test_save_orders_disconnected(self):

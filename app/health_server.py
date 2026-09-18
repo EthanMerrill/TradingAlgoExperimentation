@@ -81,8 +81,13 @@ def _df_row_to_dict(row) -> dict:
     """
     d = {}
     for key, value in row.items() if hasattr(row, 'items') else row._asdict().items():
-        # Normalize NaN / NA → None
-        if value is pd.NA or (isinstance(value, float) and np.isnan(value)):
+        # Normalize NaN / NA / NaT / ±Infinity → None.
+        # NOTE: pd.NaT must be checked explicitly — it is *not* pd.NA, is not a
+        # float, and (critically) IS an instance of datetime, so without this
+        # guard it would reach the isoformat() step below and serialize as the
+        # literal string "NaT" instead of null.
+        if value is pd.NA or value is pd.NaT or (
+                isinstance(value, float) and not np.isfinite(value)):
             value = None
         elif hasattr(value, 'item'):  # numpy scalar → native Python
             value = value.item()
@@ -111,7 +116,7 @@ def _df_row_to_dict(row) -> dict:
     # Convert datetime columns to ISO strings
     for dt_col in ('entry_date', 'exit_date'):
         val = d.get(dt_col)
-        if isinstance(val, (pd.Timestamp, datetime)):
+        if isinstance(val, (pd.Timestamp, datetime)) and not pd.isna(val):
             d[dt_col] = val.isoformat()
 
     # Ensure exit_reason is present (GCS doesn't store it)
@@ -191,9 +196,50 @@ def _fetch_positions_from_storage(storage_backend) -> list[dict]:
     return rows
 
 
+def _json_safe(value):
+    """Recursively convert a value into a JSON-serializable form.
+
+    The trading summary now carries a ``datetime`` top-level timestamp plus a
+    ``orders`` list of plain dicts (shares/price/timestamp).  This sanitizer
+    normalises datetime/timestamp, NaN/NA/NaT, and numpy scalars so Flask can
+    serialise the whole summary without a custom encoder at every call site.
+    """
+    if value is None or value is pd.NA or value is pd.NaT:
+        return None
+    if isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, (datetime, pd.Timestamp)):
+        return value.isoformat()
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return None if np.isnan(value) else float(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return str(value)
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
+
+def _enabled_strategies() -> list[str]:
+    """Return the configured strategy keys (best-effort, never raises).
+
+    Used by /health so the dashboard header can show the real number of enabled
+    strategies rather than a backtest-row count.
+    """
+    try:
+        # pylint: disable=import-outside-toplevel
+        from config import globalConfig  # type: ignore
+        return [str(s) for s in (getattr(globalConfig, 'STRATEGIES_ENABLED', None) or [])]
+    except Exception:  # pylint: disable=broad-exception-caught
+        return []
+
 
 def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = None, data_provider=None):
     """Create and configure the Flask application.
@@ -225,6 +271,8 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
             # First cycle hasn't started yet
             overall_status = 'running'
 
+        strategies_enabled = _enabled_strategies()
+
         if result is None:
             return jsonify({
                 'status': overall_status,
@@ -234,15 +282,17 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
                 'last_run_duration_seconds': 0,
                 'environment': env,
                 'paper_trade': paper,
+                'strategies_enabled': strategies_enabled,
             })
         return jsonify({
             'status': overall_status,
             'last_run_status': result.get('status', 'unknown'),
-            'last_run_summary': result.get('trading_summary', {}),
+            'last_run_summary': _json_safe(result.get('trading_summary', {})),
             'last_run_backtest_count': result.get('backtest_count', 0),
             'last_run_duration_seconds': result.get('duration', 0),
             'environment': env,
             'paper_trade': paper,
+            'strategies_enabled': strategies_enabled,
         })
 
     # ---------- /api/positions (auth required) ----------
@@ -511,6 +561,54 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
         return jsonify({
             'status': 'triggered',
             'message': 'Trading cycle triggered successfully',
+            'flags': flags,
+        }), 200
+
+    # ---------- /api/run-session (auth required) ----------
+    #
+    # Runs a trading session using the LATEST cached backtest results without
+    # re-running the (slow) optimization/backtest pass.  Mirrors /api/run-cycle
+    # but forces run_session_only=True so the UI button can trade on existing
+    # analysis on demand.
+    #
+    # Query params:
+    #   dry_run  (bool) — analyze without placing orders
+
+    @app.route('/api/run-session', methods=['POST'])
+    @_auth_required
+    def api_run_session():
+        if shared_state is None:
+            return jsonify({
+                'error': 'Server not configured for cycle execution'
+            }), 503
+
+        if shared_state.get('cycle_running', False):
+            return jsonify({
+                'status': 'already_running',
+                'message': 'A trading cycle is already in progress',
+            }), 409
+
+        trigger = shared_state.get('trigger_event')
+        if trigger is None:
+            return jsonify({
+                'error': 'Trigger mechanism not available'
+            }), 503
+
+        # Session-only run: reuse the latest cached backtest, skip optimization.
+        flags = {'run_session_only': True}
+
+        dry_run = request.args.get('dry_run', '').lower()
+        if dry_run in ('true', '1', 'yes'):
+            flags['dry_run'] = True
+
+        shared_state['cycle_flags'] = flags
+
+        trigger.set()
+        logger.info(
+            "Trading session triggered via API (reuse-latest, flags=%s)", flags)
+        return jsonify({
+            'status': 'triggered',
+            'message': 'Trading session triggered using latest backtest data',
             'flags': flags,
         }), 200
 

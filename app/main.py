@@ -49,7 +49,7 @@ class TradingAlgorithm:
         # bar-loop worker (Phase D) to evaluate intraday strategies during RTH.
         self._last_backtest_results: List = []
 
-    async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False, test_mode: bool = False) -> dict:
+    async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False, test_mode: bool = False, run_session_only: bool = False) -> dict:
         """
         Run the complete trading algorithm cycle.
 
@@ -57,6 +57,9 @@ class TradingAlgorithm:
             force_backtest: Force running backtest even if recent results exist
             dry_run: Run in dry run mode without placing actual orders
             test_mode: Run backtest on a limited stock universe for fast end-to-end validation
+            run_session_only: Reuse the latest cached backtest data (ignoring the
+                24h freshness window) and run ONLY the trading session — skip the
+                slow optimization/backtest pass entirely.
 
         Returns:
             Dictionary with session results
@@ -76,6 +79,8 @@ class TradingAlgorithm:
         logger.info("🔄 Force Backtest: %s", force_backtest)
         logger.info("🔍 Dry Run Mode: %s", dry_run)
         logger.info("🧪 Test Mode: %s", test_mode)
+        logger.info("⚡ Session Only (reuse latest backtest): %s",
+                    run_session_only)
         logger.info("🪟 Walk-Forward: %s", globalConfig.WF_ENABLED)
         logger.info("🔬 RSI Fine Tuning: %s",
                     globalConfig.RSI_FINE_TUNING_ENABLED)
@@ -128,7 +133,20 @@ class TradingAlgorithm:
             # Initialize backtest_results to avoid UnboundLocalError
             backtest_results = []
 
-            if buying_power > 0 or force_backtest:
+            if run_session_only:
+                # Session-only run: reuse the latest cached backtest data
+                # WITHOUT re-running the (slow) optimization pass. The normal
+                # 24h freshness window is intentionally ignored so the user can
+                # trade on the most recent analysis on demand.
+                backtest_results = self._load_latest_backtest_results()
+                if backtest_results:
+                    logger.info(
+                        "⚡ Session-only run: loaded %d cached strategies",
+                        len(backtest_results))
+                else:
+                    logger.warning(
+                        "No cached backtest data found — session will manage existing positions only")
+            elif buying_power > 0 or force_backtest:
                 # Step 2: Get or run backtests
                 backtest_results = await self._get_backtest_results(force_backtest, test_mode)
             else:
@@ -276,8 +294,15 @@ class TradingAlgorithm:
 
         return filtered_results
 
-    def _load_recent_backtest_results(self) -> List:
-        """Load recent backtest results from cloud storage."""
+    def _load_recent_backtest_results(self, max_age_seconds: Optional[float] = 24 * 3600) -> List:
+        """Load the most recent backtest results from storage.
+
+        Args:
+            max_age_seconds: Maximum allowed age of the cached file. Pass
+                ``None`` to skip the freshness check entirely (used by the
+                "run session" action to trade on the latest analysis without
+                waiting for a fresh optimization pass).
+        """
         try:
             backtest_files = storage.list_backtest_files()
 
@@ -288,7 +313,7 @@ class TradingAlgorithm:
             backtest_files.sort(reverse=True)
             most_recent = backtest_files[0]
             logger.info("Most recent backtest file: %s", most_recent)
-            # Check if file is recent enough (within last 24 hours)
+            # Check if file is recent enough (within max_age_seconds)
             try:
                 # For filenames like backtest_results_20250610_170343.csv
                 date_part = most_recent.split(
@@ -300,20 +325,26 @@ class TradingAlgorithm:
                 file_datetime = datetime.strptime(
                     f"{date_part}_{time_part}", '%Y%m%d_%H%M%S')
 
-                if (datetime.now() - file_datetime).total_seconds() < 24 * 3600:
-                    cached = storage.load_backtest_results(most_recent)
-                    # Cache-key guard: never reuse results produced by a
-                    # different strategy set than the one configured now
-                    # (matters once multiple strategies are enabled).
-                    if cached and not all(
-                        getattr(r, "strategy_name", "rsi_mean_reversion")
-                        in globalConfig.STRATEGIES_ENABLED
-                        for r in cached
-                    ):
-                        logger.info(
-                            "Ignoring cached results: strategy set differs from configured strategies")
-                        return []
-                    return cached
+                if (max_age_seconds is not None and
+                        (datetime.now() - file_datetime).total_seconds() >= max_age_seconds):
+                    logger.info(
+                        "Most recent backtest file is older than %.1f hours — ignoring",
+                        max_age_seconds / 3600)
+                    return []
+
+                cached = storage.load_backtest_results(most_recent)
+                # Cache-key guard: never reuse results produced by a
+                # different strategy set than the one configured now
+                # (matters once multiple strategies are enabled).
+                if cached and not all(
+                    getattr(r, "strategy_name", "rsi_mean_reversion")
+                    in globalConfig.STRATEGIES_ENABLED
+                    for r in cached
+                ):
+                    logger.info(
+                        "Ignoring cached results: strategy set differs from configured strategies")
+                    return []
+                return cached
             except (IndexError, ValueError):
                 pass
 
@@ -322,6 +353,14 @@ class TradingAlgorithm:
         except (ValueError, IndexError, TypeError) as e:
             logger.error("Error loading recent backtest results: %s", e)
             return []
+
+    def _load_latest_backtest_results(self) -> List:
+        """Load the most recent backtest results regardless of age.
+
+        Used by the "run session" action to trade on the latest available
+        analysis without re-running the (slow) optimization/backtest pass.
+        """
+        return self._load_recent_backtest_results(max_age_seconds=None)
 
     async def _save_session_results(self, dryRun: bool, account_info: Dict[str, Any], backtest_results: List, trading_summary: dict):
         """Save session results and metadata."""
@@ -567,6 +606,8 @@ async def main():
                             force_backtest=flags.get('force_backtest', False),
                             dry_run=flags.get('dry_run', False),
                             test_mode=flags.get('test_mode', False),
+                            run_session_only=flags.get(
+                                'run_session_only', False),
                         )
                         shared_state['last_result'] = session_result
                         logger.info("✅ Triggered cycle complete: %s",

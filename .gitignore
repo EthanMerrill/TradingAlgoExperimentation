@@ -16,3 +16,8 @@ app/tempCodeRunnerFile.py
 logs/*
 */logs
 .pytest_cache/
+
+# Editor / local artifacts
+.obsidian/
+*.canvas
+.DS_Store

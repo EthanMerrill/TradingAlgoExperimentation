@@ -29,6 +29,55 @@ from config import globalConfig  # type: ignore
 
 logger = logging.getLogger(__name__)
 
+# Alpaca order statuses that mean the order is no longer reserving shares.
+# NOTE: 'pending_cancel' is intentionally EXCLUDED — the qty stays held until
+# the cancel actually settles, which is the whole race we are guarding against.
+_QTY_RELEASING_STATUSES = frozenset({
+    'filled', 'canceled', 'cancelled', 'expired', 'replaced',
+    'done_for_day', 'stopped', 'rejected',
+})
+
+# Alpaca statuses that mean the order no longer exists / holds no qty.
+_TERMINAL_ORDER_STATUSES = frozenset({
+    'filled', 'canceled', 'cancelled', 'expired', 'rejected', 'suspended',
+    'done_for_day', 'stopped', 'replaced',
+})
+
+# Statuses where an existing protective order CANNOT be promptly cancelled and
+# replaced:
+#   * 'held'           — order is queued for the next market open; the cancel
+#                        does not settle until the session opens, so the shares
+#                        stay reserved (`held_for_orders`) and a replacement is
+#                        rejected with 40310000.
+#   * 'pending_cancel' — a cancel is already in flight; cancelling again fails
+#                        with 42210000 and the qty is still reserved.
+#   * 'pending_replace'— a replace is already in flight.
+# Trying to cancel-and-replace in these states is what stripped protective
+# orders off positions, so we skip the refresh entirely and keep what we have.
+_UNREPLACEABLE_ORDER_STATUSES = frozenset({
+    'held', 'pending_cancel', 'pending_replace',
+})
+
+
+def _status_str(value: Any) -> str:
+    """Normalize an Alpaca status enum (or raw value) to a lowercase string."""
+    if value is None:
+        return ''
+    return str(getattr(value, 'value', value)).lower()
+
+
+def _is_insufficient_qty_error(exc: Exception) -> bool:
+    """True when Alpaca rejects an order because held qty is not yet released.
+
+    Matches the ``40310000`` API error code ("insufficient qty available for
+    order").  This fires when a position's shares are still reserved by a
+    just-cancelled protective order that has not settled yet.
+    """
+    if str(getattr(exc, 'code', '')) == '40310000':
+        return True
+    text = str(exc).lower()
+    return 'insufficient qty' in text or '40310000' in text
+
 
 def _strategy_is_bar_loop(strategy_name: str) -> bool:
     """True if a registered strategy runs on the bar loop (intraday)."""
@@ -898,6 +947,190 @@ class TradingEngine:
                                 else position.take_profit_price)
             return default_stop, default_take
 
+    # -- protective-order helpers (cancel / await-qty-release) ---------------
+
+    def _get_active_orders_for_symbol(self, symbol: str) -> List[Any]:
+        """Return every non-terminal order for ``symbol``.
+
+        Deliberately queries ``QueryOrderStatus.ALL`` rather than ``.OPEN``:
+        Alpaca's OPEN filter OMITS ``held`` orders — exactly the orders that
+        reserve a position's shares while the market is closed.  Missing them
+        meant the cancel/replace logic chased stale orders, never released the
+        qty, and left positions without protection.
+        """
+        if self.trading_client is None:
+            return []
+
+        try:
+            orders = self.trading_client.get_orders(filter=GetOrdersRequest(
+                status=QueryOrderStatus.ALL, limit=500))
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Error fetching orders for %s: %s", symbol, e)
+            return []
+
+        active: List[Any] = []
+        for order in (orders or []):
+            order_symbol = getattr(order, 'symbol', None) or (
+                order.get('symbol') if isinstance(order, dict) else None)
+            if order_symbol != symbol:
+                continue
+            if _status_str(getattr(order, 'status', None)) in _TERMINAL_ORDER_STATUSES:
+                continue
+            active.append(order)
+        return active
+
+    def _cancel_open_orders_for_symbol(self, symbol: str) -> List[str]:
+        """Cancel every active order for ``symbol``; return the cancelled order ids.
+
+        Returns the ids so the caller can wait for them to actually settle and
+        release the shares they were holding.
+        """
+        if self.trading_client is None:
+            return []
+
+        cancelled: List[str] = []
+        for order in self._get_active_orders_for_symbol(symbol):
+            order_id = getattr(order, 'id', None) or (
+                order.get('id') if isinstance(order, dict) else None)
+            if not order_id:
+                continue
+            try:
+                logger.info(
+                    "Cancelling existing order %s for %s", order_id, symbol)
+                self.trading_client.cancel_order_by_id(order_id)
+                cancelled.append(str(order_id))
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                # A cancel race ("order already canceled"/"pending cancel") is
+                # expected when a previous cycle already requested the cancel.
+                logger.warning(
+                    "Cancel failed for order %s (%s): %s", order_id, symbol, e)
+
+        return cancelled
+
+    def _wait_for_orders_cancelled(self, order_ids: List[str],
+                                   timeout: float = 20.0,
+                                   poll_interval: float = 0.5) -> bool:
+        """Block until every order id reports a qty-releasing status (bounded).
+
+        Returns True if all orders settled before ``timeout``.  Orders that
+        cannot be polled are dropped from the wait so a single API hiccup
+        cannot wedge the whole trading cycle — the caller's submit-retry loop
+        remains the final safety net.
+        """
+        if not order_ids or self.trading_client is None:
+            return True
+
+        deadline = time.monotonic() + timeout
+        pending = {str(oid) for oid in order_ids}
+
+        while pending and time.monotonic() < deadline:
+            for order_id in list(pending):
+                try:
+                    order = self.trading_client.get_order_by_id(order_id)
+                    status = _status_str(getattr(order, 'status', None))
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.warning(
+                        "Could not poll order %s for cancel status: %s",
+                        order_id, e)
+                    pending.discard(order_id)
+                    continue
+
+                if status in _QTY_RELEASING_STATUSES:
+                    pending.discard(order_id)
+
+            if pending:
+                time.sleep(poll_interval)
+
+        if pending:
+            logger.warning(
+                "Timed out (%.0fs) waiting for orders to release qty: %s",
+                timeout, sorted(pending))
+            return False
+        return True
+
+    def _get_position_qty_available(self, symbol: str) -> Optional[float]:
+        """Return broker-reported tradeable qty for ``symbol``.
+
+        ``None`` means "unknown" (no position, transient error, or the SDK
+        does not expose the field) — callers keep polling / fall through.
+        """
+        if self.trading_client is None:
+            return None
+        try:
+            position = self.trading_client.get_open_position(symbol)
+        except Exception:  # pylint: disable=broad-exception-caught
+            # Most commonly: no open position for this symbol.
+            return None
+
+        raw = getattr(position, 'qty_available', None)
+        if raw is None:
+            return None
+        try:
+            return abs(float(raw))
+        except (TypeError, ValueError):
+            return None
+
+    def _wait_for_position_qty_available(self, symbol: str, shares: float,
+                                         timeout: float = 20.0,
+                                         poll_interval: float = 0.5) -> bool:
+        """Block until ``symbol`` reports at least ``shares`` tradeable shares.
+
+        This is the authoritative signal that a just-cancelled protective order
+        has released the position's shares and a replacement can be submitted.
+        """
+        required = abs(float(shares))
+        deadline = time.monotonic() + timeout
+        last_available: Optional[float] = None
+
+        while time.monotonic() < deadline:
+            available = self._get_position_qty_available(symbol)
+            if available is not None:
+                last_available = available
+                if available >= required - 1e-6:
+                    return True
+            time.sleep(poll_interval)
+
+        logger.warning(
+            "Timed out (%.0fs) waiting for tradeable qty on %s: "
+            "need %.0f, available %s",
+            timeout, symbol, required,
+            'unknown' if last_available is None else f'{last_available:.0f}')
+        return False
+
+    def _submit_oco_with_retry(self, oco_order: Any, symbol: str, shares: float,
+                               attempts: int = 4, base_delay: float = 2.0) -> Any:
+        """Submit an OCO order, retrying while Alpaca still holds the shares.
+
+        A cancel can settle asynchronously, so even after our explicit wait the
+        broker may momentarily still report ``insufficient qty``.  Each retry
+        re-waits for the release (with a growing budget) before resubmitting.
+
+        Raises the final error if every attempt fails.
+        """
+        if self.trading_client is None:
+            raise RuntimeError(
+                "Trading client not available - cannot submit order")
+
+        last_error: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return self.trading_client.submit_order(oco_order)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                if not _is_insufficient_qty_error(e):
+                    raise
+                last_error = e
+                logger.warning(
+                    "OCO submit for %s still blocked by held qty "
+                    "(attempt %d/%d): %s", symbol, attempt, attempts, e)
+                if attempt == attempts:
+                    break
+                self._wait_for_position_qty_available(
+                    symbol, shares, timeout=base_delay * attempt + 5.0)
+                time.sleep(base_delay)
+
+        assert last_error is not None
+        raise last_error
+
     def place_oco_close_order(self, symbol: str, shares: float, stop_loss_price: float, take_profit_price: float, side: str = "long") -> bool:
         """
         Place an OCO (One Cancels Other) close order for an existing position.
@@ -950,37 +1183,59 @@ class TradingEngine:
                 logger.error("Could not get current price for %s", symbol)
                 return False
 
-            # For OCO orders, we need to cancel any existing orders for this symbol first
+            # Refresh the protective OCO.  Ordering matters: a cancel is only
+            # safe if the replacement can actually be submitted, otherwise the
+            # position ends up with NO protection (the bug this guards against).
             try:
-                # Check if trading client is available
                 if self.trading_client is None:
                     logger.error(
                         "Trading client not available - cannot get orders")
                     return False
 
-                order_filter = GetOrdersRequest(status=QueryOrderStatus.OPEN)
-                open_orders = self.trading_client.get_orders(
-                    filter=order_filter)
+                required_shares = abs(float(shares))
+                available = self._get_position_qty_available(symbol)
+                shares_are_free = (
+                    available is not None and available >= required_shares - 1e-6)
 
-                # Find and cancel any orders for this symbol
-                if open_orders:
-                    for order in open_orders:
-                        # Handle the case where order might be a dict or object
-                        order_symbol = getattr(order, 'symbol', None) or (
-                            order.get('symbol') if isinstance(order, dict) else None)
-                        order_id = getattr(order, 'id', None) or (
-                            order.get('id') if isinstance(order, dict) else None)
+                if not shares_are_free:
+                    # The shares are reserved by existing order(s). Refuse to
+                    # cancel orders that cannot be replaced right now —
+                    # cancelling a `held` (market-closed) or already
+                    # `pending_cancel` order does not release the qty, so the
+                    # replacement would be rejected and the position would be
+                    # left unprotected.
+                    blockers = [
+                        str(getattr(o, 'id', None) or '?')
+                        for o in self._get_active_orders_for_symbol(symbol)
+                        if _status_str(getattr(o, 'status', None))
+                        in _UNREPLACEABLE_ORDER_STATUSES
+                    ]
+                    if blockers:
+                        logger.warning(
+                            "Skipping OCO refresh for %s: existing protective "
+                            "order(s) %s cannot be cancelled/replaced now "
+                            "(market closed or cancel already pending; "
+                            "available qty=%s of %.0f). Keeping current "
+                            "protection.", symbol, blockers, available,
+                            required_shares)
+                        return False
 
-                        if order_symbol == symbol and order_id:
-                            logger.info(
-                                "Cancelling existing order %s for %s", order_id, symbol)
-                            self.trading_client.cancel_order_by_id(order_id)
-
-                # Small delay to ensure orders are cancelled
-                time.sleep(2)
+                    cancelled_ids = self._cancel_open_orders_for_symbol(symbol)
+                    if cancelled_ids and not self._wait_for_orders_cancelled(
+                            cancelled_ids):
+                        logger.warning(
+                            "Aborting OCO refresh for %s: cancelled order(s) "
+                            "%s never settled — not resubmitting, so any "
+                            "remaining protection stays in place.",
+                            symbol, cancelled_ids)
+                        return False
             except Exception as e:
                 logger.warning(
                     "Error cancelling existing orders for %s: %s", symbol, e)
+
+            # Confirm the broker reports the shares as tradeable before
+            # relying on the submit-retry loop below.
+            self._wait_for_position_qty_available(symbol, shares)
 
             # Determine order side based on position direction.
             # Long → SELL to close; Short → BUY to cover.
@@ -1026,13 +1281,13 @@ class TradingEngine:
                 client_order_id=client_order_id,
             )
 
-            # Submit the order
+            # Submit the order (retries while the broker still holds the qty)
             if self.trading_client is None:
                 logger.error(
                     "Trading client not available - cannot submit order")
                 return False
 
-            order = self.trading_client.submit_order(oco_order)
+            order = self._submit_oco_with_retry(oco_order, symbol, shares)
             placed_order_id = getattr(order, 'id', None)
             logger.info("Order placed successfully: %s", placed_order_id)
 
@@ -1179,6 +1434,12 @@ class TradingEngine:
                 ):
                     session_summary['positions_exited'] += 1
                     positions_to_close.append(position.symbol)
+                    self._record_order(
+                        session_summary, symbol=position.symbol,
+                        action='CLOSE', shares=abs(position.quantity),
+                        order_type='exit',
+                        strategy=getattr(position, 'strategy_name', None),
+                        reason='max_hold_days')
                     if not self.dry_run:
                         position.exit_reason = "max_hold_days"
                         self._positions_manager.close_position(position.symbol)
@@ -1202,6 +1463,12 @@ class TradingEngine:
                 pos_side = getattr(position, 'side', 'long')
                 if self.place_oco_close_order(position.symbol, abs(position.quantity), position.stop_loss_price, position.take_profit_price, side=pos_side):
                     session_summary['orders_placed'] += 1
+                    self._record_order(
+                        session_summary, symbol=position.symbol,
+                        action='OCO', shares=abs(position.quantity),
+                        order_type='oco',
+                        strategy=getattr(position, 'strategy_name', None),
+                        reason='update_sl_tp')
         return session_summary
 
     def identify_purchases(self, session_summary: Dict[str, Any], backtest_results: List[BacktestResult]) -> Dict[str, Any]:
@@ -1232,6 +1499,10 @@ class TradingEngine:
             if op.symbol in exit_symbols:
                 if self._exit_opposite_position(op.symbol, "long"):
                     session_summary['positions_exited'] += 1
+                    self._record_order(
+                        session_summary, symbol=op.symbol, action='COVER',
+                        order_type='exit', strategy=op.strategy_name,
+                        reason='opposite_signal')
 
         entry_opportunities = [
             op for op in opportunities if op.symbol not in exit_symbols
@@ -1259,6 +1530,11 @@ class TradingEngine:
                 if self.place_buy_order(opportunity, shares):
                     session_summary['orders_placed'] += 1
                     session_summary['new_positions'] += 1
+                    self._record_order(
+                        session_summary, symbol=opportunity.symbol,
+                        action='BUY', shares=shares,
+                        price=opportunity.entry_price, order_type='entry',
+                        strategy=opportunity.strategy_name)
         return session_summary
 
     def identify_and_execute_shorts(self, session_summary: Dict[str, Any], backtest_results: List[BacktestResult]) -> Dict[str, Any]:
@@ -1291,6 +1567,10 @@ class TradingEngine:
             if op.symbol in exit_symbols:
                 if self._exit_opposite_position(op.symbol, "short"):
                     session_summary['positions_exited'] += 1
+                    self._record_order(
+                        session_summary, symbol=op.symbol, action='SELL',
+                        order_type='exit', strategy=op.strategy_name,
+                        reason='opposite_signal')
 
         entry_opportunities = [
             op for op in short_opportunities if op.symbol not in exit_symbols
@@ -1318,7 +1598,42 @@ class TradingEngine:
                 if self.place_short_order(opportunity, shares):
                     session_summary['orders_placed'] += 1
                     session_summary['new_positions'] += 1
+                    self._record_order(
+                        session_summary, symbol=opportunity.symbol,
+                        action='SHORT', shares=shares,
+                        price=opportunity.entry_price, order_type='entry',
+                        strategy=opportunity.strategy_name)
         return session_summary
+
+    def _record_order(self, session_summary: Dict[str, Any], *, symbol: str,
+                      action: str, shares=None, price=None, order_type: str = "entry",
+                      strategy: Optional[str] = None, reason: Optional[str] = None) -> None:
+        """Append a structured order event for dashboard feedback.
+
+        Centralises the shape of the ``orders`` list so the frontend can render
+        "what orders were placed this session" consistently.
+
+        Args:
+            session_summary: The running session summary (mutated in place).
+            symbol: Ticker.
+            action: Human-readable action label (``BUY``, ``SHORT``, ``OCO``,
+                ``CLOSE``, ``COVER``, ``SELL``).
+            shares: Quantity (None when not applicable).
+            price: Fill/limit/stop reference price (None when not applicable).
+            order_type: ``entry``, ``oco``, or ``exit``.
+            strategy: Owning strategy registry key, if known.
+            reason: Exit/order reason, if applicable (e.g. ``max_hold_days``).
+        """
+        session_summary.setdefault('orders', []).append({
+            'symbol': symbol,
+            'action': action,
+            'shares': shares,
+            'price': price,
+            'type': order_type,
+            'strategy': strategy,
+            'reason': reason,
+            'timestamp': datetime.now().isoformat(),
+        })
 
     def execute_trading_session(self, backtest_results: List[BacktestResult]) -> Dict[str, Any]:
         """
@@ -1337,7 +1652,9 @@ class TradingEngine:
             'orders_placed': 0,
             'positions_exited': 0,
             'errors': [],
-            'dry_run': self.dry_run
+            'dry_run': self.dry_run,
+            # Structured per-order events for dashboard feedback.
+            'orders': [],
         }
 
         try:

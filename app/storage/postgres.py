@@ -174,6 +174,7 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
     exit_date           TIMESTAMPTZ,
     exit_price          DOUBLE PRECISION,
     realized_return     DOUBLE PRECISION,
+    exit_reason         TEXT,
     side                TEXT        DEFAULT 'long',
     order_id            TEXT,
     client_order_id     TEXT,
@@ -186,6 +187,8 @@ ALTER TABLE position_snapshots
     ADD COLUMN IF NOT EXISTS strategy_name TEXT DEFAULT 'rsi_mean_reversion';
 ALTER TABLE position_snapshots
     ADD COLUMN IF NOT EXISTS intraday BOOLEAN DEFAULT FALSE;
+ALTER TABLE position_snapshots
+    ADD COLUMN IF NOT EXISTS exit_reason TEXT;
 CREATE INDEX IF NOT EXISTS idx_ps_timestamp
     ON position_snapshots (snapshot_timestamp, environment);
 """

@@ -21,6 +21,8 @@
         </div>
         <div class="header-right">
             <button id="run-now-btn" title="Trigger a full trading cycle" disabled>▶ Run Now</button>
+            <button id="run-session-btn" title="Run a session using the latest backtest data (skips optimization)"
+                disabled>⚡ Run Session</button>
             <div class="status-row">
                 <span class="label">Last Run:</span>
                 <span class="status-dot" id="status-dot"></span>
@@ -44,6 +46,7 @@
     <!-- Tab bar -->
     <div id="tab-bar">
         <button class="tab-btn active" data-tab="positions">Positions</button>
+        <button class="tab-btn" data-tab="activity">Run Activity</button>
         <button class="tab-btn" data-tab="database">Database</button>
     </div>
 
@@ -76,6 +79,35 @@
             <span id="db-page-label">—</span>
             <button id="db-next-btn" disabled>Next →</button>
         </div>
+    </section>
+
+    <!-- Run Activity tab -->
+    <section id="tab-activity" class="tab-panel">
+        <div id="activity-summary" class="activity-grid">
+            <div class="metric">
+                <span class="metric-value" id="m-lines">—</span>
+                <span class="metric-label">Backtests run</span>
+            </div>
+            <div class="metric">
+                <span class="metric-value" id="m-opportunities">—</span>
+                <span class="metric-label">Buy signals</span>
+            </div>
+            <div class="metric">
+                <span class="metric-value" id="m-orders">—</span>
+                <span class="metric-label">Orders placed</span>
+            </div>
+            <div class="metric">
+                <span class="metric-value" id="m-new">—</span>
+                <span class="metric-label">New positions</span>
+            </div>
+            <div class="metric">
+                <span class="metric-value" id="m-exits">—</span>
+                <span class="metric-label">Exits</span>
+            </div>
+        </div>
+        <h2 id="activity-subheading" class="panel-subheading">Orders placed this session</h2>
+        <div id="orders-table"></div>
+        <div id="activity-errors" class="db-error"></div>
     </section>
 
     <script src="/static/dashboard.js"></script>

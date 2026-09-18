@@ -13,7 +13,9 @@ from alpaca.trading.enums import OrderSide
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from positions import Position  # noqa: E402
-from trading_engine import TradingEngine, TradingOpportunity  # noqa: E402
+from trading_engine import (  # noqa: E402
+    TradingEngine, TradingOpportunity, _is_insufficient_qty_error,
+)
 
 
 class TestTradingOpportunity(unittest.TestCase):
@@ -667,6 +669,252 @@ class TestTradingEngine(unittest.TestCase):
         mock_exit.assert_called_once_with("EXIT", "short")
         self.assertEqual(summary['positions_exited'], 1)
         self.assertEqual(summary['new_positions'], 1)
+
+
+class TestOcoQtyReleaseHandling(unittest.TestCase):
+    """Covers the cancel → await-qty-release → submit flow for OCO orders.
+
+    Regression guard for the chronic Alpaca 40310000 "insufficient qty
+    available for order" failure, where cancelling a protective order and
+    immediately resubmitting left positions with no protective orders.
+    """
+
+    def setUp(self):
+        with patch('trading_engine.data_provider'):
+            self.engine = TradingEngine()
+        self.client = Mock()
+        self.engine.trading_client = self.client
+
+    # -- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _order(symbol='AAPL', order_id='ord-1', status='canceled'):
+        o = Mock()
+        o.symbol = symbol
+        o.id = order_id
+        o.status = status
+        return o
+
+    # -- _is_insufficient_qty_error ---------------------------------------
+
+    def test_detects_insufficient_qty_by_message(self):
+        err = Exception(
+            '{"available":"0","code":40310000,"message":'
+            '"insufficient qty available for order (requested: 27, available: 0)"}')
+        self.assertTrue(_is_insufficient_qty_error(err))
+
+    def test_detects_insufficient_qty_by_code_attribute(self):
+        err = Exception('rejected')
+        err.code = '40310000'
+        self.assertTrue(_is_insufficient_qty_error(err))
+
+    def test_ignores_unrelated_errors(self):
+        self.assertFalse(_is_insufficient_qty_error(ValueError('bad request')))
+
+    # -- cancel ------------------------------------------------------------
+
+    def test_cancel_only_targets_matching_symbol(self):
+        self.client.get_orders.return_value = [
+            self._order('AAPL', 'a1', 'accepted'),
+            self._order('MSFT', 'm1', 'accepted'),
+            self._order('AAPL', 'a2', 'accepted'),
+        ]
+        ids = self.engine._cancel_open_orders_for_symbol('AAPL')
+        self.assertEqual(ids, ['a1', 'a2'])
+        self.client.cancel_order_by_id.assert_any_call('a1')
+        self.client.cancel_order_by_id.assert_any_call('a2')
+        self.assertEqual(self.client.cancel_order_by_id.call_count, 2)
+
+    def test_cancel_skips_terminal_orders(self):
+        """Filled/cancelled orders must not be re-cancelled."""
+        self.client.get_orders.return_value = [
+            self._order('AAPL', 'a1', 'filled'),
+            self._order('AAPL', 'a2', 'canceled'),
+            self._order('AAPL', 'a3', 'accepted'),
+        ]
+        ids = self.engine._cancel_open_orders_for_symbol('AAPL')
+        self.assertEqual(ids, ['a3'])
+
+    def test_active_orders_queries_all_statuses(self):
+        """Must use QueryOrderStatus.ALL — OPEN omits `held` orders."""
+        self.client.get_orders.return_value = []
+        self.engine._get_active_orders_for_symbol('AAPL')
+        from alpaca.trading.enums import QueryOrderStatus
+        req = self.client.get_orders.call_args.kwargs['filter']
+        self.assertEqual(req.status, QueryOrderStatus.ALL)
+
+    def test_cancel_returns_empty_without_client(self):
+        self.engine.trading_client = None
+        self.assertEqual(
+            self.engine._cancel_open_orders_for_symbol('AAPL'), [])
+
+    # -- wait for cancel ---------------------------------------------------
+
+    def test_wait_for_orders_cancelled_true_when_terminal(self):
+        self.client.get_order_by_id.return_value = self._order(
+            status='canceled')
+        self.assertTrue(
+            self.engine._wait_for_orders_cancelled(['a1'], timeout=1.0))
+
+    def test_wait_for_orders_cancelled_false_on_timeout(self):
+        # 'pending_cancel' still holds the shares → must not be treated as done
+        self.client.get_order_by_id.return_value = self._order(
+            status='pending_cancel')
+        with patch('trading_engine.time.sleep'):
+            self.assertFalse(self.engine._wait_for_orders_cancelled(
+                ['a1'], timeout=0.05, poll_interval=0.01))
+
+    # -- wait for qty available -------------------------------------------
+
+    def test_wait_for_qty_available_true_when_enough(self):
+        pos = Mock()
+        pos.qty_available = 96.0
+        self.client.get_open_position.return_value = pos
+        self.assertTrue(self.engine._wait_for_position_qty_available(
+            'AAPL', 96, timeout=1.0))
+
+    def test_wait_for_qty_available_false_when_none(self):
+        self.client.get_open_position.side_effect = Exception('not found')
+        with patch('trading_engine.time.sleep'):
+            self.assertFalse(self.engine._wait_for_position_qty_available(
+                'AAPL', 96, timeout=0.05, poll_interval=0.01))
+
+    # -- submit retry ------------------------------------------------------
+
+    def test_submit_retries_after_insufficient_qty(self):
+        err = Exception('insufficient qty available for order')
+        self.client.submit_order.side_effect = [err, Mock()]
+        with patch.object(self.engine, '_wait_for_position_qty_available',
+                          return_value=True) as mock_wait, \
+                patch('trading_engine.time.sleep'):
+            self.engine._submit_oco_with_retry(Mock(), 'AAPL', 27)
+        self.assertEqual(self.client.submit_order.call_count, 2)
+        mock_wait.assert_called_once()
+
+    def test_submit_reraises_non_qty_error_immediately(self):
+        self.client.submit_order.side_effect = ValueError('bad request')
+        with self.assertRaises(ValueError):
+            self.engine._submit_oco_with_retry(Mock(), 'AAPL', 27)
+        self.assertEqual(self.client.submit_order.call_count, 1)
+
+    def test_submit_raises_after_exhausting_attempts(self):
+        self.client.submit_order.side_effect = Exception(
+            'insufficient qty available for order')
+        with patch.object(self.engine, '_wait_for_position_qty_available',
+                          return_value=False), \
+                patch('trading_engine.time.sleep'):
+            with self.assertRaises(Exception):
+                self.engine._submit_oco_with_retry(
+                    Mock(), 'AAPL', 27, attempts=3)
+        self.assertEqual(self.client.submit_order.call_count, 3)
+
+    # -- end-to-end wiring -------------------------------------------------
+
+    def test_place_oco_awaits_release_before_submitting(self):
+        """place_oco_close_order must wait for both cancel + qty release."""
+        self.client.get_orders.return_value = [
+            self._order('AAPL', 'a1', 'accepted')]
+        with patch.object(self.engine, '_get_current_price', return_value=100.0), \
+                patch.object(self.engine, '_make_unique_client_order_id',
+                             return_value='cid-1'), \
+                patch.object(self.engine, '_wait_for_orders_cancelled',
+                             return_value=True) as mock_wait_cancel, \
+                patch.object(self.engine, '_wait_for_position_qty_available',
+                             return_value=True) as mock_wait_qty, \
+                patch.object(self.engine, '_submit_oco_with_retry',
+                             return_value=Mock()) as mock_submit, \
+                patch('trading_engine.storage'):
+            ok = self.engine.place_oco_close_order(
+                'AAPL', 10, 95.0, 110.0, side='long')
+
+        self.assertTrue(ok)
+        self.client.cancel_order_by_id.assert_called_once_with('a1')
+        mock_wait_cancel.assert_called_once_with(['a1'])
+        mock_wait_qty.assert_called_once_with('AAPL', 10)
+        mock_submit.assert_called_once()
+
+    def test_place_oco_skips_refresh_when_order_is_held(self):
+        """A `held` protective order must NOT be cancelled.
+
+        Cancelling a held (market-closed) order does not release the shares, so
+        the replacement would be rejected and the position would be left with
+        no protection. The refresh must be skipped, keeping existing cover.
+        """
+        held = self._order('AAPL', 'held-1', 'held')
+        self.client.get_orders.return_value = [held]
+        # Shares are still reserved by the held order
+        pos = Mock()
+        pos.qty_available = 0.0
+        self.client.get_open_position.return_value = pos
+
+        with patch.object(self.engine, '_get_current_price', return_value=100.0), \
+                patch.object(self.engine, '_submit_oco_with_retry') as mock_submit, \
+                patch('trading_engine.time.sleep'):
+            ok = self.engine.place_oco_close_order(
+                'AAPL', 10, 95.0, 110.0, side='long')
+
+        self.assertFalse(ok)
+        self.client.cancel_order_by_id.assert_not_called()
+        mock_submit.assert_not_called()
+
+    def test_place_oco_skips_refresh_when_cancel_already_pending(self):
+        """A `pending_cancel` order must not be cancelled again (42210000)."""
+        pending = self._order('AAPL', 'pc-1', 'pending_cancel')
+        self.client.get_orders.return_value = [pending]
+        pos = Mock()
+        pos.qty_available = 0.0
+        self.client.get_open_position.return_value = pos
+
+        with patch.object(self.engine, '_get_current_price', return_value=100.0), \
+                patch.object(self.engine, '_submit_oco_with_retry') as mock_submit, \
+                patch('trading_engine.time.sleep'):
+            ok = self.engine.place_oco_close_order(
+                'AAPL', 10, 95.0, 110.0, side='long')
+
+        self.assertFalse(ok)
+        self.client.cancel_order_by_id.assert_not_called()
+        mock_submit.assert_not_called()
+
+    def test_place_oco_submits_without_cancel_when_shares_free(self):
+        """When no order reserves the shares, submit directly (no cancel)."""
+        pos = Mock()
+        pos.qty_available = 10.0
+        self.client.get_open_position.return_value = pos
+        self.client.get_orders.return_value = []
+
+        with patch.object(self.engine, '_get_current_price', return_value=100.0), \
+                patch.object(self.engine, '_make_unique_client_order_id',
+                             return_value='cid-2'), \
+                patch.object(self.engine, '_wait_for_orders_cancelled') as mock_wait_cancel, \
+                patch.object(self.engine, '_submit_oco_with_retry',
+                             return_value=Mock()) as mock_submit, \
+                patch('trading_engine.storage'):
+            ok = self.engine.place_oco_close_order(
+                'AAPL', 10, 95.0, 110.0, side='long')
+
+        self.assertTrue(ok)
+        self.client.cancel_order_by_id.assert_not_called()
+        mock_wait_cancel.assert_not_called()
+        mock_submit.assert_called_once()
+
+    def test_place_oco_aborts_when_cancel_never_settles(self):
+        """If a cancel never releases qty, do NOT resubmit (keep protection)."""
+        self.client.get_orders.return_value = [
+            self._order('AAPL', 'a1', 'accepted')]
+        pos = Mock()
+        pos.qty_available = 0.0
+        self.client.get_open_position.return_value = pos
+
+        with patch.object(self.engine, '_get_current_price', return_value=100.0), \
+                patch.object(self.engine, '_wait_for_orders_cancelled',
+                             return_value=False), \
+                patch.object(self.engine, '_submit_oco_with_retry') as mock_submit, \
+                patch('trading_engine.time.sleep'):
+            ok = self.engine.place_oco_close_order(
+                'AAPL', 10, 95.0, 110.0, side='long')
+
+        self.assertFalse(ok)
+        mock_submit.assert_not_called()
 
 
 if __name__ == '__main__':

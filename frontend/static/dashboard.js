@@ -60,6 +60,15 @@ const dom = {
     dbPrevBtn: $('#db-prev-btn'),
     dbNextBtn: $('#db-next-btn'),
     dbPageLabel: $('#db-page-label'),
+    // Run Activity tab
+    runSessionBtn: $('#run-session-btn'),
+    mLines: $('#m-lines'),
+    mOpportunities: $('#m-opportunities'),
+    mOrders: $('#m-orders'),
+    mNew: $('#m-new'),
+    mExits: $('#m-exits'),
+    ordersTable: $('#orders-table'),
+    activityErrors: $('#activity-errors'),
 };
 
 // ── Helpers ──
@@ -80,6 +89,15 @@ function formatDate(val) {
     if (isNaN(d.getTime())) return '—';
     return d.toLocaleDateString('en-US', {
         month: 'short', day: 'numeric', year: 'numeric',
+    });
+}
+
+function formatTime(val) {
+    if (!val) return '—';
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
     });
 }
 
@@ -571,11 +589,87 @@ async function fetchHealth() {
             dom.lastRunDuration.textContent = '—';
         }
 
-        // Backtest count
-        dom.backtestCount.textContent = data.last_run_backtest_count ?? '—';
+        // Enabled strategies (from config, via /health)
+        const strategies = Array.isArray(data.strategies_enabled) ? data.strategies_enabled : [];
+        if (strategies.length) {
+            dom.backtestCount.textContent = String(strategies.length);
+            dom.backtestCount.title = strategies.join(', ');
+        } else {
+            dom.backtestCount.textContent = '—';
+            dom.backtestCount.title = '';
+        }
+
+        // Run Activity summary + orders feed
+        renderActivity(data.last_run_summary || {}, data.last_run_backtest_count || 0);
     } catch (err) {
         console.error('Failed to fetch /health:', err);
     }
+}
+
+// ── Run Activity rendering ──
+
+function actionBadge(action) {
+    const key = String(action || '').toLowerCase();
+    const cls = {
+        'buy': 'buy', 'short': 'short', 'oco': 'oco',
+        'close': 'close', 'cover': 'cover', 'sell': 'sell',
+    }[key] || 'oco';
+    return `<span class="badge-action ${cls}">${action || '—'}</span>`;
+}
+
+function renderOrdersTable(orders) {
+    if (!dom.ordersTable) return;
+    if (!orders || !orders.length) {
+        dom.ordersTable.innerHTML =
+            '<div class="empty-msg">No orders recorded for the last run.</div>';
+        return;
+    }
+
+    var html = '<table><thead><tr>' +
+        '<th>Time</th><th>Symbol</th><th>Action</th><th>Shares</th>' +
+        '<th>Price</th><th>Type</th><th>Strategy</th>' +
+        '</tr></thead><tbody>';
+
+    orders.forEach(function (o) {
+        var shares = o.shares != null
+            ? Math.abs(Number(o.shares)).toLocaleString() : '—';
+        var strategy = strategyInfo(o.strategy);
+        html += '<tr>' +
+            '<td>' + formatTime(o.timestamp) + '</td>' +
+            '<td><strong>' + (o.symbol || '—') + '</strong></td>' +
+            '<td>' + actionBadge(o.action) + '</td>' +
+            '<td>' + shares + '</td>' +
+            '<td>' + formatCurrency(o.price) + '</td>' +
+            '<td>' + (o.type || '—') + '</td>' +
+            '<td>' + (strategy ? strategy.label : (o.strategy || '—')) + '</td>' +
+            '</tr>';
+    });
+
+    html += '</tbody></table>';
+    dom.ordersTable.innerHTML = html;
+}
+
+function renderActivity(summary, backtestCount) {
+    // "Backtests run" is the number of backtest results produced by the last
+    // cycle; the remaining metrics come straight from the trading summary.
+    if (dom.mLines) dom.mLines.textContent = backtestCount ? backtestCount.toLocaleString() : '—';
+    if (dom.mOpportunities) dom.mOpportunities.textContent =
+        (summary.opportunities_found != null) ? Number(summary.opportunities_found).toLocaleString() : '—';
+    if (dom.mOrders) dom.mOrders.textContent =
+        (summary.orders_placed != null) ? Number(summary.orders_placed).toLocaleString() : '—';
+    if (dom.mNew) dom.mNew.textContent =
+        (summary.new_positions != null) ? Number(summary.new_positions).toLocaleString() : '—';
+    if (dom.mExits) dom.mExits.textContent =
+        (summary.positions_exited != null) ? Number(summary.positions_exited).toLocaleString() : '—';
+
+    // Errors (if the session reported any)
+    if (dom.activityErrors) {
+        const errs = summary.errors || [];
+        dom.activityErrors.textContent = errs.length
+            ? ('⚠ ' + errs.length + ' error(s): ' + errs.join('; ')) : '';
+    }
+
+    renderOrdersTable(summary.orders);
 }
 
 async function fetchLiveAlpaca() {
@@ -760,7 +854,55 @@ function setupRunNowButton() {
     });
 }
 
+// ── Run Session button (reuse latest backtest data) ──
+
+function setupRunSessionButton() {
+    var btn = dom.runSessionBtn;
+    if (!btn) return;
+
+    btn.disabled = false;
+    btn.addEventListener('click', async function () {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.textContent = '⏳ Running...';
+
+        try {
+            var resp = await fetch('/api/run-session', { method: 'POST' });
+            var data = await resp.json();
+            if (resp.ok) {
+                btn.textContent = '✅ Triggered';
+                setTimeout(function () {
+                    btn.textContent = '⚡ Run Session';
+                    btn.disabled = false;
+                }, 3000);
+            } else if (resp.status === 409) {
+                // Already running
+                btn.textContent = '⏳ Already running';
+                setTimeout(function () {
+                    btn.textContent = '⚡ Run Session';
+                    btn.disabled = false;
+                }, 5000);
+            } else {
+                btn.textContent = '❌ Error';
+                console.error('Run session failed:', data);
+                setTimeout(function () {
+                    btn.textContent = '⚡ Run Session';
+                    btn.disabled = false;
+                }, 3000);
+            }
+        } catch (err) {
+            console.error('Run session request failed:', err);
+            btn.textContent = '❌ Error';
+            setTimeout(function () {
+                btn.textContent = '⚡ Run Session';
+                btn.disabled = false;
+            }, 3000);
+        }
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     init();
     setupRunNowButton();
+    setupRunSessionButton();
 });

@@ -57,6 +57,7 @@ POSITION_FIELDS = [
     "exit_date",
     "exit_price",
     "realized_return",
+    "exit_reason",
     "side",
     "order_id",
     "client_order_id",
@@ -98,12 +99,20 @@ def _safe_str(value: Any) -> Optional[str]:
     """Coerce scalar identifiers (e.g. ``uuid.UUID``) to ``str``.
 
     Alpaca's SDK returns ``UUID`` objects for order ids, which asyncpg rejects
-    for TEXT columns ("expected str, got UUID"). ``None`` passes through so
-    nullable columns stay NULL; everything else is stringified.
+    for TEXT columns ("expected str, got UUID"). ``None`` and pandas/NumPy
+    missing-value sentinels (``pd.NA``, ``pd.NaT``, ``float("nan")``) map to
+    ``None`` so nullable TEXT columns (e.g. ``order_id``/``client_order_id``)
+    stay NULL instead of being written as the literal string ``"nan"``.
     """
+    value = _coerce_na_to_none(value)
     if value is None:
         return None
-    return str(value)
+    text = str(value).strip()
+    # Guard against stringified missing sentinels (``str(pd.NA)`` -> "<NA>")
+    # and any "nan"/"none" strings already persisted upstream.
+    if not text or text.lower() in ("nan", "nat", "none", "<na>"):
+        return None
+    return text
 
 
 def _safe_datetime(value: Any) -> Optional[datetime]:
@@ -282,6 +291,7 @@ def normalize_position_for_save(pos: Any) -> Dict[str, Any]:
         "exit_date": _safe_datetime(getattr(pos, "exit_date", None)),
         "exit_price": exit_price,
         "realized_return": realized_return,
+        "exit_reason": _safe_str(getattr(pos, "exit_reason", None)),
         "side": getattr(pos, "side", "long"),
         "order_id": _safe_str(getattr(pos, "order_id", None)),
         "client_order_id": _safe_str(getattr(pos, "client_order_id", None)),
