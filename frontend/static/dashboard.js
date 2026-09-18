@@ -215,6 +215,56 @@ function unrealizedPnlPct(row) {
 //   2. Live (Alpaca)    — real-time market data from the broker
 //   3. Unrealized P&L   — computed from the two sources above
 //
+// Strategy-specific columns (RSI etc.) are only rendered when the loaded
+// data actually contains those fields, so new strategies don't show
+// meaningless empty columns.
+
+function hasField(key) {
+    return allPositions.some(function (row) {
+        return row[key] !== undefined && row[key] !== null;
+    });
+}
+
+function strategyParamColumns() {
+    // RSI-specific columns (legacy strategy) — shown only if present in data.
+    var cols = [];
+    if (hasField('current_rsi')) {
+        cols.push({
+            title: 'Cur. RSI', field: 'current_rsi',
+            sorter: 'number', hozAlign: 'center', width: 80,
+            formatter: function (cell) {
+                var v = cell.getValue();
+                return v != null ? Number(v).toFixed(1) : '—';
+            },
+        });
+    }
+    if (hasField('rsi_period')) {
+        cols.push({
+            title: 'RSI Per', field: 'rsi_period',
+            sorter: 'number', hozAlign: 'center', width: 75,
+            headerFilter: 'list',
+            headerFilterParams: { values: [2, 8, 14, 20, 30] },
+        });
+    }
+    if (hasField('rsi_lower')) {
+        cols.push({ title: 'RSI Low', field: 'rsi_lower', sorter: 'number', hozAlign: 'center', width: 80 });
+    }
+    if (hasField('rsi_upper')) {
+        cols.push({ title: 'RSI High', field: 'rsi_upper', sorter: 'number', hozAlign: 'center', width: 80 });
+    }
+    // Generic params summary column for any strategy (from the params JSONB).
+    cols.push({
+        title: 'Params', field: 'params',
+        sorter: false, hozAlign: 'left', width: 160,
+        formatter: function (cell) {
+            var v = cell.getValue();
+            if (!v) return '—';
+            var text = typeof v === 'string' ? v : JSON.stringify(v);
+            return '<span title="' + text.replace(/"/g, '&quot;') + '">' + text + '</span>';
+        },
+    });
+    return cols;
+}
 
 function groupPositionRecord() {
     return {
@@ -270,28 +320,9 @@ function groupPositionRecord() {
                     return v != null ? Number(v).toFixed(4) : '—';
                 },
             },
-            {
-                title: 'Cur. RSI', field: 'current_rsi',
-                sorter: 'number', hozAlign: 'center', width: 80,
-                formatter: function (cell) {
-                    var v = cell.getValue();
-                    return v != null ? Number(v).toFixed(1) : '—';
-                },
-            },
-            {
-                title: 'RSI Per', field: 'rsi_period',
-                sorter: 'number', hozAlign: 'center', width: 75,
-                headerFilter: 'list',
-                headerFilterParams: { values: [2, 8, 14, 20, 30] },
-            },
-            {
-                title: 'RSI Low', field: 'rsi_lower',
-                sorter: 'number', hozAlign: 'center', width: 80,
-            },
-            {
-                title: 'RSI High', field: 'rsi_upper',
-                sorter: 'number', hozAlign: 'center', width: 80,
-            },
+            // Strategy-specific columns (RSI etc.) injected dynamically
+            // based on the fields actually present in the loaded data.
+            ].concat(strategyParamColumns()).concat([
             {
                 title: 'Stop Loss', field: 'stop_loss_price',
                 sorter: 'number', hozAlign: 'right', width: 105,
@@ -337,7 +368,7 @@ function groupPositionRecord() {
                 width: 130,
                 formatter: function (cell) { return cell.getValue() || '—'; },
             },
-        ],
+        ]),
     };
 }
 
@@ -735,6 +766,8 @@ async function fetchPositions() {
 
         if (table) {
             await table.replaceData(filtered);
+            // Strategy-specific columns depend on the data — refresh them.
+            table.setColumns(buildColumns());
         } else {
             table = new Tabulator('#positions-table', {
                 data: filtered,
@@ -802,11 +835,141 @@ dom.dbNextBtn.addEventListener('click', function () {
 async function init() {
     await fetchHealth();
     await fetchPositions();
+    await fetchJobs();
 
     // Auto-refresh positions (includes live Alpaca data internally)
     setInterval(fetchPositions, REFRESH_INTERVAL_MS);
     // Refresh header less frequently
     setInterval(fetchHealth, REFRESH_INTERVAL_MS * 2);
+    // Poll background jobs (fast while a job is active, slow when idle)
+    scheduleJobsPolling();
+}
+
+// ── Background jobs (Phase 4) ──
+
+var _jobsPollTimer = null;
+
+function scheduleJobsPolling() {
+    // 2s while a job is active, 15s when idle.
+    fetchJobs().then(function (hasActive) {
+        if (_jobsPollTimer) clearTimeout(_jobsPollTimer);
+        _jobsPollTimer = setTimeout(scheduleJobsPolling, hasActive ? 2000 : 15000);
+    }).catch(function () {
+        if (_jobsPollTimer) clearTimeout(_jobsPollTimer);
+        _jobsPollTimer = setTimeout(scheduleJobsPolling, 15000);
+    });
+}
+
+async function fetchJobs() {
+    var resp = await fetch('/api/jobs');
+    if (!resp.ok) return false;
+    var data = await resp.json();
+    renderJobs(data.jobs || []);
+    return data.jobs && data.jobs.length > 0 && data.jobs[0].status === 'running'
+        || data.jobs && data.jobs.length > 0 && data.jobs[0].status === 'queued';
+}
+
+function renderJobs(jobs) {
+    // Active/queued job card (newest first)
+    var card = document.getElementById('active-job-card');
+    var active = jobs.find(function (j) {
+        return j.status === 'running' || j.status === 'queued';
+    });
+    if (card) {
+        if (active) {
+            card.hidden = false;
+            setText('job-kind', active.kind || 'cycle');
+            setText('job-status', active.status);
+            setText('job-message', active.message || '—');
+            setText('job-pct', (active.progress || 0) + '%');
+            var bar = document.getElementById('job-progress-bar');
+            if (bar) bar.style.width = (active.progress || 0) + '%';
+        } else {
+            card.hidden = true;
+        }
+    }
+
+    var rows = jobs.map(function (j) {
+        var started = j.started_at ? new Date(j.started_at * 1000) : null;
+        var finished = j.finished_at ? new Date(j.finished_at * 1000) : null;
+        var duration = (started && finished)
+            ? Math.round((finished - started) / 1000) + 's' : '—';
+        return {
+            job_id: j.job_id,
+            kind: j.kind,
+            status: j.status,
+            progress: (j.progress || 0) + '%',
+            message: j.message || '',
+            started: started ? started.toLocaleTimeString() : '—',
+            duration: duration,
+            error: j.error || ''
+        };
+    });
+    renderJobsTable(rows);
+}
+
+var jobsTable = null;
+
+function renderJobsTable(rows) {
+    var el = document.getElementById('jobs-table');
+    if (!el) return;
+    if (jobsTable) {
+        jobsTable.replaceData(rows);
+        return;
+    }
+    jobsTable = new Tabulator(el, {
+        data: rows,
+        layout: 'fitColumns',
+        index: 'job_id',
+        columns: [
+            { title: 'Job', field: 'job_id', width: 120 },
+            { title: 'Kind', field: 'kind', width: 110 },
+            { title: 'Status', field: 'status', width: 100,
+              formatter: function (cell) {
+                  var v = cell.getValue();
+                  var cls = { done: 'ok', failed: 'err', running: 'warn', queued: 'muted' }[v] || '';
+                  return '<span class="status-badge ' + cls + '">' + v + '</span>';
+              } },
+            { title: 'Progress', field: 'progress', width: 90 },
+            { title: 'Message', field: 'message', sorter: false },
+            { title: 'Started', field: 'started', width: 110 },
+            { title: 'Duration', field: 'duration', width: 100 },
+            { title: 'Error', field: 'error', sorter: false,
+              formatter: function (cell) {
+                  var v = cell.getValue();
+                  return v ? '<span class="err-text">' + escapeHtml(v) + '</span>' : '';
+              } }
+        ]
+    });
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"] /g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] || c;
+    });
+}
+
+function setText(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
+// Poll a single job until it finishes, updating the Jobs panel live.
+function watchJob(jobId, onDone) {
+    var poll = async function () {
+        var resp = await fetch('/api/jobs/' + encodeURIComponent(jobId));
+        if (resp.ok) {
+            var job = await resp.json();
+            renderJobs([job]);
+            if (job.status === 'done' || job.status === 'failed') {
+                if (onDone) onDone(job);
+                setTimeout(fetchJobs, 300);
+                return;
+            }
+        }
+        setTimeout(poll, 2000);
+    };
+    poll();
 }
 
 // ── Run Now button ──
@@ -824,12 +987,12 @@ function setupRunNowButton() {
         try {
             var resp = await fetch('/api/run-cycle', { method: 'POST' });
             var data = await resp.json();
-            if (resp.ok) {
-                btn.textContent = '✅ Triggered';
-                setTimeout(function () {
+            if (resp.ok && data.job_id) {
+                btn.textContent = '⏳ Queued';
+                watchJob(data.job_id, function () {
                     btn.textContent = '▶ Run Now';
                     btn.disabled = false;
-                }, 3000);
+                });
             } else if (resp.status === 409) {
                 // Already running
                 btn.textContent = '⏳ Already running';
@@ -871,12 +1034,12 @@ function setupRunSessionButton() {
         try {
             var resp = await fetch('/api/run-session', { method: 'POST' });
             var data = await resp.json();
-            if (resp.ok) {
-                btn.textContent = '✅ Triggered';
-                setTimeout(function () {
+            if (resp.ok && data.job_id) {
+                btn.textContent = '⏳ Queued';
+                watchJob(data.job_id, function () {
                     btn.textContent = '⚡ Run Session';
                     btn.disabled = false;
-                }, 3000);
+                });
             } else if (resp.status === 409) {
                 // Already running
                 btn.textContent = '⏳ Already running';

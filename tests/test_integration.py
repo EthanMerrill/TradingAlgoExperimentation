@@ -37,7 +37,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
             ('config', 'globalConfig'),
             ('utils', 'parse_dt'),
             ('data_provider', 'DataProvider'),
-            ('strategy', 'RSIStrategy'),
+            ('strategies.rsi', 'RSIStrategy'),
             ('positions', 'PositionsManager'),
             ('trading_engine', 'TradingEngine'),
         ]
@@ -52,7 +52,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
         """Test the complete data flow from data provider to trading engine."""
         # Mock the entire data flow
         with patch('data_provider.DataProvider') as mock_data_provider_class:
-            with patch('strategy.RSIStrategy') as mock_backtester_class:
+            with patch('strategies.rsi.RSIStrategy') as mock_backtester_class:
                 with patch('trading_engine.TradingEngine') as mock_engine_class:
 
                     # Mock data provider
@@ -174,7 +174,7 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
             'volume': np.random.randint(1000000, 5000000, 252)
         }, index=dates)
 
-        with patch('strategy.RSIStrategy') as mock_strategy_class:
+        with patch('strategies.rsi.RSIStrategy') as mock_strategy_class:
             mock_strategy = Mock()
             mock_result = Mock()
             mock_result.symbol = 'AAPL'
@@ -221,7 +221,7 @@ class TestTradingAlgorithmPerformance(unittest.TestCase):
             'volume': np.random.randint(1000000, 5000000, n_days)
         }, index=dates)
 
-        with patch('strategy.RSIStrategy') as mock_strategy_class:
+        with patch('strategies.rsi.RSIStrategy') as mock_strategy_class:
             mock_strategy = Mock()
             mock_strategy.backtest.return_value = Mock(profitable=True)
             mock_strategy_class.return_value = mock_strategy
@@ -243,7 +243,7 @@ class TestTradingAlgorithmPerformance(unittest.TestCase):
         symbols = ['AAPL', 'TSLA', 'GOOGL', 'MSFT', 'AMZN']
         rsi_configs = [(14, 30, 70), (21, 25, 75), (28, 20, 80)]
 
-        with patch('strategy.RSIStrategy') as mock_backtester_class:
+        with patch('strategies.rsi.RSIStrategy') as mock_backtester_class:
             mock_backtester = Mock()
             mock_results = [Mock(profitable=True)
                             for _ in range(len(symbols) * len(rsi_configs))]

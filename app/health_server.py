@@ -134,65 +134,21 @@ def _df_row_to_dict(row) -> dict:
 def _fetch_positions_from_storage(storage_backend) -> list[dict]:
     """Fetch the latest position snapshot from storage and return JSON-safe dicts.
 
-    Reads the most recent position file (via the abstract StorageBackend
-    interface).  Does NOT filter by open/closed — the frontend handles that.
+    Delegates the "find latest snapshot + load rows" logic to the storage
+    backend (``get_latest_positions_df(openPosition=None)`` = all rows,
+    unfiltered — the frontend handles open/closed filtering).
     """
-    # Step 1: list all files to verify "latest" is what we think it is
-    all_files = storage_backend.list_position_files()
-    all_files.sort()
-    logger.info("Position files in storage (%d total): %s ... %s",
-                len(all_files),
-                all_files[:3] if len(all_files) >= 3 else all_files,
-                all_files[-3:] if len(all_files) >= 3 else [])
-
-    latest_file = storage_backend.get_latest_position_file()
-    if not latest_file:
-        logger.warning("No position files found in storage")
-        return []
-    logger.info("Latest position file selected: %s", latest_file)
-
-    # Step 2: load raw dataframe
-    df = storage_backend.load_position_entries(latest_file)
+    df = storage_backend.get_latest_positions_df(openPosition=None)
     if df is None or df.empty:
-        logger.warning(
-            "Position file %s loaded but is empty/None", latest_file)
+        logger.warning("No position snapshots found in storage")
         return []
 
-    logger.info("Raw DataFrame: %d rows × %d cols — columns: %s",
-                len(df), len(df.columns), list(df.columns))
-    logger.info("dtypes sample: %s",
-                {c: str(dt) for c, dt in zip(df.columns[:8], df.dtypes[:8])})
-
-    # Step 3: inspect the 'closed' column raw values
-    if 'closed' in df.columns:
-        closed_series = df['closed']
-        logger.info(
-            "'closed' column — unique values: %s, "
-            "counts: True-ish=%d, False-ish=%d, NaN/None=%d",
-            closed_series.dropna().unique().tolist(),
-            int(closed_series.fillna(False).astype(bool).sum()),
-            int((~closed_series.fillna(False).astype(bool)).sum()),
-            int(closed_series.isna().sum()),
-        )
-    else:
-        logger.warning(
-            "No 'closed' column in DataFrame — all rows treated as-is")
-
-    # Step 4: log before/after serialization
-    logger.info("Serializing %d rows (NO FILTERING) ...", len(df))
+    logger.info("Latest snapshot: %d rows × %d cols", len(df), len(df.columns))
     rows = [_df_row_to_dict(row) for _, row in df.iterrows()]
 
-    # Quick sanity: what fraction of the output has closed=True?
-    n_closed_out = sum(1 for r in rows if r.get('closed'))
-    n_open_out = len(rows) - n_closed_out
+    n_closed = sum(1 for r in rows if r.get('closed'))
     logger.info("Serialized %d total → %d open, %d closed",
-                len(rows), n_open_out, n_closed_out)
-
-    if rows:
-        logger.info("First row keys: %s, sample: %s",
-                    list(rows[0].keys()),
-                    {k: rows[0][k] for k in ['symbol', 'closed', 'quantity', 'entry_price'] if k in rows[0]})
-
+                len(rows), len(rows) - n_closed, n_closed)
     return rows
 
 
@@ -357,37 +313,8 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
             logger.error("Error fetching table %s: %s", name, e)
             return jsonify({'error': f'Failed to fetch table {name}'}), 500
 
-    # ---------- /api/open-orders (auth required) ----------
-
-    @app.route('/api/open-orders')
-    @_auth_required
-    def api_open_orders():
-        if data_provider is None:
-            return jsonify({'error': 'Data provider not available'}), 503
-
-        try:
-            df = data_provider.get_open_orders()
-            if df.empty:
-                return jsonify([])
-
-            # Convert to JSON-safe dicts
-            rows = []
-            for _, row in df.iterrows():
-                d = {}
-                for key, value in row.items():
-                    if hasattr(value, 'item'):
-                        value = value.item()
-                    elif pd.isna(value):
-                        value = None
-                    elif isinstance(value, (pd.Timestamp, datetime)):
-                        value = value.isoformat()
-                    d[key] = value
-                rows.append(d)
-            logger.info("Returning %d open orders", len(rows))
-            return jsonify(rows)
-        except Exception as e:
-            logger.error("Error fetching open orders: %s", e)
-            return jsonify({'error': 'Failed to fetch open orders'}), 500
+    # (The old /api/open-orders endpoint was removed — the frontend never
+    # called it; /api/live-alpaca covers the live-order use case.)
 
     # ---------- /api/live-alpaca (auth required) ----------
     #
@@ -523,6 +450,9 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
     # The cron job should POST to this endpoint instead of spawning a new
     # process, which avoids "Address already in use" errors from Waitress.
     #
+    # Phase 4: cycle execution is tracked as a background job. The response
+    # returns 202 with a job_id; poll /api/jobs/<job_id> for progress.
+    #
     # Query params:
     #   force_backtest  (bool)  — skip cached backtest results
     #   dry_run         (bool)  — analyze without placing orders
@@ -548,21 +478,34 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
                 'error': 'Trigger mechanism not available'
             }), 503
 
+        # Register the background job first so the main loop can pick it up.
+        # pylint: disable=import-outside-toplevel
+        from jobs import job_manager
+        job = job_manager.start_job(kind="full_cycle")
+        if job is None:
+            return jsonify({
+                'status': 'already_running',
+                'message': 'A background job is already in progress',
+            }), 409
+
         # Capture optional flags from query params
         flags = {}
         for flag in ('force_backtest', 'dry_run', 'test_mode'):
             val = request.args.get(flag, '').lower()
             if val in ('true', '1', 'yes'):
                 flags[flag] = True
+        flags['job_id'] = job.job_id
         shared_state['cycle_flags'] = flags
 
         trigger.set()
-        logger.info("Trading cycle triggered via API (flags=%s)", flags)
+        logger.info("Trading cycle triggered via API (job=%s flags=%s)",
+                    job.job_id, flags)
         return jsonify({
-            'status': 'triggered',
-            'message': 'Trading cycle triggered successfully',
+            'status': 'queued',
+            'job_id': job.job_id,
+            'message': 'Trading cycle queued',
             'flags': flags,
-        }), 200
+        }), 202
 
     # ---------- /api/run-session (auth required) ----------
     #
@@ -594,8 +537,18 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
                 'error': 'Trigger mechanism not available'
             }), 503
 
+        # Register the background job (same mechanism as /api/run-cycle).
+        # pylint: disable=import-outside-toplevel
+        from jobs import job_manager
+        job = job_manager.start_job(kind="run_session")
+        if job is None:
+            return jsonify({
+                'status': 'already_running',
+                'message': 'A background job is already in progress',
+            }), 409
+
         # Session-only run: reuse the latest cached backtest, skip optimization.
-        flags = {'run_session_only': True}
+        flags = {'run_session_only': True, 'job_id': job.job_id}
 
         dry_run = request.args.get('dry_run', '').lower()
         if dry_run in ('true', '1', 'yes'):
@@ -605,12 +558,34 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
 
         trigger.set()
         logger.info(
-            "Trading session triggered via API (reuse-latest, flags=%s)", flags)
+            "Trading session triggered via API (job=%s reuse-latest flags=%s)",
+            job.job_id, flags)
         return jsonify({
-            'status': 'triggered',
-            'message': 'Trading session triggered using latest backtest data',
+            'status': 'queued',
+            'job_id': job.job_id,
+            'message': 'Trading session queued using latest backtest data',
             'flags': flags,
-        }), 200
+        }), 202
+
+    # ---------- /api/jobs (auth required) ----------
+    # Background-job status for the dashboard Jobs panel (Phase 4).
+
+    @app.route('/api/jobs')
+    @_auth_required
+    def api_jobs():
+        # pylint: disable=import-outside-toplevel
+        from jobs import job_manager
+        return jsonify({'jobs': job_manager.list_jobs()})
+
+    @app.route('/api/jobs/<job_id>')
+    @_auth_required
+    def api_job_detail(job_id: str):
+        # pylint: disable=import-outside-toplevel
+        from jobs import job_manager
+        job = job_manager.get_job(job_id)
+        if job is None:
+            return jsonify({'error': 'Job not found'}), 404
+        return jsonify(job.to_dict())
 
     # ---------- / (dashboard HTML, auth required) ----------
 

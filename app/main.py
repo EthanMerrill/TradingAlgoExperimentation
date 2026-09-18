@@ -49,7 +49,12 @@ class TradingAlgorithm:
         # bar-loop worker (Phase D) to evaluate intraday strategies during RTH.
         self._last_backtest_results: List = []
 
-    async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False, test_mode: bool = False, run_session_only: bool = False) -> dict:
+    @property
+    def last_backtest_results(self) -> List:
+        """Public accessor for the bar-loop worker (no private-state reach-in)."""
+        return self._last_backtest_results
+
+    async def run_full_cycle(self, force_backtest: bool = False, dry_run: bool = False, test_mode: bool = False, run_session_only: bool = False, progress_cb=None) -> dict:
         """
         Run the complete trading algorithm cycle.
 
@@ -60,11 +65,21 @@ class TradingAlgorithm:
             run_session_only: Reuse the latest cached backtest data (ignoring the
                 24h freshness window) and run ONLY the trading session — skip the
                 slow optimization/backtest pass entirely.
+            progress_cb: Optional callback(percent: int, message: str) invoked at
+                stage boundaries for background-job progress reporting (Phase 4).
 
         Returns:
             Dictionary with session results
         """
+        def _report(percent, message):
+            if progress_cb is not None:
+                try:
+                    progress_cb(percent, message)
+                except Exception:  # pylint: disable=broad-exception-caught
+                    pass
+
         self.session_metadata['start_time'] = utc_now()
+        _report(1, "Starting cycle")
 
         # Clear per-cycle caches to avoid stale data
         self.trading_engine._clear_ohlcv_cache()
@@ -106,6 +121,7 @@ class TradingAlgorithm:
 
             # Step 1: Check current positions and account status
             logger.info("🔍 Checking account status and current positions...")
+            _report(3, "Checking account & positions")
             account_info = data_provider.get_account_info()
             current_positions = self.positions_manager.get_and_reconcile_positions()
             if current_positions is None:
@@ -138,6 +154,7 @@ class TradingAlgorithm:
                 # WITHOUT re-running the (slow) optimization pass. The normal
                 # 24h freshness window is intentionally ignored so the user can
                 # trade on the most recent analysis on demand.
+                _report(5, "Loading cached backtest results")
                 backtest_results = self._load_latest_backtest_results()
                 if backtest_results:
                     logger.info(
@@ -148,7 +165,9 @@ class TradingAlgorithm:
                         "No cached backtest data found — session will manage existing positions only")
             elif buying_power > 0 or force_backtest:
                 # Step 2: Get or run backtests
-                backtest_results = await self._get_backtest_results(force_backtest, test_mode)
+                _report(5, "Running backtests (may take 30-90 minutes)")
+                backtest_results = await self._get_backtest_results(
+                    force_backtest, test_mode, progress_cb=_report)
             else:
                 logger.warning(
                     "Insufficient buying power available for purchases")
@@ -165,6 +184,7 @@ class TradingAlgorithm:
             # Step 3: Execute trading session
             logger.info(
                 "🎯 Analyzing trading opportunities and executing orders...")
+            _report(90, "Executing trading session")
             trading_summary = self.trading_engine.execute_trading_session(
                 backtest_results)
 
@@ -172,7 +192,9 @@ class TradingAlgorithm:
             self.session_metadata['end_time'] = utc_now()
             self.session_metadata['results_summary'] = trading_summary
             logger.info("💾 Saving session results and metadata...")
+            _report(97, "Saving session results")
             await self._save_session_results(dry_run, account_info, backtest_results, trading_summary)
+            _report(100, "Cycle complete")
 
             # Success banner
             session_duration = (
@@ -197,7 +219,7 @@ class TradingAlgorithm:
             logger.error("Error in trading algorithm: %s", e)
             return {'status': 'error', 'error': str(e)}
 
-    async def _get_backtest_results(self, force_backtest: bool, test_mode: bool = False) -> List:
+    async def _get_backtest_results(self, force_backtest: bool, test_mode: bool = False, progress_cb=None) -> List:
         """Get backtest results, either from cache or by running new backtests."""
 
         # Check for recent backtest results
@@ -266,13 +288,13 @@ class TradingAlgorithm:
                     "🪟 Walk-forward validation enabled — splitting into IS/OOS windows")
                 wf_validator = WalkForwardValidator(optimizer)
                 wf_results = await wf_validator.validate_universe(
-                    symbols, start_date, end_date)
+                    symbols, start_date, end_date, progress_cb=progress_cb)
 
                 # Convert WalkForwardResult → BacktestResult for downstream compatibility
                 raw = [r.to_backtest_result() for r in wf_results]
             else:
                 raw = await optimizer.optimize_universe(
-                    symbols, start_date, end_date)
+                    symbols, start_date, end_date, progress_cb=progress_cb)
 
             raw_results.extend(raw)
             # Per-strategy filtering (alpha > 0, profitable, trades, win rate)
@@ -491,6 +513,47 @@ def _daily_scheduler(schedule_time: str, shared_state: dict, algorithm: 'Trading
             _time.sleep(60)  # back off on error
 
 
+def _make_job_progress_cb(job_id):
+    """Build a progress callback for a background job (None if no job)."""
+    if not job_id:
+        return None
+    # pylint: disable=import-outside-toplevel
+    from jobs import job_manager
+    return job_manager.make_progress_callback(job_id)
+
+
+def _mark_job_running(job_id: Optional[str]) -> None:
+    if not job_id:
+        return
+    # pylint: disable=import-outside-toplevel
+    from jobs import job_manager
+    job_manager.mark_running(job_id)
+
+
+def _finish_job(job_id: Optional[str], success: bool,
+                result_summary: Optional[dict] = None,
+                error: Optional[str] = None) -> None:
+    if not job_id:
+        return
+    # pylint: disable=import-outside-toplevel
+    from jobs import job_manager
+    job_manager.finish_job(job_id, success,
+                           result_summary=result_summary, error=error)
+
+
+def _finish_initial_job_if_any(shared_state: dict, session_result: dict) -> None:
+    """Complete the startup job (if the first cycle was API-triggered)."""
+    job_id = (shared_state.get('cycle_flags') or {}).get('job_id')
+    if job_id:
+        _finish_job(
+            job_id,
+            success=session_result.get('status') == 'success',
+            result_summary={'status': session_result.get('status')},
+            error=session_result.get('error'),
+        )
+        shared_state['cycle_flags'] = {}
+
+
 def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
     """Poll bar-loop strategies during RTH; close intraday positions at session end.
 
@@ -516,7 +579,7 @@ def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
                 continue
 
             now = datetime.now()
-            results = algorithm._last_backtest_results or []
+            results = algorithm.last_backtest_results
 
             if bar_engine.is_rth(now):
                 summary = bar_engine.run_intraday_cycle(results, as_of=now)
@@ -622,10 +685,10 @@ async def main():
             dry_run=args.dry_run,
             test_mode=args.test_mode,
         )
-
         # Expose the completed result to the health server
         shared_state['last_result'] = session_result
         shared_state['cycle_running'] = False
+        _finish_initial_job_if_any(shared_state, session_result)
 
         logger.info("=" * 50)
         logger.info("Trading Algorithm Complete")
@@ -651,23 +714,39 @@ async def main():
                     shared_state['cycle_running'] = True
                     flags = shared_state.get('cycle_flags', {})
 
+                    job_id = flags.get('job_id')
+                    progress_cb = _make_job_progress_cb(job_id)
+
                     logger.info(
                         "🔄 Cycle triggered via API (flags=%s) — starting new run...",
                         flags)
 
                     try:
+                        _mark_job_running(job_id)
                         session_result = await algorithm.run_full_cycle(
                             force_backtest=flags.get('force_backtest', False),
                             dry_run=flags.get('dry_run', False),
                             test_mode=flags.get('test_mode', False),
                             run_session_only=flags.get(
                                 'run_session_only', False),
+                            progress_cb=progress_cb,
                         )
                         shared_state['last_result'] = session_result
+                        _finish_job(
+                            job_id,
+                            success=session_result.get('status') == 'success',
+                            result_summary={
+                                'status': session_result.get('status'),
+                                'backtest_count': session_result.get(
+                                    'backtest_count', 0),
+                            },
+                            error=session_result.get('error'),
+                        )
                         logger.info("✅ Triggered cycle complete: %s",
                                     session_result.get('status'))
                     except Exception as e:
                         logger.error("Triggered cycle failed: %s", e)
+                        _finish_job(job_id, success=False, error=str(e))
                         shared_state['last_result'] = {
                             'status': 'error', 'error': str(e)}
                     finally:

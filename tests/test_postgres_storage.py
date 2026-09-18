@@ -85,7 +85,7 @@ class TestPostgresStorage(unittest.TestCase):
         self.assertFalse(self._disconnected().save_backtest_results([]))
 
     def test_save_bt_success(self):
-        from strategy import BacktestResult
+        from strategies.base import BacktestResult
         s = self._connected()
         r = [BacktestResult(symbol="AAPL", rsi_period=14, rsi_lower=30,
              rsi_upper=70, total_return=0.15, buy_and_hold_return=0.1, alpha=0.05,
@@ -147,7 +147,7 @@ class TestPostgresStorage(unittest.TestCase):
         # never reach the DB (and later the browser) as NaN/Infinity.
         import math
         from storage.backend import backtest_result_to_dict
-        from strategy import BacktestResult
+        from strategies.base import BacktestResult
         r = BacktestResult(symbol="AAPL", rsi_period=14, rsi_lower=30,
                            rsi_upper=70, total_return=math.nan,
                            buy_and_hold_return=math.inf, alpha=0.05, num_trades=5,

@@ -32,7 +32,7 @@ from storage.backend import (
 
 if TYPE_CHECKING:
     from config import Config
-    from strategy import BacktestResult
+    from strategies.base import BacktestResult
 
 logger = logging.getLogger(__name__)
 
@@ -838,7 +838,13 @@ class PostgresStorage(StorageBackend):
 
     # -- get_latest_positions_df ---------------------------------------------
 
-    def get_latest_positions_df(self, openPosition: bool = True) -> pd.DataFrame:
+    def get_latest_positions_df(self, openPosition: bool | None = True) -> pd.DataFrame:
+        """Load the latest position snapshot.
+
+        Args:
+            openPosition: True → open rows only, False → closed rows only,
+                None → all rows unfiltered (used by the dashboard API).
+        """
         latest_file = self.get_latest_position_file()
         if not latest_file:
             logger.warning("No position snapshots found in Postgres")
@@ -846,6 +852,9 @@ class PostgresStorage(StorageBackend):
 
         df = self.load_position_entries(latest_file)
         if df.empty:
+            return df
+
+        if openPosition is None:
             return df
 
         if "closed" in df.columns:

@@ -16,14 +16,16 @@ from alpaca.trading.enums import (OrderClass, OrderSide, OrderType,
 from alpaca.trading.requests import (GetOrdersRequest, LimitOrderRequest,
                                      MarketOrderRequest, StopLossRequest,
                                      TakeProfitRequest)
-from data_provider import TechnicalIndicators, data_provider
+from data_provider import data_provider
+from indicators import TechnicalIndicators
 from storage import storage
 from order import Order, generate_client_order_id
 from positions import Position, PositionsManager
 from utils import ensure_utc, utc_now
 from strategies.base import StrategyContext
 from strategies.registry import get_strategy
-from strategy import BacktestResult, RSIStrategy
+from strategies.base import BacktestResult
+from strategies.rsi import RSIStrategy
 
 from config import globalConfig  # type: ignore
 
@@ -1774,18 +1776,50 @@ class TradingEngine:
         """Execute long entries for a list of opportunities (shared by the daily
         session and the bar loop). Handles opposite-position exits, sizing,
         and order placement."""
+        return self._execute_entries(session_summary, opportunities, "long")
+
+    def _execute_shorts(self, session_summary: Dict[str, Any], short_opportunities: List[TradingOpportunity]) -> Dict[str, Any]:
+        """Execute short entries for a list of opportunities (shared by the daily
+        session and the bar loop)."""
+        return self._execute_entries(session_summary, short_opportunities, "short")
+
+    def _execute_entries(
+        self,
+        session_summary: Dict[str, Any],
+        opportunities: List[TradingOpportunity],
+        direction: str,
+    ) -> Dict[str, Any]:
+        """Shared entry flow for long and short directions.
+
+        Handles opposite-position exits, the shortability filter (shorts only),
+        sizing via the direction-specific method, order placement, and
+        structured order recording. Behavior-identical to the former
+        _execute_purchases/_execute_shorts pair.
+        """
+        is_short = direction == "short"
+        exit_action = "SELL" if is_short else "COVER"
+        entry_action = "SHORT" if is_short else "BUY"
+        sizing_fn = (
+            self.calculate_short_position_sizes if is_short
+            else self.calculate_position_sizes
+        )
+        place_fn = self.place_short_order if is_short else self.place_buy_order
+        noun = "short-selling" if is_short else "buying"
+        arrow = "📉" if is_short else "📥"
+        notional_label = "short notional" if is_short else "investment"
+
         # Partition: opposite-direction holdings are exits, not new entries.
         # Exits do NOT consume new-position slots.
         exit_symbols = {
             op.symbol for op in opportunities
-            if self._has_opposite_position(op.symbol, "long")
+            if self._has_opposite_position(op.symbol, direction)
         }
         for op in opportunities:
             if op.symbol in exit_symbols:
-                if self._exit_opposite_position(op.symbol, "long"):
+                if self._exit_opposite_position(op.symbol, direction):
                     session_summary['positions_exited'] += 1
                     self._record_order(
-                        session_summary, symbol=op.symbol, action='COVER',
+                        session_summary, symbol=op.symbol, action=exit_action,
                         order_type='exit', strategy=op.strategy_name,
                         reason='opposite_signal')
 
@@ -1793,31 +1827,45 @@ class TradingEngine:
             op for op in opportunities if op.symbol not in exit_symbols
         ]
 
+        # Shortability filter: shorting an asset the broker flags
+        # shortable=False is a guaranteed rejection (42210000). Drop those up
+        # front so we don't size a position we cannot fill.
+        if is_short:
+            shortable_entries = []
+            for op in entry_opportunities:
+                if self._is_shortable(op.symbol):
+                    shortable_entries.append(op)
+                else:
+                    logger.warning(
+                        "Skipping short %s: broker reports the asset is not "
+                        "shortable", op.symbol)
+            entry_opportunities = shortable_entries
+
         # Calculate position sizes (new entries only)
-        position_allocations = self.calculate_position_sizes(
-            entry_opportunities)
+        position_allocations = sizing_fn(entry_opportunities)
 
         if position_allocations:
-            logger.info("📥 Found %d new buying opportunities:",
-                        len(position_allocations))
-            total_investment = 0
+            logger.info("%s Found %d new %s opportunities:",
+                        arrow, len(position_allocations), noun)
+            total_notional = 0
             for i, (opportunity, shares) in enumerate(position_allocations, 1):
                 position_value = shares * opportunity.entry_price
-                total_investment += position_value
-                logger.info("   %d. %s: %d shares @ $%.2f = $%.2f",
-                            i, opportunity.symbol, shares, opportunity.entry_price, position_value)
+                total_notional += position_value
+                logger.info("   %d. %s: %d shares @ $%.2f = $%.2f%s",
+                            i, opportunity.symbol, shares, opportunity.entry_price,
+                            position_value, " (short)" if is_short else "")
                 logger.info("      RSI: %.1f, Alpha: %.3f, Win Rate: %.1f%%",
                             opportunity.current_rsi, opportunity.alpha, opportunity.win_rate * 100)
-            logger.info("   Total investment: $%.2f", total_investment)
+            logger.info("   Total %s: $%.2f", notional_label, total_notional)
 
-            # Execute buy orders
+            # Execute entry orders
             for opportunity, shares in position_allocations:
-                if self.place_buy_order(opportunity, shares):
+                if place_fn(opportunity, shares):
                     session_summary['orders_placed'] += 1
                     session_summary['new_positions'] += 1
                     self._record_order(
                         session_summary, symbol=opportunity.symbol,
-                        action='BUY', shares=shares,
+                        action=entry_action, shares=shares,
                         price=opportunity.entry_price, order_type='entry',
                         strategy=opportunity.strategy_name)
                 else:
@@ -1841,71 +1889,6 @@ class TradingEngine:
         logger.info("Found %d short-selling opportunities",
                     len(short_opportunities))
         return self._execute_shorts(session_summary, short_opportunities)
-
-    def _execute_shorts(self, session_summary: Dict[str, Any], short_opportunities: List[TradingOpportunity]) -> Dict[str, Any]:
-        """Execute short entries for a list of opportunities (shared by the daily
-        session and the bar loop)."""
-        # Partition: opposite-direction holdings are exits, not new entries.
-        exit_symbols = {
-            op.symbol for op in short_opportunities
-            if self._has_opposite_position(op.symbol, "short")
-        }
-        for op in short_opportunities:
-            if op.symbol in exit_symbols:
-                if self._exit_opposite_position(op.symbol, "short"):
-                    session_summary['positions_exited'] += 1
-                    self._record_order(
-                        session_summary, symbol=op.symbol, action='SELL',
-                        order_type='exit', strategy=op.strategy_name,
-                        reason='opposite_signal')
-
-        entry_opportunities = [
-            op for op in short_opportunities if op.symbol not in exit_symbols
-        ]
-
-        # Shortability filter: shorting an asset the broker flags
-        # shortable=False is a guaranteed rejection (42210000). Drop those up
-        # front so we don't size a position we cannot fill.
-        shortable_entries = []
-        for op in entry_opportunities:
-            if self._is_shortable(op.symbol):
-                shortable_entries.append(op)
-            else:
-                logger.warning(
-                    "Skipping short %s: broker reports the asset is not "
-                    "shortable", op.symbol)
-        entry_opportunities = shortable_entries
-
-        # Calculate position sizes (respects leverage cap; new entries only)
-        position_allocations = self.calculate_short_position_sizes(
-            entry_opportunities)
-
-        if position_allocations:
-            logger.info("📉 Found %d new short-selling opportunities:",
-                        len(position_allocations))
-            total_notional = 0
-            for i, (opportunity, shares) in enumerate(position_allocations, 1):
-                position_value = shares * opportunity.entry_price
-                total_notional += position_value
-                logger.info("   %d. %s: %d shares @ $%.2f = $%.2f (short)",
-                            i, opportunity.symbol, shares, opportunity.entry_price, position_value)
-                logger.info("      RSI: %.1f, Alpha: %.3f, Win Rate: %.1f%%",
-                            opportunity.current_rsi, opportunity.alpha, opportunity.win_rate * 100)
-            logger.info("   Total short notional: $%.2f", total_notional)
-
-            # Execute short orders
-            for opportunity, shares in position_allocations:
-                if self.place_short_order(opportunity, shares):
-                    session_summary['orders_placed'] += 1
-                    session_summary['new_positions'] += 1
-                    self._record_order(
-                        session_summary, symbol=opportunity.symbol,
-                        action='SHORT', shares=shares,
-                        price=opportunity.entry_price, order_type='entry',
-                        strategy=opportunity.strategy_name)
-                else:
-                    self._record_order_failure(session_summary, opportunity.symbol)
-        return session_summary
 
     def _record_order_failure(self, session_summary: Dict[str, Any],
                               symbol: str) -> None:

@@ -79,7 +79,7 @@ class StrategyOptimizer:
             logger.error(f"💥 Error optimizing {symbol}: {e}")
             return None
 
-    async def optimize_universe(self, symbols: List[str], start_date: datetime, end_date: datetime) -> List["BacktestResult"]:  # noqa: F821
+    async def optimize_universe(self, symbols: List[str], start_date: datetime, end_date: datetime, progress_cb=None) -> List["BacktestResult"]:  # noqa: F821
         """
         Optimize RSI parameters for multiple symbols concurrently.
 
@@ -87,12 +87,14 @@ class StrategyOptimizer:
             symbols: List of stock symbols
             start_date: Backtest start date
             end_date: Backtest end date
+            progress_cb: Optional callback(percent: int, message: str) for
+                background-job progress reporting (Phase 4).
 
         Returns:
             List of BacktestResult objects
         """
         # Lazy import to avoid circular dependency at module level.
-        from strategy import BacktestResult  # pylint: disable=import-outside-toplevel
+        from strategies.base import BacktestResult  # pylint: disable=import-outside-toplevel
 
         results = []
         processed_count = 0
@@ -114,7 +116,8 @@ class StrategyOptimizer:
         logger.info("=" * 60)
 
         # Initialize progress indicator
-        progress = ProgressIndicator(total_symbols, "🔍 Optimizing strategies")
+        progress = ProgressIndicator(
+            total_symbols, "🔍 Optimizing strategies", callback=progress_cb)
 
         # Use ThreadPoolExecutor for I/O bound operations
         loop = asyncio.get_event_loop()

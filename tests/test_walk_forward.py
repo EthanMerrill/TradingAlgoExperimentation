@@ -14,7 +14,7 @@ import pandas as pd
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
-from strategy import BacktestResult  # noqa: E402
+from strategies.base import BacktestResult  # noqa: E402
 from walk_forward import (  # noqa: E402
     WalkForwardResult,
     WalkForwardValidator,

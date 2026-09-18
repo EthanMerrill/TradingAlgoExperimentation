@@ -19,7 +19,7 @@ import numpy as np
 # Re-use BacktestResult from strategy to avoid circular imports at runtime.
 # StrategyOptimizer imports us, so importing just the dataclass is safe.
 # type: ignore  # pylint: disable=import-error
-from strategy import BacktestResult
+from strategies.base import BacktestResult
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,33 @@ def compute_stage_zscores(
         scores.append(score)
 
     return scores
+
+
+def compute_metric_triple_zscores(
+    metrics: List[Tuple[float, float, float]],
+) -> List[float]:
+    """Compute cross-pool Z-scores for raw (alpha, sharpe, calmar) triples.
+
+    Strategy-agnostic variant used by walk-forward validation, which operates
+    on WalkForwardResult OOS fields rather than BacktestResult objects.
+    Calmar is capped at CALMAR_CAP exactly like the BacktestResult paths.
+
+    Returns a list of composite scores in the same order as ``metrics``.
+    """
+    if not metrics:
+        return []
+
+    alphas = np.array([m[0] for m in metrics], dtype=np.float64)
+    sharpes = np.array([m[1] for m in metrics], dtype=np.float64)
+    calmars = np.array(
+        [min(m[2], CALMAR_CAP) for m in metrics], dtype=np.float64
+    )
+    stats = _compute_pool_stats(alphas, sharpes, calmars)
+
+    return [
+        _zscore_single(a, s, c, stats[0], stats[1], stats[2])
+        for a, s, c in metrics
+    ]
 
 
 def compute_cross_symbol_zscores(results: List[BacktestResult]) -> None:

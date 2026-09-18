@@ -13,7 +13,8 @@ import pandas as pd
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
-from strategy import BacktestResult, RSIStrategy  # noqa: E402
+from strategies.base import BacktestResult  # noqa: E402
+from strategies.rsi import RSIStrategy  # noqa: E402
 
 
 class TestBacktestResult(unittest.TestCase):
@@ -95,7 +96,7 @@ class TestRSIStrategy(unittest.TestCase):
 
     def test_calculate_rsi(self):
         """Test RSI calculation via TechnicalIndicators."""
-        from data_provider import TechnicalIndicators
+        from indicators import TechnicalIndicators
         # Create sample price data
         prices = pd.Series([100, 105, 103, 108, 110, 107,
                            112, 115, 113, 118, 120, 117, 122, 125, 123, 128])

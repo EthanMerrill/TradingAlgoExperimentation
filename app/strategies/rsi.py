@@ -3,7 +3,7 @@ RSI mean-reversion strategy.
 
 Moved from ``strategy.py`` in Phase B (multi-strategy framework). Implements
 the ``Strategy`` interface; the legacy module path
-``from strategy import RSIStrategy`` still works via the re-export shim.
+``from strategies.rsi import RSIStrategy``.
 """
 import logging
 from typing import Any, Dict, List, Optional, Tuple, cast
@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import numpy as np
 import pandas as pd
 import pytz
-from data_provider import TechnicalIndicators
+from indicators import TechnicalIndicators
 from joblib import Parallel, delayed
 
 from config import globalConfig  # type: ignore

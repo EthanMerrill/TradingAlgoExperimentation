@@ -14,7 +14,7 @@ import pandas as pd
 
 if TYPE_CHECKING:
     from config import Config
-    from strategy import BacktestResult
+    from strategies.base import BacktestResult
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +241,7 @@ def backtest_result_to_dict(result: "BacktestResult") -> Dict[str, Any]:
 
 def dict_to_backtest_result(d: Dict[str, Any]) -> "BacktestResult":
     """Reconstruct a BacktestResult from a flat dict (CSV row / DB row)."""
-    from strategy import BacktestResult  # pylint: disable=import-outside-toplevel
+    from strategies.base import BacktestResult  # pylint: disable=import-outside-toplevel
 
     return BacktestResult(
         symbol=str(d["symbol"]),
@@ -465,8 +465,12 @@ class StorageBackend(ABC):
         """Get the most recent position file identifier."""
 
     @abstractmethod
-    def get_latest_positions_df(self, openPosition: bool = True) -> pd.DataFrame:
-        """Get the most recent position DataFrame."""
+    def get_latest_positions_df(self, openPosition: bool | None = True) -> pd.DataFrame:
+        """Get the most recent position DataFrame.
+
+        ``openPosition=True`` → open rows, ``False`` → closed rows,
+        ``None`` → all rows unfiltered.
+        """
 
     def prune_backtest_results(self, retention_days: int) -> int:
         """Delete backtest results older than ``retention_days`` days.

@@ -115,6 +115,7 @@ class TestApiPositionsEndpoint(unittest.TestCase):
             'positions_20250710.csv']
         self.mock_storage.get_latest_position_file.return_value = 'positions_20250710.csv'
         self.mock_storage.load_position_entries.return_value = self.full_df
+        self.mock_storage.get_latest_positions_df.return_value = self.full_df
 
         self.app = create_app(storage_backend=self.mock_storage)
         self.client = self.app.test_client()
@@ -437,6 +438,80 @@ class TestDfRowToDict(unittest.TestCase):
         })
         result = _df_row_to_dict(row)
         self.assertIs(result['closed'], True)
+
+
+class TestRunCycleJobsEndpoints(unittest.TestCase):
+    """Phase 4: /api/run-cycle returns a job; /api/jobs tracks progress."""
+
+    def setUp(self):
+        import threading
+
+        self._orig_password = os.environ.get('DASHBOARD_PASSWORD')
+        os.environ['DASHBOARD_PASSWORD'] = 'testpass'
+
+        import jobs as jobs_mod
+        # Fresh registry per test so state doesn't leak.
+        self.saved_manager = jobs_mod.job_manager
+        jobs_mod.job_manager = jobs_mod.JobManager()
+
+        self.shared_state = {
+            'last_result': None,
+            'cycle_running': False,
+            'cycle_flags': {},
+            'trigger_event': threading.Event(),
+        }
+        self.app = create_app(shared_state=self.shared_state)
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        if self._orig_password is not None:
+            os.environ['DASHBOARD_PASSWORD'] = self._orig_password
+        else:
+            os.environ.pop('DASHBOARD_PASSWORD', None)
+        import jobs as jobs_mod
+        jobs_mod.job_manager = self.saved_manager
+
+    @staticmethod
+    def _auth_headers():
+        import base64
+        credentials = base64.b64encode(b'admin:testpass').decode('utf-8')
+        return {'Authorization': f'Basic {credentials}'}
+
+    def test_run_cycle_returns_202_with_job_id(self):
+        resp = self.client.post('/api/run-cycle', headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 202)
+        data = resp.get_json()
+        self.assertEqual(data['status'], 'queued')
+        self.assertTrue(data['job_id'])
+        # Job is registered and visible
+        detail = self.client.get(f"/api/jobs/{data['job_id']}",
+                                 headers=self._auth_headers())
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.get_json()['status'], 'queued')
+
+    def test_run_cycle_conflict_while_job_active(self):
+        first = self.client.post('/api/run-cycle', headers=self._auth_headers())
+        self.assertEqual(first.status_code, 202)
+        second = self.client.post('/api/run-cycle', headers=self._auth_headers())
+        self.assertEqual(second.status_code, 409)
+
+    def test_jobs_listing(self):
+        resp = self.client.post('/api/run-cycle', headers=self._auth_headers())
+        job_id = resp.get_json()['job_id']
+        listing = self.client.get('/api/jobs', headers=self._auth_headers())
+        self.assertEqual(listing.status_code, 200)
+        jobs = listing.get_json()['jobs']
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]['job_id'], job_id)
+
+    def test_job_detail_not_found(self):
+        resp = self.client.get('/api/jobs/doesnotexist',
+                               headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 404)
+
+    def test_job_detail_requires_auth(self):
+        resp = self.client.get('/api/jobs/someid')
+        self.assertEqual(resp.status_code, 401)
 
 
 if __name__ == '__main__':

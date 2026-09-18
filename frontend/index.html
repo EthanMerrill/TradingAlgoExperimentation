@@ -47,6 +47,7 @@
     <div id="tab-bar">
         <button class="tab-btn active" data-tab="positions">Positions</button>
         <button class="tab-btn" data-tab="activity">Run Activity</button>
+        <button class="tab-btn" data-tab="jobs">Jobs</button>
         <button class="tab-btn" data-tab="database">Database</button>
     </div>
 
@@ -62,6 +63,27 @@
 
         <!-- Positions table -->
         <div id="positions-table"></div>
+    </section>
+
+    <!-- Jobs tab (Phase 4: background job progress) -->
+    <section id="tab-jobs" class="tab-panel">
+        <div id="jobs-panel">
+            <div id="active-job-card" class="job-card" hidden>
+                <div class="job-card-header">
+                    <span id="job-kind" class="job-kind">—</span>
+                    <span id="job-status" class="job-status">—</span>
+                </div>
+                <div class="job-progress-track">
+                    <div id="job-progress-bar" class="job-progress-bar" style="width:0%"></div>
+                </div>
+                <div class="job-card-footer">
+                    <span id="job-message">—</span>
+                    <span id="job-pct">0%</span>
+                </div>
+            </div>
+            <h2 class="panel-subheading">Recent jobs</h2>
+            <div id="jobs-table"></div>
+        </div>
     </section>
 
     <!-- Database tab -->

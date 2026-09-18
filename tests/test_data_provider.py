@@ -13,7 +13,8 @@ import pandas as pd
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
-from data_provider import DataProvider, TechnicalIndicators  # noqa: E402
+from data_provider import DataProvider  # noqa: E402
+from indicators import TechnicalIndicators  # noqa: E402
 
 
 class TestDataProvider(unittest.TestCase):

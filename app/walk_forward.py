@@ -104,7 +104,7 @@ class WalkForwardResult:
         trading_engine.py and positions.py need no changes.
         """
         # Lazy import to avoid circular dependency at module level.
-        from strategy import BacktestResult  # pylint: disable=import-outside-toplevel
+        from strategies.base import BacktestResult  # pylint: disable=import-outside-toplevel
 
         return BacktestResult(
             symbol=self.symbol,
@@ -628,6 +628,7 @@ class WalkForwardValidator:
         symbols: List[str],
         start_date: datetime,
         end_date: datetime,
+        progress_cb=None,
     ) -> List[WalkForwardResult]:
         """Run walk-forward validation for all symbols concurrently.
 
@@ -638,6 +639,8 @@ class WalkForwardValidator:
             symbols: List of stock symbols
             start_date: Start of the full backtest window
             end_date: End of the full backtest window
+            progress_cb: Optional callback(percent: int, message: str) for
+                background-job progress reporting (Phase 4).
 
         Returns:
             List of WalkForwardResult objects (one per symbol × direction)
@@ -671,7 +674,7 @@ class WalkForwardValidator:
         from utils import ProgressIndicator, resolve_worker_counts  # pylint: disable=import-outside-toplevel
 
         progress = ProgressIndicator(
-            total_symbols, "🔍 Walk-forward validation")
+            total_symbols, "🔍 Walk-forward validation", callback=progress_cb)
 
         loop = asyncio.get_event_loop()
 
@@ -830,34 +833,22 @@ class WalkForwardValidator:
     def _compute_wf_cross_symbol_zscores(results: List[WalkForwardResult]) -> None:
         """Compute cross-symbol Z-scores on walk-forward aggregate OOS metrics.
 
-        Mutates each result's composite_score in place. Uses the same approach
-        as zscore.compute_cross_symbol_zscores but operates on WalkForwardResult
-        fields (oos_total_return, oos_sharpe_ratio, oos_calmar_ratio).
+        Mutates each result's composite_score in place. Delegates to the shared
+        zscore.compute_metric_triple_zscores so walk-forward and regular
+        backtests use identical normalization (incl. the CALMAR_CAP clip).
         """
+        import zscore  # pylint: disable=import-outside-toplevel
+
         if len(results) < 2:
             # Single result: set neutral score
             for r in results:
                 r.composite_score = 0.0
             return
 
-        alphas = np.array([r.oos_total_return for r in results])
-        sharpes = np.array([r.oos_sharpe_ratio for r in results])
-        calmars = np.array([min(r.oos_calmar_ratio, 10.0) for r in results])
-
-        alpha_mean, alpha_std = alphas.mean(), alphas.std()
-        sharpe_mean, sharpe_std = sharpes.mean(), sharpes.std()
-        calmar_mean, calmar_std = calmars.mean(), calmars.std()
-
-        for i, r in enumerate(results):
-            alpha_z = (alphas[i] - alpha_mean) / \
-                alpha_std if alpha_std > 0 else 0
-            sharpe_z = (sharpes[i] - sharpe_mean) / \
-                sharpe_std if sharpe_std > 0 else 0
-            calmar_z = (calmars[i] - calmar_mean) / \
-                calmar_std if calmar_std > 0 else 0
-            r.composite_score = float(alpha_z + sharpe_z + calmar_z)
-
-        logger.debug(
-            "WF Z-score pool stats: α(μ=%.4f,σ=%.4f) sharpe(μ=%.4f,σ=%.4f) calmar(μ=%.4f,σ=%.4f)",
-            alpha_mean, alpha_std, sharpe_mean, sharpe_std, calmar_mean, calmar_std,
-        )
+        metrics = [
+            (r.oos_total_return, r.oos_sharpe_ratio, r.oos_calmar_ratio)
+            for r in results
+        ]
+        scores = zscore.compute_metric_triple_zscores(metrics)
+        for r, score in zip(results, scores):
+            r.composite_score = float(score)

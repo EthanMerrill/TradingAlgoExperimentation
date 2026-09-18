@@ -1,19 +1,39 @@
 """CLI progress indicator for long-running operations."""
 import sys
 import time
-from typing import Optional
+from typing import Callable, Optional
+
+
+# Optional external progress sink, e.g. a background-job reporter:
+# callback(percent: int, message: str). Invoked on every update.
+ProgressCallback = Callable[[int, str], None]
 
 
 class ProgressIndicator:
     """Simple CLI progress indicator for long-running operations."""
 
-    def __init__(self, total: int, description: str = "Processing", width: int = 50):
+    def __init__(self, total: int, description: str = "Processing", width: int = 50,
+                 callback: Optional[ProgressCallback] = None):
         self.total = total
         self.current = 0
         self.description = description
         self.width = width
         self.start_time = time.time()
         self.last_update = 0
+        # Optional background-job sink (Phase 4). Never allowed to break
+        # the CLI display — errors are swallowed.
+        self._callback = callback
+
+    def _emit(self, item_name: Optional[str]) -> None:
+        if self._callback is None:
+            return
+        percent = 100 if self.total == 0 else min(
+            100, int((self.current / self.total) * 100))
+        message = f"{self.description}: {item_name}" if item_name else self.description
+        try:
+            self._callback(percent, message)
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
 
     def update(self, count: int = 1, item_name: Optional[str] = None) -> None:
         """Update progress counter and display."""
@@ -21,6 +41,8 @@ class ProgressIndicator:
         current_time = time.time()
 
         # Only update display every 0.1 seconds to avoid spam
+        current_time = time.time()
+        self._emit(item_name)
         if current_time - self.last_update >= 0.1:
             self._display_progress(item_name)
             self.last_update = current_time

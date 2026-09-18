@@ -599,116 +599,18 @@ class PositionsManager:
                     entry_price = cloud_positions.loc[symbol_mask, 'entry_price'].values[0] \
                         if 'entry_price' in cloud_positions.columns else np.nan
 
-                    exit_price_val = None
-                    exit_date_val = None
-                    exit_reason_val = None
-
-                    # --- Step 0: exact fill by client_order_id/order_id ---
                     client_order_id = None
                     if 'client_order_id' in cloud_positions.columns:
                         cid_vals = cloud_positions.loc[
                             symbol_mask, 'client_order_id']
                         if len(cid_vals) and pd.notna(cid_vals.values[0]):
                             client_order_id = str(cid_vals.values[0])
-                    matched = self._find_fill_by_client_order_id(
-                        symbol, client_order_id)
-                    if matched is not None and matched[0] and matched[0] > 0:
-                        exit_price_val = matched[0]
-                        filled_at = matched[2]
-                        if pd.notna(filled_at):
-                            exit_date_val = filled_at if isinstance(
-                                filled_at, datetime) else datetime.fromisoformat(str(filled_at))
-                            if exit_date_val.tzinfo is not None:
-                                exit_date_val = exit_date_val.replace(
-                                    tzinfo=None)
-                        exit_reason_val = "matched_by_client_order_id"
-                        logger.info(
-                            "Reconcile %s: matched fill by client_order_id=%s at $%.2f",
-                            symbol, client_order_id, exit_price_val
-                        )
 
-                    # --- Step 1: Check Alpaca order history for a real fill ---
-                    try:
-                        orders_df = self.data_provider.get_filled_orders_for_symbol(
-                            symbol, limit=20)
-                        if not orders_df.empty and 'side' in orders_df.columns:
-                            # Check for a FILLED close order
-                            close_orders = orders_df[
-                                (orders_df['side'] == close_order_side) &
-                                (orders_df['filled_qty'] > 0)
-                            ]
-                            if exit_price_val is None and not close_orders.empty:
-                                latest_close = close_orders.iloc[0]
-                                filled_price = float(
-                                    latest_close['filled_avg_price'])
-                                filled_at = latest_close.get('submitted_at')
-                                if pd.notna(filled_at):
-                                    exit_date_val = filled_at if isinstance(
-                                        filled_at, datetime) else datetime.fromisoformat(str(filled_at))
-                                    if exit_date_val.tzinfo is not None:
-                                        exit_date_val = exit_date_val.replace(
-                                            tzinfo=None)
-                                exit_price_val = filled_price
-
-                                # Determine whether it hit stop_loss or take_profit
-                                if pd.notna(stop_loss) and pd.notna(take_profit):
-                                    dist_stop = abs(filled_price - stop_loss)
-                                    dist_take = abs(filled_price - take_profit)
-                                    if dist_stop <= dist_take:
-                                        exit_reason_val = "oco_stop_loss"
-                                    else:
-                                        exit_reason_val = "oco_take_profit"
-                                else:
-                                    exit_reason_val = "oco_filled"
-                                logger.info(
-                                    "Reconcile %s: found filled %s order at $%.2f (%s) — exit_reason=%s",
-                                    symbol, close_order_side, filled_price,
-                                    filled_at, exit_reason_val
-                                )
-
-                            # Check if any entry order ever existed
-                            if exit_price_val is None:
-                                entry_orders = orders_df[
-                                    (orders_df['side'] == entry_order_side) &
-                                    (orders_df['filled_qty'] > 0)
-                                ]
-                                if entry_orders.empty:
-                                    exit_reason_val = "failed_to_open"
-                                    exit_price_val = 0.0
-                                    logger.warning(
-                                        "Reconcile %s: no filled %s order found in history — "
-                                        "marking as failed_to_open",
-                                        symbol, entry_order_side
-                                    )
-                    except Exception as e:
-                        logger.warning(
-                            "Reconcile %s: order history lookup failed: %s", symbol, e)
-
-                    # --- Step 2: Fallback to OCO approximation ---
-                    if exit_price_val is None:
-                        if (pd.notna(stop_loss) and pd.notna(take_profit)
-                                and pd.notna(current_price) and current_price > 0):
-                            if abs(current_price - stop_loss) <= abs(current_price - take_profit):
-                                chosen = "stop_loss"
-                                exit_price_val = stop_loss
-                            else:
-                                chosen = "take_profit"
-                                exit_price_val = take_profit
-                            logger.info(
-                                "Reconcile OCO-fallback for %s: using %s=%.2f "
-                                "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
-                                symbol, chosen, exit_price_val, stop_loss, take_profit,
-                                current_price, entry_price
-                            )
-                        elif pd.notna(current_price) and current_price > 0:
-                            exit_price_val = current_price
-                        elif pd.notna(entry_price) and entry_price > 0:
-                            exit_price_val = entry_price
-                        else:
-                            exit_price_val = 0.0
-
-                    if exit_reason_val is None:
-                        exit_reason_val = 'broker_closed'
+                    exit_price_val, exit_date_val, exit_reason_val = \
+                        self._resolve_exit_for_symbol(
+                            symbol, client_order_id, close_order_side,
+                            entry_order_side, stop_loss, take_profit,
+                            current_price, entry_price)
 
                     cloud_positions.loc[symbol_mask,
                                         'exit_price'] = exit_price_val
@@ -812,6 +714,134 @@ class PositionsManager:
         self._cached_open_positions = open_positions
 
         return open_positions
+
+    def _resolve_exit_for_symbol(
+        self,
+        symbol: str,
+        client_order_id: Optional[str],
+        close_order_side: str,
+        entry_order_side: str,
+        stop_loss: float,
+        take_profit: float,
+        current_price: float,
+        entry_price: float,
+    ) -> tuple:
+        """Determine exit price/date/reason for a cloud-only closed position.
+
+        Resolution order:
+          0. Exact fill matched by client_order_id (deterministic).
+          1. Filled close order from Alpaca history -> oco_stop_loss /
+             oco_take_profit / oco_filled; no entry order ever -> failed_to_open.
+          2. OCO approximation (nearest of stop/TP to current price),
+             falling back to current price, entry price, then 0.0.
+
+        Returns (exit_price, exit_date, exit_reason).
+        """
+        exit_price_val = None
+        exit_date_val = None
+        exit_reason_val = None
+
+        # --- Step 0: exact fill by client_order_id/order_id ---
+        matched = self._find_fill_by_client_order_id(
+            symbol, client_order_id)
+        if matched is not None and matched[0] and matched[0] > 0:
+            exit_price_val = matched[0]
+            filled_at = matched[2]
+            if pd.notna(filled_at):
+                exit_date_val = filled_at if isinstance(
+                    filled_at, datetime) else datetime.fromisoformat(str(filled_at))
+                if exit_date_val.tzinfo is not None:
+                    exit_date_val = exit_date_val.replace(
+                        tzinfo=None)
+            exit_reason_val = "matched_by_client_order_id"
+            logger.info(
+                "Reconcile %s: matched fill by client_order_id=%s at $%.2f",
+                symbol, client_order_id, exit_price_val
+            )
+
+        # --- Step 1: Check Alpaca order history for a real fill ---
+        try:
+            orders_df = self.data_provider.get_filled_orders_for_symbol(
+                symbol, limit=20)
+            if not orders_df.empty and 'side' in orders_df.columns:
+                # Check for a FILLED close order
+                close_orders = orders_df[
+                    (orders_df['side'] == close_order_side) &
+                    (orders_df['filled_qty'] > 0)
+                ]
+                if exit_price_val is None and not close_orders.empty:
+                    latest_close = close_orders.iloc[0]
+                    filled_price = float(
+                        latest_close['filled_avg_price'])
+                    filled_at = latest_close.get('submitted_at')
+                    if pd.notna(filled_at):
+                        exit_date_val = filled_at if isinstance(
+                            filled_at, datetime) else datetime.fromisoformat(str(filled_at))
+                        if exit_date_val.tzinfo is not None:
+                            exit_date_val = exit_date_val.replace(
+                                tzinfo=None)
+                    exit_price_val = filled_price
+
+                    # Determine whether it hit stop_loss or take_profit
+                    if pd.notna(stop_loss) and pd.notna(take_profit):
+                        dist_stop = abs(filled_price - stop_loss)
+                        dist_take = abs(filled_price - take_profit)
+                        if dist_stop <= dist_take:
+                            exit_reason_val = "oco_stop_loss"
+                        else:
+                            exit_reason_val = "oco_take_profit"
+                    else:
+                        exit_reason_val = "oco_filled"
+                    logger.info(
+                        "Reconcile %s: found filled %s order at $%.2f (%s) — exit_reason=%s",
+                        symbol, close_order_side, filled_price,
+                        filled_at, exit_reason_val
+                    )
+
+                # Check if any entry order ever existed
+                if exit_price_val is None:
+                    entry_orders = orders_df[
+                        (orders_df['side'] == entry_order_side) &
+                        (orders_df['filled_qty'] > 0)
+                    ]
+                    if entry_orders.empty:
+                        exit_reason_val = "failed_to_open"
+                        exit_price_val = 0.0
+                        logger.warning(
+                            "Reconcile %s: no filled %s order found in history — "
+                            "marking as failed_to_open",
+                            symbol, entry_order_side
+                        )
+        except Exception as e:
+            logger.warning(
+                "Reconcile %s: order history lookup failed: %s", symbol, e)
+
+        # --- Step 2: Fallback to OCO approximation ---
+        if exit_price_val is None:
+            if (pd.notna(stop_loss) and pd.notna(take_profit)
+                    and pd.notna(current_price) and current_price > 0):
+                if abs(current_price - stop_loss) <= abs(current_price - take_profit):
+                    chosen = "stop_loss"
+                    exit_price_val = stop_loss
+                else:
+                    chosen = "take_profit"
+                    exit_price_val = take_profit
+                logger.info(
+                    "Reconcile OCO-fallback for %s: using %s=%.2f "
+                    "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
+                    symbol, chosen, exit_price_val, stop_loss, take_profit,
+                    current_price, entry_price
+                )
+            elif pd.notna(current_price) and current_price > 0:
+                exit_price_val = current_price
+            elif pd.notna(entry_price) and entry_price > 0:
+                exit_price_val = entry_price
+            else:
+                exit_price_val = 0.0
+
+        if exit_reason_val is None:
+            exit_reason_val = 'broker_closed'
+        return exit_price_val, exit_date_val, exit_reason_val
 
     def _find_fill_by_client_order_id(
         self, symbol: str, client_order_id: Optional[str]

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
 from positions import Position, PositionsManager  # noqa: E402
 from positions import _as_utc_timestamp, _ensure_utc_datetime_column  # noqa: E402
-from strategy import BacktestResult  # noqa: E402
+from strategies.base import BacktestResult  # noqa: E402
 
 
 class TestUtcTimestampHelpers(unittest.TestCase):

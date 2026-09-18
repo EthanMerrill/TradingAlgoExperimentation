@@ -5,8 +5,6 @@ Phase B of MULTI_STRATEGY_PLAN.md: defines the ``Strategy`` base class every
 strategy implements, plus the shared data types (``BacktestResult``, which
 moved here from ``strategy.py``, ``LiveSignal``, and ``StrategyContext``).
 
-``strategy.py`` remains a backward-compatible re-export shim so existing
-``from strategy import BacktestResult`` imports keep working.
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -17,20 +15,27 @@ import pandas as pd
 
 @dataclass
 class BacktestResult:
-    """Result of a single backtest run."""
+    """Result of a single backtest run.
+
+    The ``rsi_*``/``current_rsi`` fields are legacy RSI-strategy leftovers,
+    kept optional for backward compatibility with persisted rows and older
+    callers. New strategies should put strategy-specific values in ``params``
+    instead. Prefer ``result.params.get("rsi_period", ...)`` style access in
+    generic code.
+    """
     symbol: str
-    rsi_period: int
-    rsi_lower: int
-    rsi_upper: int
-    total_return: float
-    buy_and_hold_return: float
-    alpha: float
-    num_trades: int
-    win_rate: float
-    avg_trade_duration: float
-    max_drawdown: float
-    sharpe_ratio: float
-    profitable: bool
+    rsi_period: int = 0
+    rsi_lower: int = 0
+    rsi_upper: int = 0
+    total_return: float = 0.0
+    buy_and_hold_return: float = 0.0
+    alpha: float = 0.0
+    num_trades: int = 0
+    win_rate: float = 0.0
+    avg_trade_duration: float = 0.0
+    max_drawdown: float = 0.0
+    sharpe_ratio: float = 0.0
+    profitable: bool = True
     calmar_ratio: float = 0.0
     composite_score: float = 0.0
     # Current RSI value at time of backtest (RSI strategies only)
