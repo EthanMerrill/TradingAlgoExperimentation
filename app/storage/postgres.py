@@ -249,8 +249,8 @@ _BACKTEST_COLS = [
 ]
 
 # Position columns are the single source of truth from backend.py so the
-# Postgres schema cannot drift from the GCS/CSV schema (previous drift here
-# silently dropped order_id/client_order_id).
+# Postgres schema cannot drift from the shared serialization schema (previous
+# drift here silently dropped order_id/client_order_id).
 _POSITION_COLS = POSITION_FIELDS
 
 # ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ class PostgresStorage(StorageBackend):
         if not self._dsn:
             logger.error(
                 "DATABASE_URL not set — PostgresStorage will be unavailable. "
-                "Set DATABASE_URL env var or switch STORAGE_BACKEND to 'gcs'."
+                "Set the DATABASE_URL env var."
             )
             return
 
@@ -567,7 +567,7 @@ class PostgresStorage(StorageBackend):
             logger.error("Postgres not connected — cannot save positions")
             return False
 
-        # Normalise to list-of-dicts (same logic as GcsStorage)
+        # Normalise to list-of-dicts (shared serialization logic)
         if isinstance(positions_data, list):
             if not positions_data:
                 logger.info("save_positions: empty list — nothing to save")
@@ -748,7 +748,8 @@ class PostgresStorage(StorageBackend):
                 "WHERE environment = $1 ORDER BY run_timestamp DESC",
                 self._env,
             ))
-            # Return in the same format as GCS: backtest_results_{timestamp}.csv
+            # Return filenames in the canonical
+            # backtest_results_{timestamp}.csv format
             return [f"backtest_results_{r['run_timestamp']}.csv" for r in rows]
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error listing backtest files from Postgres: %s", exc)
@@ -864,7 +865,7 @@ class PostgresStorage(StorageBackend):
 # ---------------------------------------------------------------------------
 
 def _filename_to_timestamp(filename: str) -> str:
-    """Extract the YYYYMMDD_HHMMSS timestamp from a GCS-style filename.
+    """Extract the YYYYMMDD_HHMMSS timestamp from a results filename.
 
     'backtest_results_20250610_170343.csv' -> '20250610_170343'
     'positions_20250610_170343.csv'          -> '20250610_170343'

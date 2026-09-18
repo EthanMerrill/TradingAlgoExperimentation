@@ -1,8 +1,8 @@
 # Trading Algorithm
 
-A **multi-strategy** trading framework for US common stocks, with pluggable
-storage backends (GCS / Postgres), walk-forward validation, short-selling
-support, and an intraday bar-loop engine. Ships with an RSI mean-reversion
+A **multi-strategy** trading framework for US common stocks, with a Postgres
+storage backend, walk-forward validation, short-selling support, and an
+intraday bar-loop engine. Ships with an RSI mean-reversion
 strategy; new strategies plug in via a registry.
 
 ## Architecture Overview
@@ -20,15 +20,14 @@ app/
 ├── walk_forward.py         Walk-forward validation (IS/OOS windows)
 ├── bar_engine.py           Intraday bar-loop engine (bar_loop strategies, session-close exits)
 ├── trading_engine.py       Order execution, position sizing, OCO orders, strategy-aware dispatch
-├── positions.py            Position reconciliation (GCS/Postgres ↔ Alpaca)
+├── positions.py            Position reconciliation (Postgres ↔ Alpaca)
 ├── zscore.py               Cross-symbol Z-score normalization
 ├── utils/                  Trading calendar, logging, metrics, progress helpers
 ├── health_server.py        Lightweight HTTP health check + dashboard server
 ├── main.py                 Orchestrator — full trading cycle runner
 └── storage/
-    ├── __init__.py          Shared singleton (auto-selects GCS or Postgres)
+    ├── __init__.py          Shared singleton (selects the configured backend)
     ├── backend.py           Abstract StorageBackend ABC + serialization helpers
-    ├── gcs.py               GCS backend — CSV blobs (implements StorageBackend)
     └── postgres.py          Postgres backend — relational tables (implements StorageBackend)
 ```
 
@@ -39,7 +38,7 @@ app/
 - **Multi-strategy framework** — strategy registry, config-driven enablement, per-strategy capital allocation
 - **Intraday bar-loop engine** — strategies can trade on intraday bars with session-close exits
 - **Strategy-tagged positions** — every position records its owning strategy (visible in the dashboard)
-- **Pluggable storage** — swap between GCS and Postgres with a config toggle
+- **Postgres storage** — backtest results, positions, orders & metadata persisted to Postgres
 - **Walk-forward validation** — IS/OOS window evaluation to reduce overfitting
 - **Short selling** — RSI-based short signals with leverage caps
 - **Cross-symbol Z-scores** — composite ranking across alpha, Sharpe, and Calmar
@@ -77,11 +76,7 @@ export ENVIRONMENT=dev
 export ALPACA_DEV_PAPER_KEY=your_paper_key
 export ALPACA_DEV_PAPER_SECRET=your_paper_secret
 
-# Optional — Google Cloud Storage (default backend)
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
-export GCS_BUCKET_NAME=trading-algo-data
-
-# Optional — Postgres (alternative backend, toggle via config JSON)
+# Required — Postgres connection string (data persistence)
 export DATABASE_URL=postgresql://user:password@host:5432/dbname
 
 # Optional — container lifecycle & health
@@ -161,7 +156,7 @@ The dashboard has two tabs:
 - **Database** — a read-only table browser (requires `storage_backend: "postgres"`):
   pick a table, page through rows, refresh. Backed by `GET /api/db/tables` and
   `GET /api/db/table/<name>?limit=&offset=` (auth required, SELECT-only,
-  allowlist-validated table names). Returns `501` when the active backend is GCS.
+  allowlist-validated table names).
 
 Check cycle status and last-run results at `GET /health` (no auth required):
 
@@ -214,7 +209,6 @@ python tests/test_positions_manager.py
 
 | Test File | Coverage |
 |-----------|----------|
-| `test_cloud_storage.py` | GCS backend — init, upload/download, file listing, error handling |
 | `test_postgres_storage.py` | Postgres backend — all 9 StorageBackend methods, date parsing, ABC compliance |
 | `test_config.py` | Config loading, env vars, multi-environment, invalid JSON |
 | `test_data_provider.py` | Alpaca API — bars, positions, orders, snapshots, technical indicators |
@@ -227,7 +221,7 @@ python tests/test_positions_manager.py
 | `test_positions_reconcile_regression.py` | Regression tests — reconciliation always returns a list |
 | `test_utils.py` | Trading calendar, logging, date parsing |
 | `test_main.py` | Full orchestration — backtest → filter → trade → save cycle |
-| `test_integration.py` | End-to-end data flow, error handling, risk management, cloud storage |
+| `test_integration.py` | End-to-end data flow, error handling, risk management |
 | `test_order_integration.py` | **Live Alpaca paper-trading** — order placement, cancellation, liquidation, storage validation |
 
 ### Order Integration Tests (`test_order_integration.py`)
@@ -274,7 +268,7 @@ Tests are automatically skipped when credentials are missing.
 
 ### Test Features
 
-- **Mocking & Patching** — All tests mock external dependencies (Alpaca API, GCS, filesystem, network) to keep units isolated
+- **Mocking & Patching** — All tests mock external dependencies (Alpaca API, Postgres, filesystem, network) to keep units isolated
 - **Realistic Data Generation** — Historical prices, RSI values, portfolio metrics, market snapshots, backtest results
 - **Error Scenarios** — API failures, timeouts, invalid inputs, missing config, filesystem errors, network issues
 - **Edge Cases** — Empty datasets, insufficient history, invalid symbols, market holidays, after-hours trading
@@ -442,49 +436,38 @@ All parameters live in `config/{dev,qa,prod}.json`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `storage_backend` | `"gcs"` | `"gcs"` or `"postgres"` |
+| `storage_backend` | `"postgres"` | Storage backend (only `"postgres"` is supported) |
 
 ---
 
 ## Data Persistence (Storage Backend)
 
-The app uses a pluggable storage backend system. Toggle in `config/{env}.json`:
+The app persists all state (backtest results, positions, orders, session
+metadata) to Postgres. The backend is selected in `config/{env}.json`:
 
 ```json
-"storage_backend": "gcs"       // Google Cloud Storage (default)
 "storage_backend": "postgres"  // Postgres database
 ```
 
 All persistence goes through the `StorageBackend` ABC (`storage/backend.py`).
-A shared singleton (`storage/__init__.py`) auto-selects the correct backend at startup.
-Both backends expose the same method surface (backtest results, positions, orders,
-metadata) — callers never know which is active.
-
-### GCS (`storage/gcs.py`)
-
-CSV blobs under environment-prefixed paths in your GCS bucket:
-
-| Path | Content | Write Pattern |
-|------|---------|---------------|
-| `{env}/Backtests/backtest_results_{timestamp}.csv` | Optimized BacktestResult records | New file per backtest run |
-| `{env}/Positions/positions_{timestamp}.csv` | Position snapshot | New file per session |
-| `{env}/Metadata/metadata.csv` | Session metadata | Append row per cycle |
+A shared singleton (`storage/__init__.py`) selects the configured backend at
+startup.
 
 ### Postgres (`storage/postgres.py`)
 
-Set `DATABASE_URL` + toggle the config. Tables auto-create on first use:
+Set `DATABASE_URL`. Tables auto-create on first use:
 
-| Table | Equivalent GCS Path | Key Columns |
-|-------|---------------------|-------------|
-| `backtest_results` | `{env}/Backtests/*.csv` | `run_timestamp`, `environment`, BacktestResult fields incl. `strategy_name` + `params` |
-| `position_snapshots` | `{env}/Positions/*.csv` | `snapshot_timestamp`, `environment`, Position fields incl. `strategy_name` + `intraday` |
-| `session_metadata` | `{env}/Metadata/metadata.csv` | `timestamp`, `environment`, `metadata` (JSONB) |
+| Table | Key Columns |
+|-------|-------------|
+| `backtest_results` | `run_timestamp`, `environment`, BacktestResult fields incl. `strategy_name` + `params` |
+| `position_snapshots` | `snapshot_timestamp`, `environment`, Position fields incl. `strategy_name` + `intraday` |
+| `session_metadata` | `timestamp`, `environment`, `metadata` (JSONB) |
 
 All tables have an `environment` column — dev/qa/prod data stays isolated.
 
 ### Spinning up Postgres locally (macOS)
 
-For local runs you don't need GCS — install and start a local Postgres, then point
+Install and start a local Postgres, then point
 the app at it with `DATABASE_URL` + `"storage_backend": "postgres"`. Tables
 auto-create on first connect, so no migrations are needed.
 
@@ -513,7 +496,7 @@ python app/main.py --test-mode --dry-run --force-backtest
 ```
 
 > `storage_backend` in `config/dev.json` must be `"postgres"` for the above to
-> persist anything. If `DATABASE_URL` is unset or `storage_backend` is `"gcs"`,
+> persist anything. If `DATABASE_URL` is unset,
 > persistence silently no-ops (`PostgresStorage` logs `DATABASE_URL not set`).
 
 > **Skip walk-forward for quick local runs.** With `"walk_forward": {"enabled": true}`

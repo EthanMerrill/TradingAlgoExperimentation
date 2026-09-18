@@ -341,7 +341,7 @@ class TestDfRowToDict(unittest.TestCase):
         self.assertIsNone(result['exit_price'])
 
     def test_adds_exit_reason_when_missing(self):
-        """exit_reason should default to None when absent (GCS doesn't store it)."""
+        """exit_reason should default to None when absent (legacy snapshots)."""
         row = pd.Series({
             'symbol': 'ABC', 'shares': 1.0, 'entry_price': 10.0,
             'current_price': 12.0, 'current_rsi': 50.0,

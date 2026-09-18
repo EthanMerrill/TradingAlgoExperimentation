@@ -1,6 +1,6 @@
 """
 Abstract storage backend interface.
-All persistence operations (GCS, Postgres, etc.) must implement this ABC.
+All persistence operations (Postgres, etc.) must implement this ABC.
 """
 import json
 import logging
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Ordered field list shared by both GCS and Postgres backends.
+# Ordered field list shared by all storage backends.
 BACKTEST_FIELDS = [
     "symbol",
     "rsi_period",
@@ -421,7 +421,7 @@ def dict_to_order(d: Dict[str, Any]) -> "Order":
 
 
 class StorageBackend(ABC):
-    """Abstract base class for all storage backends (GCS, Postgres, etc.)."""
+    """Abstract base class for all storage backends (Postgres, etc.)."""
 
     @abstractmethod
     def save_backtest_results(
@@ -499,11 +499,7 @@ class StorageBackend(ABC):
     @staticmethod
     def create(config: "Config") -> "StorageBackend":
         """Factory: return the correct StorageBackend for the active config."""
-        backend = getattr(config, "STORAGE_BACKEND", "gcs")
-
-        if backend == "gcs":
-            from storage.gcs import GcsStorage  # pylint: disable=import-outside-toplevel
-            return GcsStorage()
+        backend = getattr(config, "STORAGE_BACKEND", "postgres")
 
         if backend == "postgres":
             from storage.postgres import (  # pylint: disable=import-outside-toplevel
@@ -512,15 +508,13 @@ class StorageBackend(ABC):
             return PostgresStorage()
 
         raise ValueError(
-            f"Unknown STORAGE_BACKEND '{backend}'. "
-            f"Expected 'gcs' or 'postgres'."
+            f"Unknown STORAGE_BACKEND '{backend}'. Expected 'postgres'."
         )
 
     # ------------------------------------------------------------------
     # Optional DB-browse support (used by the dashboard "Database" tab).
     #
-    # Concrete methods with safe defaults so backends that don't support
-    # relational browsing (e.g. GCS) and test mocks need no changes.
+    # Concrete methods with safe defaults so test mocks need no changes.
     # ------------------------------------------------------------------
 
     def db_browse_enabled(self) -> bool:

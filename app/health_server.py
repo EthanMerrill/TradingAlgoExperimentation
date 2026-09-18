@@ -108,7 +108,7 @@ def _df_row_to_dict(row) -> dict:
         elif raw is None or raw is pd.NA:
             d['closed'] = False
 
-    # Derive side if not present (GCS backend doesn't store it)
+    # Derive side if not present (legacy snapshots don't store it)
     if 'side' not in d or d['side'] is None:
         qty = d.get('quantity', 0) or 0
         d['side'] = 'short' if qty < 0 else 'long'
@@ -119,7 +119,7 @@ def _df_row_to_dict(row) -> dict:
         if isinstance(val, (pd.Timestamp, datetime)) and not pd.isna(val):
             d[dt_col] = val.isoformat()
 
-    # Ensure exit_reason is present (GCS doesn't store it)
+    # Ensure exit_reason is present (legacy snapshots don't store it)
     if 'exit_reason' not in d:
         d['exit_reason'] = None
 

@@ -248,13 +248,13 @@ class TestConfig(unittest.TestCase):
         'ALPACA_DEV_PAPER_SECRET': 'test_secret',
     })
     @patch('builtins.open', side_effect=FileNotFoundError())
-    def test_storage_backend_defaults_to_gcs_without_json(self, _mock_open_file, _mock_dotenv):
-        """storage_backend defaults to gcs when the JSON config is missing."""
+    def test_storage_backend_defaults_to_postgres_without_json(self, _mock_open_file, _mock_dotenv):
+        """storage_backend defaults to postgres when the JSON config is missing."""
         from config import Config
 
         test_config = Config()
 
-        self.assertEqual(test_config.STORAGE_BACKEND, 'gcs')
+        self.assertEqual(test_config.STORAGE_BACKEND, 'postgres')
 
 
 if __name__ == '__main__':

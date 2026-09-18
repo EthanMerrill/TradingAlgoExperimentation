@@ -56,7 +56,7 @@ def _ensure_utc_datetime_column(df: pd.DataFrame, column: str) -> None:
     """Normalize ``df[column]`` to a tz-aware UTC datetime column (in place).
 
     Postgres-loaded frames already carry ``datetime64[*, UTC]`` columns, while
-    frames built from GCS/CSV or in tests may be naive.  Assigning a tz-aware
+    frames built from storage/CSV or in tests may be naive.  Assigning a tz-aware
     value into a naive column (or a naive value into an aware column) raises
     ``Invalid value '...' for dtype 'datetime64[s, UTC]'``, so the column is
     coerced first and missing columns are created as ``NaT``.
@@ -109,7 +109,7 @@ class Position:
 class PositionsManager:
     """
     Tracks state of the positions in the trading engine.
-    This class is responsible for managing position entries, saving them to cloud storage,
+    This class is responsible for managing position entries, saving them to storage,
     and providing methods to retrieve and analyze position data.
     """
 
@@ -251,7 +251,7 @@ class PositionsManager:
 
     def get_and_reconcile_positions(self) -> List[Position]:
         """
-        Retrieves positions from cloud storage and alpaca and updates prices
+        Retrieves positions from storage and alpaca and updates prices
         Returns a list of open Position objects.
         """
 
@@ -429,7 +429,7 @@ class PositionsManager:
             alpaca_only_symbols = alpaca_symbols - cloud_symbols
             if alpaca_only_symbols:
                 logger.warning(
-                    "Found %d symbols in Alpaca that are not in cloud storage: %s. Adding as open positions.",
+                    "Found %d symbols in Alpaca that are not in storage: %s. Adding as open positions.",
                     len(alpaca_only_symbols), alpaca_only_symbols)
 
                 optimizer = None
@@ -573,7 +573,7 @@ class PositionsManager:
                 cloud_positions['symbol']) - alpaca_symbols
             if cloud_only_symbols:
                 logger.warning(
-                    "Found %d symbols in cloud storage that are not in Alpaca: %s. Marking as closed",
+                    "Found %d symbols in storage that are not in Alpaca: %s. Marking as closed",
                     len(cloud_only_symbols), cloud_only_symbols)
                 newly_closed_positions = cloud_positions[
                     cloud_positions['symbol'].isin(cloud_only_symbols)

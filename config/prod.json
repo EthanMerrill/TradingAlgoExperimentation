@@ -45,7 +45,7 @@
 	"api": {
 		"rate_limit_delay": 0.1
 	},
-	"storage_backend": "gcs",
+	"storage_backend": "postgres",
 	"data_retention": {
 		"backtest_results_days": 30
 	},

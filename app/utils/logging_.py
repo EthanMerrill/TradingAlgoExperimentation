@@ -31,5 +31,4 @@ def setup_logging(level: str = 'INFO') -> None:
 
     # Set third-party loggers to WARNING to reduce noise
     logging.getLogger('urllib3').setLevel(logging.WARNING)
-    logging.getLogger('google').setLevel(logging.WARNING)
     logging.getLogger('alpaca').setLevel(logging.WARNING)

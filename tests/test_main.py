@@ -117,7 +117,7 @@ class TestMainModule(unittest.IsolatedAsyncioTestCase):
         mock_optimizer.filter_results.return_value = [mock_result]
         mock_optimizer_class.return_value = mock_optimizer
 
-        # Mock cloud storage upload
+        # Mock storage upload
         mock_storage.save_backtest_results.return_value = True
 
         with patch('main.data_provider') as mock_data_provider:

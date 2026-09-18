@@ -1899,26 +1899,26 @@ class TradingEngine:
                     self.identify_and_execute_shorts(
                         session_summary, backtest_results)
 
-            # save updated positions to cloud storage (always persist so that
+            # save updated positions to storage (always persist so that
             # positions reconciled from the broker are not lost on cycles with
             # no new backtest results).
             if not self.dry_run:
                 self._positions_manager.persist_positions()
             else:
                 logger.info(
-                    "Dry run mode: Skipping positions save to cloud storage")
+                    "Dry run mode: Skipping positions save to storage")
 
             logger.info("Trading session complete: %s", session_summary)
 
         except Exception as e:
             error_msg = "Error in trading session (Partial execution to positions): %s" % e
             logger.error(error_msg)
-            # save updated positions to cloud storage
+            # save updated positions to storage
             if not self.dry_run:
                 self._positions_manager.persist_positions()
             else:
                 logger.info(
-                    "Dry run mode: Skipping positions save to cloud storage")
+                    "Dry run mode: Skipping positions save to storage")
             session_summary['errors'].append(error_msg)
 
         # Refresh persisted order statuses from the broker (best-effort).

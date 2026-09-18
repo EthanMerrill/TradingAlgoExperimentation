@@ -190,28 +190,6 @@ class TestTradingAlgorithmIntegration(unittest.TestCase):
             self.assertEqual(result.symbol, 'AAPL')
             self.assertTrue(result.profitable)
 
-    def test_cloud_storage_integration(self):
-        """Test cloud storage integration."""
-        # Mock cloud storage operations
-        with patch('storage.gcs.GcsStorage') as mock_storage_class:
-            mock_storage = Mock()
-            mock_storage.upload_backtest_results.return_value = True
-            mock_storage.upload_position_entries.return_value = True
-            mock_storage.list_backtest_files.return_value = [
-                'backtest_20250614.json']
-            mock_storage_class.return_value = mock_storage
-
-            # Test upload operations
-            upload_success = mock_storage.upload_backtest_results([])
-            self.assertTrue(upload_success)
-
-            position_upload_success = mock_storage.upload_position_entries([])
-            self.assertTrue(position_upload_success)
-
-            # Test list operations
-            files = mock_storage.list_backtest_files()
-            self.assertEqual(len(files), 1)
-
     def test_logging_integration(self):
         """Test logging integration across modules."""
         with patch('utils.setup_logging') as mock_setup_logging:

@@ -31,7 +31,6 @@ class Config:
         # - ALPACA_QA_PAPER_SECRET: Your qa paper trading secret key
         # - ALPACA_LIVE_KEY: Your live trading API key (for prod only)
         # - ALPACA_LIVE_SECRET: Your live trading secret key (for prod only)
-        # - GOOGLE_APPLICATION_CREDENTIALS: Path to GCS service account JSON (optional)
         # - ENVIRONMENT: Environment setting (dev, qa, prod) - defaults to 'dev'
 
         # Environment setting (dev, qa, prod)
@@ -57,15 +56,9 @@ class Config:
             print("Set these environment variables for the algorithm to work properly.")
 
         # Optional variables
-        # GOOGLE_APPLICATION_CREDENTIALS: Path to GCS service account JSON file (local dev)
-        # GOOGLE_APPLICATION_CREDENTIALS_JSON: GCS service account JSON or base64-encoded JSON
-        #   - Raw JSON works on platforms that support it
-        #   - Base64 encode (e.g. `base64 -w0 key.json`) for Coolify/.env files
         # DATABASE_URL: Postgres connection string (required when STORAGE_BACKEND=postgres)
         #   Format: postgresql://user:password@host:port/dbname
-        optional_vars = ['GOOGLE_APPLICATION_CREDENTIALS',
-                         'GOOGLE_APPLICATION_CREDENTIALS_JSON',
-                         'DATABASE_URL']
+        optional_vars = ['DATABASE_URL']
         for var in optional_vars:
             if not os.getenv(var):
                 print(f"Info: Optional environment variable {var} not set.")
@@ -151,7 +144,7 @@ class Config:
             self.API_RATE_LIMIT_DELAY = api.get('rate_limit_delay', 0.1)
 
             # Storage backend selection
-            self.STORAGE_BACKEND = config_data.get('storage_backend', 'gcs')
+            self.STORAGE_BACKEND = config_data.get('storage_backend', 'postgres')
 
             # Data retention: old backtest results are deleted at the end of
             # every backtest run so the results table cannot grow without
@@ -258,16 +251,12 @@ class Config:
 
     def setup_data_parameters(self):
         """Set up data filtering parameters (fallback handled in load_json_config)."""
-        # Storage backend — only default to gcs if load_json_config did not
+        # Storage backend — only default to postgres if load_json_config did not
         # already set it (otherwise this would clobber the JSON-configured
-        # backend, e.g. "postgres").  load_json_config sets it from the JSON
-        # on success; on config-file failure it is left unset here so we
-        # fall back to gcs.
+        # backend).  load_json_config sets it from the JSON on success; on
+        # config-file failure it is left unset here so we fall back to postgres.
         if not hasattr(self, 'STORAGE_BACKEND'):
-            self.STORAGE_BACKEND = 'gcs'
-        # Google Cloud Storage
-        self.GCS_BUCKET_NAME = os.getenv(
-            'GCS_BUCKET_NAME', 'trading-algo-data')
+            self.STORAGE_BACKEND = 'postgres'
         # Postgres connection string (used when STORAGE_BACKEND=postgres)
         self.DATABASE_URL = os.getenv('DATABASE_URL', '')
 
@@ -340,19 +329,6 @@ class Config:
             'min_price': self.MIN_PRICE,
             'max_price': self.MAX_PRICE
         }
-
-    def get_environment_path(self, base_path: str) -> str:
-        """
-        Get environment-specific path for cloud storage.
-
-        Args:
-            base_path: Base path (e.g., 'Backtests', 'Positions', 'Trades')
-
-        Returns:
-            Environment-specific path (e.g., 'dev/Backtests', 'qa/Positions', 'prod/trades')
-        """
-        return f"{self.ENVIRONMENT}/{base_path}"
-
 
 # Global configuration instance
 # Only instantiate after class definition is complete

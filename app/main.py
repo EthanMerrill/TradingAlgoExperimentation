@@ -286,8 +286,8 @@ class TradingAlgorithm:
         logger.info("   • Success rate: %.1f%%",
                     (len(filtered_results)/len(raw_results)*100) if raw_results else 0)
 
-        # Step 5: Save results to cloud storage
-        logger.info("💾 Saving results to cloud storage...")
+        # Step 5: Save results to storage
+        logger.info("💾 Saving results to storage...")
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         storage.save_backtest_results(
             filtered_results, timestamp)
