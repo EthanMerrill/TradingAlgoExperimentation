@@ -851,12 +851,21 @@ class PositionsManager:
             return None
         return (price, qty, filled_at)
 
-    def close_position(self, symbol: str):
+    def close_position(self, symbol: str, exit_price: Optional[float] = None):
         """
         Close a position by symbol.
 
         Marks the position as closed in-place (no longer removes from the list)
         so the realized return is preserved for subsequent cloud saves.
+
+        Args:
+            symbol: Symbol of the open position to close.
+            exit_price: Authoritative exit price (the broker's confirmed fill
+                price) when the caller has it.  When omitted, the price is
+                resolved from order history, falling back to the OCO
+                stop/take-profit heuristic — which can materially misstate the
+                realized return, so callers should pass the real fill whenever
+                it is available.
         """
         # Find the position in self.positions
         position_found = False
@@ -883,8 +892,20 @@ class PositionsManager:
         # match by client_order_id/order_id and falling back to the
         # most-recent close-side heuristic.
         filled_exit_price = None
-        matched = self._find_fill_by_client_order_id(
-            symbol, getattr(target_position, 'client_order_id', None))
+        if exit_price is not None:
+            # Caller confirmed the broker fill — authoritative.
+            try:
+                filled_exit_price = float(exit_price)
+                logger.info(
+                    "Using caller-supplied exit price for %s: $%.2f",
+                    symbol, filled_exit_price)
+            except (TypeError, ValueError):
+                filled_exit_price = None
+
+        matched = None
+        if filled_exit_price is None:
+            matched = self._find_fill_by_client_order_id(
+                symbol, getattr(target_position, 'client_order_id', None))
         if matched is not None and matched[0] and matched[0] > 0:
             filled_exit_price = matched[0]
             logger.info(

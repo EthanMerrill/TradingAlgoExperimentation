@@ -251,7 +251,7 @@ class TestTradingEngine(unittest.TestCase):
             'dry_run': False,
         }
 
-        with patch.object(self.engine, 'place_market_sell_order', return_value=True), \
+        with patch.object(self.engine, 'close_position_at_market', return_value=True) as mock_close, \
                 patch.object(self.engine, 'calculate_todays_stop_loss_and_take_profit', return_value=(90.0, 115.0)), \
                 patch.object(self.engine, 'place_oco_close_order', return_value=True):
             out = self.engine.update_portfolio_orders(
@@ -259,8 +259,7 @@ class TestTradingEngine(unittest.TestCase):
 
         self.assertEqual(out['positions_exited'], 1)
         self.assertEqual(out['orders_placed'], 1)
-        self.engine._positions_manager.close_position.assert_called_once_with(
-            "AAPL")
+        mock_close.assert_called_once_with(expired, "max_hold_days")
 
     def test_identify_shorting_opportunities_cross_above(self):
         """Short opportunity fires on RSI cross-above rsi_upper."""
@@ -552,13 +551,15 @@ class TestTradingEngine(unittest.TestCase):
         self.engine._positions_manager.positions = [existing]
         self.engine.set_dry_run_mode(False)
 
-        with patch.object(self.engine, 'place_market_sell_order',
-                          return_value=True) as mock_close:
+        with patch.object(self.engine, 'place_market_close_order',
+                          return_value='order-1') as mock_close, \
+                patch.object(self.engine, '_wait_for_order_fill',
+                             return_value=None):
             result = self.engine._exit_opposite_position("AAPL", "long")
 
         self.assertTrue(result)
         mock_close.assert_called_once_with(
-            "AAPL", 10, "opposite_signal", side="short")
+            "AAPL", 10, "opposite_signal", "short")
         self.engine._positions_manager.close_position.assert_called_once_with(
             "AAPL")
 
@@ -983,7 +984,7 @@ class TestBreachedStopHandling(unittest.TestCase):
                 patch.object(self.engine, '_get_current_price',
                              return_value=13.70), \
                 patch.object(self.engine, 'place_oco_close_order') as mock_oco, \
-                patch.object(self.engine, 'place_market_sell_order',
+                patch.object(self.engine, 'close_position_at_market',
                              return_value=True) as mock_market, \
                 patch.object(self.engine, '_release_shares_for_exit',
                              return_value=True):
@@ -993,9 +994,10 @@ class TestBreachedStopHandling(unittest.TestCase):
         mock_oco.assert_not_called()
         self.assertEqual(out['positions_exited'], 1)
         self.assertEqual(out['orders_placed'], 0)
-        self.assertEqual(pos.exit_reason, "stop_loss_breached")
-        self.engine._positions_manager.close_position.assert_called_once_with(
-            "CRCO")
+        # The real method is patched here, so assert it received the breach
+        # reason (exit_reason/close_position are covered by the end-to-end
+        # tests of close_position_at_market below).
+        self.assertEqual(mock_market.call_args[0][1], "stop_loss_breached")
 
     def test_breached_stop_records_exit_order_event(self):
         pos = self._position()
@@ -1006,7 +1008,7 @@ class TestBreachedStopHandling(unittest.TestCase):
                           return_value=(15.17, 18.36)), \
                 patch.object(self.engine, '_get_current_price',
                              return_value=13.70), \
-                patch.object(self.engine, 'place_market_sell_order',
+                patch.object(self.engine, 'close_position_at_market',
                              return_value=True), \
                 patch.object(self.engine, '_release_shares_for_exit',
                              return_value=True):
@@ -1027,7 +1029,7 @@ class TestBreachedStopHandling(unittest.TestCase):
                              return_value=16.50), \
                 patch.object(self.engine, 'place_oco_close_order',
                              return_value=True) as mock_oco, \
-                patch.object(self.engine, 'place_market_sell_order') as mock_market:
+                patch.object(self.engine, 'close_position_at_market') as mock_market:
             out = self.engine.update_portfolio_orders(summary, [pos])
 
         mock_oco.assert_called_once()
@@ -1047,7 +1049,7 @@ class TestBreachedStopHandling(unittest.TestCase):
                              return_value=None), \
                 patch.object(self.engine, 'place_oco_close_order',
                              return_value=True) as mock_oco, \
-                patch.object(self.engine, 'place_market_sell_order') as mock_market:
+                patch.object(self.engine, 'close_position_at_market') as mock_market:
             self.engine.update_portfolio_orders(summary, [pos])
 
         mock_oco.assert_called_once()
@@ -1057,7 +1059,7 @@ class TestBreachedStopHandling(unittest.TestCase):
         pos = self._position()
         summary = self._summary()
 
-        with patch.object(self.engine, 'place_market_sell_order',
+        with patch.object(self.engine, 'close_position_at_market',
                           return_value=False), \
                 patch.object(self.engine, '_release_shares_for_exit',
                              return_value=True):
@@ -1106,6 +1108,159 @@ class TestBreachedStopHandling(unittest.TestCase):
 
         client.get_orders.assert_not_called()
         client.cancel_order_by_id.assert_not_called()
+
+
+class TestExitFillAccuracy(unittest.TestCase):
+    """Realized returns must use the broker's actual fill price.
+
+    Regression: market exits recorded a *heuristic* price (the OCO stop/target)
+    because the fill was not yet visible ~230ms after submission. CRCO actually
+    filled at $14.19 but was recorded at the $15.17 stop -> -4.99% reported
+    instead of the true -11.13%.
+    """
+
+    def setUp(self):
+        with patch('trading_engine.data_provider'):
+            self.engine = TradingEngine()
+        self.engine._positions_manager = Mock()
+        self.engine._positions_manager.close_position = Mock()
+        self.engine.dry_run = False
+
+    def _position(self, symbol="CRCO", side="long", qty=52.0):
+        # `side` is derived from the quantity sign by Position.__post_init__.
+        return Position(
+            symbol=symbol, quantity=qty if side == "long" else -qty,
+            entry_price=15.966538, current_price=14.19, current_rsi=40.0,
+            entry_date=datetime.now() - timedelta(days=2), alpha=0.1,
+            rsi_period=14, rsi_lower=30, rsi_upper=70,
+            closed=False,
+        )
+
+    @staticmethod
+    def _fill_order(price=14.19, status='filled'):
+        o = Mock()
+        o.status = status
+        o.filled_avg_price = price
+        return o
+
+    # -- place_market_close_order / bool wrapper ---------------------------
+
+    def test_place_market_close_order_returns_order_id(self):
+        client = Mock()
+        client.submit_order.return_value = Mock(id='ord-9')
+        self.engine.trading_client = client
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value='cid-9'), \
+                patch('trading_engine.storage'):
+            order_id = self.engine.place_market_close_order("AAPL", 10)
+
+        self.assertEqual(order_id, 'ord-9')
+
+    def test_place_market_close_order_returns_none_on_failure(self):
+        self.engine.trading_client = None
+        self.assertIsNone(
+            self.engine.place_market_close_order("AAPL", 10))
+
+    def test_bool_wrapper_still_returns_true(self):
+        """The public bool contract must be preserved (integration test relies
+        on `sell_ok is True`)."""
+        with patch.object(self.engine, 'place_market_close_order',
+                          return_value='ord-1'):
+            self.assertIs(self.engine.place_market_sell_order("AAPL", 10), True)
+
+    def test_bool_wrapper_false_when_no_order(self):
+        with patch.object(self.engine, 'place_market_close_order',
+                          return_value=None):
+            self.assertIs(
+                self.engine.place_market_sell_order("AAPL", 10), False)
+
+    # -- _wait_for_order_fill ---------------------------------------------
+
+    def test_wait_for_order_fill_returns_price(self):
+        client = Mock()
+        client.get_order_by_id.return_value = self._fill_order(14.19)
+        self.engine.trading_client = client
+        self.assertEqual(self.engine._wait_for_order_fill('ord-1'), 14.19)
+
+    def test_wait_for_order_fill_polls_until_filled(self):
+        client = Mock()
+        partial = self._fill_order(None, status='accepted')
+        filled = self._fill_order(14.19)
+        client.get_order_by_id.side_effect = [partial, filled]
+        self.engine.trading_client = client
+        with patch('trading_engine.time.sleep'):
+            self.assertEqual(self.engine._wait_for_order_fill('ord-1'), 14.19)
+
+    def test_wait_for_order_fill_none_when_never_fills(self):
+        client = Mock()
+        client.get_order_by_id.return_value = self._fill_order(
+            None, status='accepted')
+        self.engine.trading_client = client
+        with patch('trading_engine.time.sleep'):
+            self.assertIsNone(
+                self.engine._wait_for_order_fill('ord-1', timeout=0.05,
+                                                 poll_interval=0.01))
+
+    def test_wait_for_order_fill_none_when_order_cancelled(self):
+        client = Mock()
+        client.get_order_by_id.return_value = self._fill_order(
+            14.19, status='canceled')
+        self.engine.trading_client = client
+        self.assertIsNone(self.engine._wait_for_order_fill('ord-1'))
+
+    def test_wait_for_order_fill_none_without_order_id(self):
+        self.assertIsNone(self.engine._wait_for_order_fill(None))
+
+    def test_wait_for_order_fill_none_in_dry_run(self):
+        self.engine.dry_run = True
+        self.assertIsNone(self.engine._wait_for_order_fill('ord-1'))
+
+    # -- close_position_at_market -----------------------------------------
+
+    def test_close_uses_confirmed_fill_price(self):
+        pos = self._position()
+        with patch.object(self.engine, 'place_market_close_order',
+                          return_value='ord-1'), \
+                patch.object(self.engine, '_wait_for_order_fill',
+                             return_value=14.19):
+            self.engine.close_position_at_market(pos, "stop_loss_breached")
+
+        # The real fill (14.19) must be handed to close_position, NOT a
+        # heuristic stop price (15.17).
+        self.engine._positions_manager.close_position.assert_called_once_with(
+            "CRCO", exit_price=14.19)
+        self.assertEqual(pos.exit_reason, "stop_loss_breached")
+
+    def test_close_falls_back_when_fill_unavailable(self):
+        """A missing fill must not lose the exit — fall back to the heuristic."""
+        pos = self._position()
+        with patch.object(self.engine, 'place_market_close_order',
+                          return_value='ord-1'), \
+                patch.object(self.engine, '_wait_for_order_fill',
+                             return_value=None):
+            self.engine.close_position_at_market(pos, "stop_loss_breached")
+
+        self.engine._positions_manager.close_position.assert_called_once_with(
+            "CRCO")
+
+    def test_close_returns_false_when_order_not_placed(self):
+        pos = self._position()
+        with patch.object(self.engine, 'place_market_close_order',
+                          return_value=None):
+            ok = self.engine.close_position_at_market(pos, "stop_loss_breached")
+
+        self.assertFalse(ok)
+        self.engine._positions_manager.close_position.assert_not_called()
+
+    def test_close_dry_run_does_not_mark_closed(self):
+        self.engine.dry_run = True
+        pos = self._position()
+        with patch.object(self.engine, 'place_market_close_order',
+                          return_value='dry-run-CRCO'):
+            ok = self.engine.close_position_at_market(pos, "stop_loss_breached")
+
+        self.assertTrue(ok)
+        self.engine._positions_manager.close_position.assert_not_called()
 
 
 if __name__ == '__main__':

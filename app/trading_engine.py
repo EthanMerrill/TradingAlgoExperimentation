@@ -801,14 +801,9 @@ class TradingEngine:
         )
 
         # Use the side-aware market close so the exit is persisted to the
-        # order ledger and only marked closed when the broker close succeeds.
-        if self.place_market_sell_order(
-            symbol, abs(existing.quantity), "opposite_signal",
-            side=existing_side
-        ):
-            if not self.dry_run:
-                existing.exit_reason = "opposite_signal"
-                self._positions_manager.close_position(symbol)
+        # order ledger, records the real fill price, and only marks the
+        # position closed when the broker close succeeds.
+        if self.close_position_at_market(existing, "opposite_signal"):
             return True
 
         logger.error("Failed to exit opposite position for %s", symbol)
@@ -891,11 +886,7 @@ class TradingEngine:
         # market exit is rejected with 40310000 "insufficient qty".
         self._release_shares_for_exit(position.symbol, shares)
 
-        if not self.place_market_sell_order(
-            position.symbol, shares, reason, side=side
-        ):
-            logger.error(
-                "Failed to force-close %s (%s)", position.symbol, reason)
+        if not self.close_position_at_market(position, reason):
             return False
 
         session_summary['positions_exited'] += 1
@@ -905,9 +896,43 @@ class TradingEngine:
             order_type='exit',
             strategy=getattr(position, 'strategy_name', None),
             reason=reason)
+        return True
+
+    def close_position_at_market(self, position: Position, reason: str) -> bool:
+        """Place a market close for ``position``, wait for the fill, record it.
+
+        Waits (bounded) for the broker to report ``filled_avg_price`` and hands
+        that price to ``PositionsManager.close_position``.  Without this the
+        realized return was computed from a *heuristic* exit price (the OCO
+        stop/take-profit target), which materially misstated P&L — e.g. a
+        position that actually filled at $14.19 was recorded at the $15.17 stop.
+
+        Falls back to the previous behaviour (``exit_price=None``) when the fill
+        cannot be confirmed, so a slow/absent fill never loses the exit.
+        """
+        symbol = position.symbol
+        side = getattr(position, 'side', 'long')
+        shares = abs(position.quantity)
+
+        order_id = self.place_market_close_order(symbol, shares, reason, side)
+        if order_id is None:
+            logger.error(
+                "Failed to close %s at market (%s)", symbol, reason)
+            return False
+
+        fill_price = self._wait_for_order_fill(order_id)
+        if fill_price is not None:
+            logger.info(
+                "Confirmed exit fill for %s: %d shares @ $%.2f (order %s)",
+                symbol, shares, fill_price, order_id)
+
         if not self.dry_run:
             position.exit_reason = reason
-            self._positions_manager.close_position(position.symbol)
+            if fill_price is not None:
+                self._positions_manager.close_position(
+                    symbol, exit_price=fill_price)
+            else:
+                self._positions_manager.close_position(symbol)
         return True
 
     def calculate_todays_stop_loss_and_take_profit(self, position: Position) -> Tuple[float, float]:
@@ -1434,7 +1459,9 @@ class TradingEngine:
         """
         Place a simple market close order (used for max-hold-day forced exits).
 
-        Closes a long with a market SELL, or a short with a market BUY (cover).
+        Boolean convenience wrapper around :meth:`place_market_close_order`.
+        Callers that need the broker order id (to wait for the fill price)
+        should call that method directly.
 
         Args:
             symbol: Stock symbol to close
@@ -1443,7 +1470,28 @@ class TradingEngine:
             side: Position side — "long" (default) or "short"
 
         Returns:
-            True if order was placed successfully
+            True if the order was placed successfully
+        """
+        return self.place_market_close_order(
+            symbol, shares, reason, side) is not None
+
+    def place_market_close_order(self, symbol: str, shares: float, reason: str = "manual", side: str = "long") -> Optional[str]:
+        """
+        Place a market close order and return the broker order id.
+
+        Closes a long with a market SELL, or a short with a market BUY (cover).
+        Returning the order id lets the caller wait for ``filled_avg_price`` so
+        the realized return reflects the *actual* fill rather than a heuristic
+        (see ``positions.close_position``).
+
+        Args:
+            symbol: Stock symbol to close
+            shares: Number of shares to close (absolute value)
+            reason: Human-readable reason for the exit (for logging)
+            side: Position side — "long" (default) or "short"
+
+        Returns:
+            The broker order id, or None if the order could not be placed.
         """
         is_short = side == "short"
         order_side = OrderSide.BUY if is_short else OrderSide.SELL
@@ -1456,13 +1504,15 @@ class TradingEngine:
                 logger.info(
                     "🔍 DRY RUN: Would place market %s for %d shares of %s (reason: %s)",
                     action, shares, symbol, reason)
-                return True
+                # Sentinel so the dry-run path still reports success; there is
+                # no real order to poll for a fill.
+                return f"dry-run-{symbol}"
 
             if self.trading_client is None:
                 logger.error(
                     "Trading client not available — cannot place %s order for %s",
                     action, symbol)
-                return False
+                return None
 
             client_order_id = self._make_unique_client_order_id(
                 generate_client_order_id(symbol, side_tag, datetime.now())
@@ -1499,12 +1549,61 @@ class TradingEngine:
                 logger.error("Error saving market close order to storage for %s: %s",
                              symbol, e)
 
-            return True
+            return str(placed_order_id) if placed_order_id is not None else None
 
         except Exception as e:
             logger.error(
                 "Error placing market %s order for %s: %s", action, symbol, e)
-            return False
+            return None
+
+    def _wait_for_order_fill(self, order_id: Optional[str],
+                             timeout: float = 15.0,
+                             poll_interval: float = 0.5) -> Optional[float]:
+        """Wait (bounded) for a close order to fill; return its average fill price.
+
+        Market orders normally fill in well under a second, but the fill is not
+        immediately visible on the submit response.  Polling gives the realized
+        return a real fill price instead of a heuristic fallback.
+
+        Returns ``None`` when the order has not filled within ``timeout`` (or
+        cannot be polled), so callers fall back to their previous behaviour.
+        """
+        if not order_id or self.trading_client is None or self.dry_run:
+            return None
+
+        deadline = time.monotonic() + timeout
+        last_status = None
+        while time.monotonic() < deadline:
+            try:
+                order = self.trading_client.get_order_by_id(order_id)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "Could not poll order %s for fill: %s", order_id, e)
+                return None
+
+            status = _status_str(getattr(order, 'status', None))
+            last_status = status
+            filled_price = getattr(order, 'filled_avg_price', None)
+            if status == 'filled' and filled_price is not None:
+                try:
+                    return float(filled_price)
+                except (TypeError, ValueError):
+                    return None
+
+            if status in _TERMINAL_ORDER_STATUSES:
+                # Cancelled/expired/rejected — it will never fill.
+                logger.warning(
+                    "Close order %s reached terminal status '%s' without a fill",
+                    order_id, status)
+                return None
+
+            time.sleep(poll_interval)
+
+        logger.warning(
+            "Close order %s not filled within %.0fs (last status=%s); "
+            "falling back to estimated exit price",
+            order_id, timeout, last_status)
+        return None
 
     def update_portfolio_orders(self, session_summary: Dict[str, Any], current_positions: List[Position]) -> Dict[str, Any]:
         """

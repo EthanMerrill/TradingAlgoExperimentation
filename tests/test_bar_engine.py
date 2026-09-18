@@ -209,15 +209,17 @@ class TestBarLoopEngine(unittest.TestCase):
         daily_pos.symbol = "BBB"
         daily_pos.quantity = 5.0
         self.positions_manager.positions = [intraday_pos, daily_pos]
-        self.engine.place_market_sell_order = Mock(return_value=True)
+        self.engine.close_position_at_market = Mock(return_value=True)
         self.positions_manager.close_position = Mock()
 
         summary = self.bar_engine.close_intraday_positions()
         self.assertEqual(summary["positions_exited"], 1)
-        self.engine.place_market_sell_order.assert_called_once()
+        self.engine.close_position_at_market.assert_called_once()
         self.assertEqual(
-            self.engine.place_market_sell_order.call_args[0][0], "AAA")
-        self.positions_manager.close_position.assert_called_once_with("AAA")
+            self.engine.close_position_at_market.call_args[0][0].symbol, "AAA")
+        self.assertEqual(
+            self.engine.close_position_at_market.call_args[0][1],
+            "intraday_session_close")
 
     def test_close_dry_run_does_not_persist(self):
         self.bar_engine.set_dry_run_mode(True)
@@ -228,7 +230,9 @@ class TestBarLoopEngine(unittest.TestCase):
         intraday_pos.symbol = "AAA"
         intraday_pos.quantity = 10.0
         self.positions_manager.positions = [intraday_pos]
-        self.engine.place_market_sell_order = Mock(return_value=True)
+        # In dry-run the engine reports success without touching the broker,
+        # so the position is counted as exited but never persisted.
+        self.engine.close_position_at_market = Mock(return_value=True)
         self.positions_manager.close_position = Mock()
 
         summary = self.bar_engine.close_intraday_positions()
@@ -250,6 +254,7 @@ class TestUpdatePortfolioOrdersSkipsIntraday(unittest.TestCase):
         intraday_pos.quantity = 10.0
         intraday_pos.side = "long"
         engine.place_market_sell_order = Mock(return_value=True)
+        engine.close_position_at_market = Mock(return_value=True)
         engine.calculate_todays_stop_loss_and_take_profit = Mock(
             return_value=(9.0, 11.0))
         engine.place_oco_close_order = Mock(return_value=True)
@@ -260,6 +265,7 @@ class TestUpdatePortfolioOrdersSkipsIntraday(unittest.TestCase):
         self.assertEqual(result["orders_placed"], 0)
         engine.place_oco_close_order.assert_not_called()
         engine.place_market_sell_order.assert_not_called()
+        engine.close_position_at_market.assert_not_called()
 
 
 if __name__ == "__main__":

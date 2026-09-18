@@ -194,11 +194,11 @@ class BarLoopEngine:
         for pos in positions:
             if getattr(pos, "closed", False) or not getattr(pos, "intraday", False):
                 continue
-            side = getattr(pos, "side", "long")
             try:
-                placed = self.trading_engine.place_market_sell_order(
-                    pos.symbol, abs(pos.quantity), "intraday_session_close",
-                    side=side)
+                # Places the market close, waits for the fill, and records the
+                # exit (incl. the real fill price) in one step.
+                placed = self.trading_engine.close_position_at_market(
+                    pos, "intraday_session_close")
             except Exception as e:  # pylint: disable=broad-exception-caught
                 placed = False
                 logger.error(
@@ -206,9 +206,6 @@ class BarLoopEngine:
                 summary['errors'].append(f"{pos.symbol}: {e}")
             if placed:
                 summary['positions_exited'] += 1
-                if not self.dry_run:
-                    pos.exit_reason = "intraday_session_close"
-                    self.positions_manager.close_position(pos.symbol)
             else:
                 logger.error(
                     "🕓 Failed to close intraday position %s", pos.symbol)
