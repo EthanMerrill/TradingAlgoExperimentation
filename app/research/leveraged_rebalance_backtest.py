@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 # Allow running as a script from the repo root or from app/.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # noqa: E402
 
 import zscore  # noqa: E402
 from config import globalConfig  # noqa: E402
