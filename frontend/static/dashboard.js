@@ -25,6 +25,8 @@ let dbTable = null;
 const STRATEGY_LABELS = {
     'rsi_mean_reversion': { label: 'RSI Mean Rev.', cls: 'badge-strategy-rsi' },
     'rvol_orb': { label: 'RVOL ORB', cls: 'badge-strategy-rvol' },
+    'leveraged_flow_portfolio': {
+        label: 'Leveraged Flow', cls: 'badge-strategy-rvol' },
 };
 
 function strategyInfo(name) {

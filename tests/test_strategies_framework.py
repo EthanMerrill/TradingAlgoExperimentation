@@ -166,5 +166,67 @@ class TestRsiParity(unittest.TestCase):
         self.assertEqual(df.iloc[0]["exit_reason"], "rsi_cross")
 
 
+class TestStrategyDataHooks(unittest.TestCase):
+    """Phase 0 hooks: data timeframe/adjustment + per-strategy symbol universe."""
+
+    def test_base_defaults_are_neutral(self):
+        from strategies.rsi import RSIStrategy
+        rsi = RSIStrategy.create()
+        self.assertIsNone(rsi.data_timeframe)
+        self.assertIsNone(rsi.data_adjustment)
+        self.assertIsNone(rsi.symbol_universe())
+
+    def test_optimizer_fetch_kwargs_default_none(self):
+        opt = StrategyOptimizer(strategy=RSIStrategy.create())
+        self.assertEqual(
+            opt._strategy_fetch_kwargs(),
+            {"timeframe": None, "adjustment": None})
+
+    def test_optimizer_fetch_kwargs_for_intraday_strategy(self):
+        from alpaca.data.enums import Adjustment
+        from strategies.leveraged_rebalance import LeveragedRebalanceStrategy
+
+        opt = StrategyOptimizer(strategy=LeveragedRebalanceStrategy())
+        kwargs = opt._strategy_fetch_kwargs()
+        self.assertEqual(kwargs["timeframe"], "5m")
+        self.assertEqual(kwargs["adjustment"], Adjustment.SPLIT)
+
+    @patch('optimizer.data_provider')
+    def test_optimizer_passes_timeframe_to_provider(self, mock_provider):
+        from datetime import datetime
+        from alpaca.data.enums import Adjustment
+        from strategies.leveraged_rebalance import LeveragedRebalanceStrategy
+
+        mock_provider.get_single_stock_bars.return_value = pd.DataFrame()
+        opt = StrategyOptimizer(strategy=LeveragedRebalanceStrategy())
+        opt.optimize_symbol(
+            "NVDA", datetime(2026, 1, 1), datetime(2026, 3, 1))
+
+        _, kwargs = mock_provider.get_single_stock_bars.call_args
+        self.assertEqual(kwargs.get("timeframe"), "5m")
+        self.assertEqual(kwargs.get("adjustment"), Adjustment.SPLIT)
+
+    def test_walk_forward_fetch_kwargs(self):
+        from alpaca.data.enums import Adjustment
+        from strategies.leveraged_rebalance import LeveragedRebalanceStrategy
+        from walk_forward import WalkForwardValidator
+
+        validator = WalkForwardValidator(
+            StrategyOptimizer(strategy=LeveragedRebalanceStrategy()))
+        kwargs = validator._data_fetch_kwargs()
+        self.assertEqual(kwargs["timeframe"], "5m")
+        self.assertEqual(kwargs["adjustment"], Adjustment.SPLIT)
+
+    def test_walk_forward_fetch_kwargs_without_strategy(self):
+        from unittest.mock import Mock
+        from walk_forward import WalkForwardValidator
+
+        # A mock optimizer has no real Strategy attached → neutral defaults.
+        validator = WalkForwardValidator(Mock())
+        self.assertEqual(
+            validator._data_fetch_kwargs(),
+            {"timeframe": None, "adjustment": None})
+
+
 if __name__ == "__main__":
     unittest.main()

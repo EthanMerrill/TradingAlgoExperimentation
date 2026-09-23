@@ -6,6 +6,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -13,6 +14,7 @@ import pandas as pd
 # Add the app directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
+from alpaca.data.enums import Adjustment  # noqa: E402
 from data_provider import DataProvider  # noqa: E402
 from indicators import TechnicalIndicators  # noqa: E402
 
@@ -160,6 +162,106 @@ class TestDataProvider(unittest.TestCase):
             self.assertIsInstance(result_tsla, pd.DataFrame)
             self.assertEqual(result_aapl.iloc[0]['close'], 151.0)
             self.assertEqual(result_tsla.iloc[0]['close'], 250.0)
+
+    @staticmethod
+    def _bar(ts, close):
+        bar = Mock()
+        bar.timestamp = ts
+        bar.open = close
+        bar.high = close
+        bar.low = close
+        bar.close = close
+        bar.volume = 100
+        return bar
+
+    @patch('data_provider.globalConfig')
+    def test_get_single_stock_bars_omits_limit_by_default(self, mock_config):
+        """Default requests carry no total limit, so the SDK paginates fully.
+
+        Alpaca's SDK pages internally at 10k bars; the request ``limit`` is the
+        *total* bar count. Omitting it is what lets intraday windows exceed
+        10k bars, so it must not be present by default.
+        """
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        page = SimpleNamespace(
+            data={'AAPL': [self._bar(datetime(2025, 6, 14, 10, 30), 1.0)]})
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_stock_bars.return_value = page
+            mock_client_class.return_value = mock_client
+
+            data_provider = DataProvider()
+            result = data_provider.get_single_stock_bars(
+                'AAPL', datetime(2025, 6, 1), datetime(2025, 6, 30))
+
+            self.assertEqual(len(result), 1)
+            request = mock_client.get_stock_bars.call_args[0][0]
+            self.assertIsNone(getattr(request, 'limit', None))
+            self.assertNotIn('limit', request.to_request_fields())
+
+    @patch('data_provider.globalConfig')
+    def test_get_single_stock_bars_forwards_explicit_limit(self, mock_config):
+        """An explicit limit is passed through as the total bar cap."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        page = SimpleNamespace(
+            data={'AAPL': [self._bar(datetime(2025, 6, 14, 10, 30), 1.0)]})
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_stock_bars.return_value = page
+            mock_client_class.return_value = mock_client
+
+            data_provider = DataProvider()
+            data_provider.get_single_stock_bars(
+                'AAPL', datetime(2025, 6, 1), datetime(2025, 6, 30), limit=500)
+
+            request = mock_client.get_stock_bars.call_args[0][0]
+            self.assertEqual(getattr(request, 'limit', None), 500)
+
+    @patch('data_provider.globalConfig')
+    def test_get_single_stock_bars_sorts_by_timestamp(self, mock_config):
+        """Bars come back chronologically even if the API returns them out of order."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        page = SimpleNamespace(data={'AAPL': [
+            self._bar(datetime(2025, 6, 14, 10, 35), 2.0),
+            self._bar(datetime(2025, 6, 14, 10, 30), 1.0),
+        ]})
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_stock_bars.return_value = page
+            mock_client_class.return_value = mock_client
+
+            data_provider = DataProvider()
+            result = data_provider.get_single_stock_bars(
+                'AAPL', datetime(2025, 6, 1), datetime(2025, 6, 30))
+
+            self.assertEqual(list(result['close']), [1.0, 2.0])
+
+    @patch('data_provider.globalConfig')
+    def test_get_single_stock_bars_forwards_adjustment(self, mock_config):
+        """The adjustment policy is passed through to the API request."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        page = SimpleNamespace(
+            data={'AAPL': [self._bar(datetime(2025, 6, 14, 10, 30), 1.0)]})
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_stock_bars.return_value = page
+            mock_client_class.return_value = mock_client
+
+            data_provider = DataProvider()
+            data_provider.get_single_stock_bars(
+                'AAPL', datetime(2025, 6, 1), datetime(2025, 6, 30),
+                timeframe='5m', adjustment=Adjustment.SPLIT)
+
+            request = mock_client.get_stock_bars.call_args[0][0]
+            self.assertEqual(request.adjustment, Adjustment.SPLIT)
 
     @patch('data_provider.globalConfig')
     def test_get_current_price(self, mock_config):

@@ -283,18 +283,37 @@ class TradingAlgorithm:
             strategy = strategy_cls.create()
             optimizer = StrategyOptimizer(strategy=strategy)
 
+            # Strategies may declare their own symbol universe (e.g. the
+            # underlying stocks of leveraged ETFs). Fall back to the global
+            # universe when they don't.
+            strategy_symbols = symbols
+            try:
+                override = strategy.symbol_universe()
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "Strategy '%s' symbol_universe() failed: %s",
+                    strategy_name, e)
+                override = None
+            if override:
+                strategy_symbols = list(override)
+                logger.info(
+                    "📌 Strategy '%s' uses its own universe: %d symbols",
+                    strategy_name, len(strategy_symbols))
+
             if globalConfig.WF_ENABLED:
                 logger.info(
                     "🪟 Walk-forward validation enabled — splitting into IS/OOS windows")
                 wf_validator = WalkForwardValidator(optimizer)
                 wf_results = await wf_validator.validate_universe(
-                    symbols, start_date, end_date, progress_cb=progress_cb)
+                    strategy_symbols, start_date, end_date,
+                    progress_cb=progress_cb)
 
                 # Convert WalkForwardResult → BacktestResult for downstream compatibility
                 raw = [r.to_backtest_result() for r in wf_results]
             else:
                 raw = await optimizer.optimize_universe(
-                    symbols, start_date, end_date, progress_cb=progress_cb)
+                    strategy_symbols, start_date, end_date,
+                    progress_cb=progress_cb)
 
             raw_results.extend(raw)
             # Per-strategy filtering (alpha > 0, profitable, trades, win rate)

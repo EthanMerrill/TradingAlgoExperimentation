@@ -139,15 +139,48 @@ class DataProvider:
         self._shortable_cache[symbol] = result
         return result
 
+    @staticmethod
+    def _extract_bars_payload(bars) -> Optional[Any]:
+        """Return the mapping of symbol → bar list from an Alpaca response.
+
+        Handles both real SDK responses (``.data``) and plain dicts used by
+        unit-test mocks. Returns ``None`` when there is no usable payload.
+        """
+        if bars is None:
+            return None
+        if isinstance(bars, dict):
+            return bars
+        return getattr(bars, 'data', None)
+
+    @staticmethod
+    def _extract_symbol_bars(bars_data, symbol: str) -> Optional[Any]:
+        """Pull one symbol's bar list out of a bars payload (dict or object)."""
+        if bars_data is None:
+            return None
+        if hasattr(bars_data, 'get'):
+            return bars_data.get(symbol, None)
+        if hasattr(bars_data, symbol):
+            return getattr(bars_data, symbol, None)
+        return None
+
     def get_single_stock_bars(
         self,
         symbol: str,
         start_date: datetime,
         end_date: datetime,
         timeframe: Optional[str] = None,
+        adjustment: Optional[Adjustment] = None,
+        limit: Optional[int] = None,
     ) -> pd.DataFrame:
         """
         Get historical data for a single stock (synchronous version).
+
+        Pagination: the Alpaca SDK already follows ``next_page_token``
+        internally, requesting up to 10,000 bars per page. The request's
+        ``limit`` is the **total** number of bars requested, so leaving it
+        unset (the default here) makes the SDK return *every* bar in the
+        window — essential for intraday requests, where a 10,000-bar cap is
+        only ~25 sessions of 1-minute data.
 
         Args:
             symbol: Stock symbol
@@ -155,9 +188,15 @@ class DataProvider:
             end_date: End date
             timeframe: Optional Alpaca timeframe string, e.g. '5m' for 5-minute
                 bars. Defaults to daily bars (backward compatible).
+            adjustment: Optional Alpaca adjustment policy. Defaults to
+                ``Adjustment.ALL`` (backward compatible). Intraday callers
+                should pass ``Adjustment.SPLIT`` so dividend gap-fills do not
+                corrupt intraday price/volume signals.
+            limit: Optional total bar cap. ``None`` (default) fetches all bars
+                in the range via SDK pagination.
 
         Returns:
-            DataFrame with OHLCV data
+            DataFrame with OHLCV data (empty on missing client/data/error)
         """
         if not self.historical_client:
             logger.error(
@@ -170,56 +209,41 @@ class DataProvider:
             else:
                 tf = TimeFrame(1, cast(TimeFrameUnit, TimeFrameUnit.Day))
 
+            adj = adjustment if adjustment is not None else Adjustment.ALL
+
             request_params = StockBarsRequest(
                 symbol_or_symbols=[symbol],
                 timeframe=tf,
                 start=start_date,
                 end=end_date,
-                limit=10000,
-                adjustment=Adjustment.ALL
+                limit=limit,
+                adjustment=adj,
             )
 
             bars = self.historical_client.get_stock_bars(request_params)
+            bars_data = self._extract_bars_payload(bars)
+            symbol_bars = self._extract_symbol_bars(bars_data, symbol)
 
-            # Handle both actual API response (with .data attribute) and test mocks (direct dict)
-            if isinstance(bars, dict):
-                # Direct dict response (test mocks)
-                bars_data = bars
-            else:
-                # API response with .data attribute
-                bars_data = getattr(bars, 'data', None) if bars else None
-
-            if bars_data:
-                # Handle both dict and object-like access
-                symbol_bars = None
-                if hasattr(bars_data, 'get'):
-                    # Dict-like access
-                    symbol_bars = bars_data.get(symbol, None)
-                elif hasattr(bars_data, symbol):
-                    # Attribute access
-                    symbol_bars = getattr(bars_data, symbol, None)
-
-                if symbol_bars:
-                    df_data = []
-                    for bar in symbol_bars:
-                        df_data.append({
-                            'timestamp': bar.timestamp,  # Use full name for timestamp
-                            'open': bar.open,
-                            'high': bar.high,
-                            'low': bar.low,
-                            'close': bar.close,
-                            'volume': bar.volume
-                        })
-
-                    df = pd.DataFrame(df_data)
-                    df.set_index('timestamp', inplace=True)
-                    return df
-                else:
-                    logger.warning("No data found for symbol %s", symbol)
-                    return pd.DataFrame()
-            else:
+            if not symbol_bars:
                 logger.warning("No data found for symbol %s", symbol)
                 return pd.DataFrame()
+
+            df_data = [
+                {
+                    'timestamp': bar.timestamp,  # Use full name for timestamp
+                    'open': bar.open,
+                    'high': bar.high,
+                    'low': bar.low,
+                    'close': bar.close,
+                    'volume': bar.volume,
+                }
+                for bar in symbol_bars
+            ]
+
+            df = pd.DataFrame(df_data)
+            df.set_index('timestamp', inplace=True)
+            df.sort_index(inplace=True)
+            return df
 
         except Exception as e:
             logger.error("Error fetching data for %s: %s", symbol, e)

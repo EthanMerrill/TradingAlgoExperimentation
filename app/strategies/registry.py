@@ -42,5 +42,11 @@ def list_strategies() -> List[str]:
 
 # Import concrete strategies so they self-register. Add new strategies here.
 from strategies.rsi import RSIStrategy  # noqa: E402,F401  pylint: disable=wrong-import-position,unused-import
+from strategies.leveraged_rebalance import LeveragedRebalanceStrategy  # noqa: E402,F401  pylint: disable=wrong-import-position,unused-import
+from strategies.leveraged_flow_portfolio_strategy import (  # noqa: E402,F401  pylint: disable=wrong-import-position,unused-import
+    LeveragedFlowPortfolioStrategy,
+)
 
 register(RSIStrategy)
+register(LeveragedRebalanceStrategy)
+register(LeveragedFlowPortfolioStrategy)

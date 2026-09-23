@@ -6,6 +6,9 @@ strategies (currently ``rsi_mean_reversion``).
 """
 from strategies.base import BacktestResult, LiveSignal, Strategy, StrategyContext
 from strategies.rsi import RSIStrategy  # noqa: F401 — registers on import
+from strategies.leveraged_rebalance import (  # noqa: F401 — registers on import
+    LeveragedRebalanceStrategy,
+)
 from strategies.registry import (
     STRATEGY_REGISTRY,
     get_strategy,
@@ -19,6 +22,7 @@ __all__ = [
     "Strategy",
     "StrategyContext",
     "RSIStrategy",
+    "LeveragedRebalanceStrategy",
     "STRATEGY_REGISTRY",
     "get_strategy",
     "list_strategies",

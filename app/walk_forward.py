@@ -7,6 +7,7 @@ on the subsequent OOS period. Aggregate OOS performance provides a less-biased
 estimate of strategy quality than pure in-sample grid search.
 """
 import asyncio
+import functools
 import logging
 import os
 import time
@@ -41,6 +42,9 @@ class WalkForwardWindow:
     is_num_trades: int
     # OOS metrics
     oos_total_return: float = 0.0
+    oos_benchmark_return: float = 0.0
+    oos_alpha: float = 0.0
+    oos_placebo_p: Optional[float] = None
     oos_sharpe_ratio: float = 0.0
     oos_max_drawdown: float = 0.0
     oos_win_rate: float = 0.0
@@ -64,6 +68,7 @@ class WalkForwardResult:
 
     # Aggregate OOS metrics (across all windows with OOS validation)
     oos_total_return: float = 0.0
+    oos_benchmark_return: float = 0.0
     oos_sharpe_ratio: float = 0.0
     oos_max_drawdown: float = 0.0
     oos_win_rate: float = 0.0
@@ -109,7 +114,9 @@ class WalkForwardResult:
         return BacktestResult(
             symbol=self.symbol,
             total_return=self.oos_total_return,
-            buy_and_hold_return=0.0,  # Not computed in walk-forward
+            # Exposure-matched benchmark (same window/exit, no detection filter)
+            # so consumers can recover real alpha = return - benchmark.
+            buy_and_hold_return=self.oos_benchmark_return,
             alpha=self.alpha,
             num_trades=self.oos_num_trades,
             win_rate=self.oos_win_rate,
@@ -122,7 +129,7 @@ class WalkForwardResult:
             trade_details=None,
             direction=self.direction,
             strategy_name=self.strategy_name,
-            params=self.best_params or {
+            params=dict(self.best_params or {}) or {
                 "rsi_period": self.best_rsi_period or 14,
                 "rsi_lower": self.best_rsi_lower or 30,
                 "rsi_upper": self.best_rsi_upper or 70,
@@ -161,6 +168,20 @@ class WalkForwardValidator:
         if isinstance(strategy, Strategy):
             return strategy.warmup_days()
         return 60
+
+    def _data_fetch_kwargs(self) -> Dict[str, Any]:
+        """Extra ``get_single_stock_bars`` kwargs for this strategy's data.
+
+        Mirrors ``StrategyOptimizer._strategy_fetch_kwargs`` so walk-forward
+        windows fetch the same bar timeframe / adjustment as the optimizer.
+        """
+        strategy = getattr(self.optimizer, "strategy", None)
+        if isinstance(strategy, Strategy):
+            return {
+                "timeframe": strategy.data_timeframe,
+                "adjustment": strategy.data_adjustment,
+            }
+        return {"timeframe": None, "adjustment": None}
 
     @staticmethod
     def _slice_bars(
@@ -352,7 +373,8 @@ class WalkForwardValidator:
                     from data_provider import data_provider  # pylint: disable=import-outside-toplevel,reimported
 
                     full_data = data_provider.get_single_stock_bars(
-                        symbol, is_start - timedelta(days=warmup_is), oos_end)
+                        symbol, is_start - timedelta(days=warmup_is), oos_end,
+                        **self._data_fetch_kwargs())
 
                 # --- Step A: Optimize on IS window ---
                 try:
@@ -413,6 +435,19 @@ class WalkForwardValidator:
                 if oos_result is not None:
                     wf_win.oos_validated = True
                     wf_win.oos_total_return = oos_result.total_return
+                    # Strategies that measure an exposure-matched baseline
+                    # report it here; 0.0 (legacy/RSI) leaves alpha = return.
+                    oos_params = dict(
+                        getattr(oos_result, "params", None) or {})
+                    wf_win.oos_benchmark_return = float(
+                        oos_params.get("benchmark_mean_return", 0.0) or 0.0)
+                    # Prefer the strategy's own per-session excess return; it is
+                    # the authoritative measure of detection value.
+                    wf_win.oos_alpha = float(
+                        getattr(oos_result, "alpha", 0.0) or 0.0)
+                    placebo = oos_params.get("placebo") or {}
+                    if placebo.get("p_value") is not None:
+                        wf_win.oos_placebo_p = float(placebo["p_value"])
                     wf_win.oos_sharpe_ratio = oos_result.sharpe_ratio
                     wf_win.oos_max_drawdown = oos_result.max_drawdown
                     wf_win.oos_win_rate = oos_result.win_rate
@@ -490,7 +525,8 @@ class WalkForwardValidator:
             params = {"direction": direction}
 
         strategy = getattr(self.optimizer, "strategy", None)
-        if not isinstance(strategy, Strategy):
+        real_strategy = isinstance(strategy, Strategy)
+        if not real_strategy:
             # Legacy/mock optimizer without a strategy — reconstruct the RSI
             # strategy from the IS result (pre-framework behavior).
             strategy = RSIStrategy(
@@ -500,9 +536,17 @@ class WalkForwardValidator:
                 direction=direction,
             )
 
-        # Fetch OOS data with warmup for indicator history.
-        warmup_period = params.get("rsi_period") or 14
-        warmup_days = warmup_period * 2
+        # Fetch OOS data with warmup for indicator history. The warmup is a
+        # strategy concern (RSI needs ~2× its period; intraday strategies need
+        # enough sessions to seed their own baselines), so ask the strategy when
+        # one is attached and only fall back to the RSI heuristic otherwise.
+        if real_strategy:
+            warmup_days = self._warmup_days()
+            min_rows = 10
+        else:
+            warmup_period = params.get("rsi_period") or 14
+            warmup_days = warmup_period * 2
+            min_rows = warmup_period + 10
         warmup_start = oos_start - timedelta(days=warmup_days)
 
         # Prefer the locally-sliced OOS range (from the once-per-window fetch);
@@ -510,17 +554,33 @@ class WalkForwardValidator:
         oos_data = self._slice_bars(full_data, warmup_start, oos_end)
         if oos_data is None or oos_data.empty:
             oos_data = data_provider.get_single_stock_bars(
-                symbol, warmup_start, oos_end)
+                symbol, warmup_start, oos_end, **self._data_fetch_kwargs())
 
-        if oos_data.empty or len(oos_data) < warmup_period + 10:
+        if oos_data.empty or len(oos_data) < min_rows:
             logger.debug(
-                "⚠️  %s: Insufficient OOS data (%d rows) for RSI(%s)",
-                symbol, len(oos_data), warmup_period,
+                "⚠️  %s: Insufficient OOS data (%d rows, need %d)",
+                symbol, len(oos_data), min_rows,
             )
             return None
 
-        return strategy.backtest(
+        result = strategy.backtest(
             oos_data, symbol, globalConfig.BACKTEST_INIT_CASH, **params)
+
+        # Falsification test on the untouched OOS slice: does the detection beat
+        # randomly selecting the same number of sessions? Optional hook — only
+        # strategies that implement it pay the cost.
+        try:
+            placebo = strategy.placebo_p_value(
+                oos_data, params,
+                alpha=float(getattr(result, "alpha", 0.0) or 0.0),
+                num_trades=int(getattr(result, "num_trades", 0) or 0),
+            )
+            if placebo:
+                result.params["placebo"] = placebo
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.debug("Placebo test failed for %s: %s", symbol, e)
+
+        return result
 
     def _aggregate_windows(
         self,
@@ -544,6 +604,8 @@ class WalkForwardValidator:
             # Aggregate OOS metrics: equal-weight average of per-window returns
             result.oos_total_return = float(
                 np.mean([w.oos_total_return for w in validated]))
+            result.oos_benchmark_return = float(
+                np.mean([w.oos_benchmark_return for w in validated]))
             result.oos_sharpe_ratio = float(
                 np.mean([w.oos_sharpe_ratio for w in validated]))
             result.oos_max_drawdown = float(
@@ -554,8 +616,16 @@ class WalkForwardValidator:
             result.oos_calmar_ratio = float(
                 np.mean([w.oos_calmar_ratio for w in validated]))
 
-            # Alpha: OOS return minus zero (we don't have buy-and-hold per-window)
-            result.alpha = result.oos_total_return
+            # Alpha is the mean PER-SESSION excess return over the "hold the
+            # window every day" baseline — not the raw OOS return. (Previously
+            # this was `= oos_total_return`, which credited market drift as
+            # alpha: a long-only book in a bull run looked like pure skill.)
+            result.alpha = float(
+                np.mean([w.oos_alpha for w in validated]))
+            placebo_ps = [w.oos_placebo_p for w in validated
+                          if w.oos_placebo_p is not None]
+            if placebo_ps:
+                result.oos_placebo_p = float(np.median(placebo_ps))
 
             # Select best parameters: most recent OOS-profitable window
             profitable_validated = [w for w in validated if w.oos_profitable]
@@ -588,14 +658,20 @@ class WalkForwardValidator:
                 # No successful windows at all
                 result.profitable = False
 
-        # Parameter stability: fraction of IS-optimized windows with same params
+        # Parameter stability: fraction of IS-optimized windows that settled on
+        # the same parameters. Keyed on the full params dict so it is meaningful
+        # for non-RSI strategies (the legacy RSI triplet is only used when the
+        # params dict is empty).
         optimized = [w for w in wf_windows if w.is_optimized]
         if optimized:
-            param_counts: Dict[Tuple[int, int, int], int] = {}
+            keys = []
             for w in optimized:
-                key = (w.best_period, w.best_lower, w.best_upper)
-                param_counts[key] = param_counts.get(key, 0) + 1
-            max_count = max(param_counts.values())
+                params_key = dict(w.best_params or {})
+                if params_key:
+                    keys.append(tuple(sorted(params_key.items())))
+                else:
+                    keys.append((w.best_period, w.best_lower, w.best_upper))
+            max_count = max(keys.count(key) for key in set(keys))
             result.param_stability = max_count / len(optimized)
 
         logger.debug(
@@ -708,10 +784,12 @@ class WalkForwardValidator:
             fetch_tasks = [
                 loop.run_in_executor(
                     None,
-                    data_provider.get_single_stock_bars,
-                    symbol,
-                    fetch_start,
-                    end_date,
+                    functools.partial(
+                        data_provider.get_single_stock_bars,
+                        symbol,
+                        fetch_start,
+                        end_date,
+                        **self._data_fetch_kwargs()),
                 )
                 for symbol in batch
             ]

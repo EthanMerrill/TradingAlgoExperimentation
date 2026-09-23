@@ -94,6 +94,13 @@ class Strategy(ABC):
     execution_style: str = "session"
     # Bar timeframe for bar_loop strategies, e.g. "5m".
     bar_size: Optional[str] = None
+    # Historical bar timeframe this strategy's backtest should fetch, e.g.
+    # "5m". None means daily bars (the framework default).
+    data_timeframe: Optional[str] = None
+    # Alpaca adjustment policy for backtest data. None means the provider
+    # default (``Adjustment.ALL``). Intraday strategies should use
+    # ``Adjustment.SPLIT`` so dividend gap-fills don't corrupt bar signals.
+    data_adjustment: Any = None
 
     @classmethod
     def create(cls) -> "Strategy":
@@ -174,6 +181,16 @@ class Strategy(ABC):
         """
         return 30
 
+    def symbol_universe(self) -> Optional[List[str]]:
+        """Symbols this strategy should be backtested on.
+
+        Default: ``None``, meaning use the engine's global universe. Strategies
+        that trade a fixed or derived set (e.g. the underlying stocks of
+        leveraged ETFs) return their own list here; the backtest loop
+        substitutes it for the global universe.
+        """
+        return None
+
     def build_consolidated_trades(
         self, results: List[BacktestResult]
     ) -> pd.DataFrame:
@@ -202,3 +219,21 @@ class Strategy(ABC):
     def evaluate_live_signals(self, ctx: StrategyContext) -> List[LiveSignal]:
         """Evaluate live signals (Phase C engine hook). Default: no signals."""
         return []
+
+    def placebo_p_value(
+        self,
+        data: pd.DataFrame,
+        params: Dict[str, Any],
+        alpha: float,
+        num_trades: int,
+        n_draws: int = 2000,
+    ) -> Optional[Dict[str, Any]]:
+        """Optional falsification test for the strategy's reported alpha.
+
+        Returns a dict describing the null distribution of alpha under a
+        "no skill" alternative (e.g. randomly selecting the same number of
+        opportunities), or ``None`` when unsupported. Walk-forward calls this
+        on the out-of-sample slice so the resulting p-value carries no
+        in-sample selection bias for the test statistic itself.
+        """
+        return None

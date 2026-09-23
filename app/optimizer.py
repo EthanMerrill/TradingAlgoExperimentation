@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from data_provider import data_provider
@@ -36,6 +36,18 @@ class StrategyOptimizer:
         self.rsi_uppers = list(range(*globalConfig.RSI_UPPER_RANGE))
         self.last_consolidated_trades_df = pd.DataFrame()
 
+    def _strategy_fetch_kwargs(self) -> Dict[str, Any]:
+        """Extra ``get_single_stock_bars`` kwargs for this strategy's data.
+
+        Strategies declare their bar timeframe / adjustment policy via the
+        ``data_timeframe`` and ``data_adjustment`` class attributes (``None``
+        keeps the daily-bar / ``Adjustment.ALL`` defaults).
+        """
+        return {
+            "timeframe": getattr(self.strategy, "data_timeframe", None),
+            "adjustment": getattr(self.strategy, "data_adjustment", None),
+        }
+
     def optimize_symbol(self, symbol: str, start_date: datetime, end_date: datetime, direction: str = "long", prefetched_data: Optional[pd.DataFrame] = None) -> Optional["BacktestResult"]:  # noqa: F821
         """
         Optimize the strategy's parameters for a single symbol.
@@ -62,7 +74,8 @@ class StrategyOptimizer:
                 data = prefetched_data
             else:
                 data = data_provider.get_single_stock_bars(
-                    symbol, warmup_start, end_date)
+                    symbol, warmup_start, end_date,
+                    **self._strategy_fetch_kwargs())
 
             if data.empty or len(data) < 50:
                 logger.debug(
@@ -157,7 +170,8 @@ class StrategyOptimizer:
             symbol_data_map: Dict[str, pd.DataFrame] = {}
             for symbol in batch:
                 fetched = data_provider.get_single_stock_bars(
-                    symbol, warmup_start, end_date)
+                    symbol, warmup_start, end_date,
+                    **self._strategy_fetch_kwargs())
                 if not fetched.empty and len(fetched) >= 50:
                     symbol_data_map[symbol] = fetched
                 else:
