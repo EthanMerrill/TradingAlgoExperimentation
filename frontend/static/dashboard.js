@@ -20,6 +20,12 @@ let dbTables = [];
 let dbCurrentTable = null;
 let dbOffset = 0;
 let dbTable = null;
+let perfDetailTable = null;
+
+// Performance tab state
+let perfChart = null;
+let perfLoaded = false;
+const PERF_COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#e57373', '#ba68c8', '#fff176'];
 
 // Friendly labels + badge classes per strategy registry key.
 const STRATEGY_LABELS = {
@@ -493,6 +499,9 @@ function switchTab(tabName) {
     if (tabName === 'database' && dbTables.length === 0) {
         loadDbTables();
     }
+    if (tabName === 'performance' && !perfLoaded) {
+        fetchStrategyPerformance();
+    }
 }
 
 // ── Database browser ──
@@ -589,6 +598,161 @@ async function loadDbTable(name, offset) {
     } catch (err) {
         console.error('Failed to fetch DB table:', err);
         dbErrorMsg('Failed to fetch table.');
+    }
+}
+
+// ── Performance tab ──
+
+function perfErrorMsg(msg) {
+    var el = document.getElementById('perf-error');
+    if (el) el.textContent = msg || '';
+}
+
+async function fetchStrategyPerformance() {
+    perfErrorMsg('');
+    try {
+        const resp = await fetch('/api/strategy-performance');
+        if (!resp.ok) {
+            const data = await resp.json().catch(function () { return {}; });
+            perfErrorMsg(data.error || 'Failed to load performance (' + resp.status + ')');
+            return;
+        }
+        const data = await resp.json();
+        renderPerformance(data.strategies || []);
+        perfLoaded = true;
+    } catch (err) {
+        console.error('Failed to fetch /api/strategy-performance:', err);
+        perfErrorMsg('Failed to load performance data.');
+    }
+}
+
+function renderPerformance(strategies) {
+    renderPerfSummaryCards(strategies);
+    renderPerfChart(strategies);
+    renderPerfDetailTable(strategies);
+}
+
+function renderPerfSummaryCards(strategies) {
+    var wrap = document.getElementById('perf-summary-cards');
+    if (!wrap) return;
+    if (!strategies.length) {
+        wrap.innerHTML = '<div class="empty-msg">No performance snapshots yet — they are written at the end of each trading session.</div>';
+        return;
+    }
+    var html = '';
+    strategies.forEach(function (s, i) {
+        var color = PERF_COLORS[i % PERF_COLORS.length];
+        var total = (s.realized_pnl || 0) + (s.unrealized_pnl || 0);
+        var pct = (s.budget_notional > 0)
+            ? (total / s.budget_notional * 100).toFixed(2) + '%' : '—';
+        var cls = total >= 0 ? 'pnl-positive' : 'pnl-negative';
+        var info = strategyInfo(s.strategy_name);
+        html += '<div class="metric perf-card" style="border-top: 3px solid ' + color + '">' +
+            '<span class="metric-value ' + cls + '">' + formatCurrency(total) + '</span>' +
+            '<span class="metric-label">' + (info ? info.label : s.strategy_name) + ' · ' + pct + '</span>' +
+            '<span class="metric-label">' + s.n_days + ' session' + (s.n_days !== 1 ? 's' : '') +
+            ' · ' + (s.open_positions || 0) + ' open</span>' +
+            '</div>';
+    });
+    wrap.innerHTML = html;
+}
+
+function renderPerfChart(strategies) {
+    var canvas = document.getElementById('perf-chart');
+    if (!canvas) return;
+    var datasets = strategies.map(function (s, i) {
+        var color = PERF_COLORS[i % PERF_COLORS.length];
+        return {
+            label: (strategyInfo(s.strategy_name) || {}).label || s.strategy_name,
+            data: s.series.map(function (p) {
+                return { x: p.date, y: Number(p.cumulative_pnl) };
+            }),
+            borderColor: color,
+            backgroundColor: color,
+            tension: 0.2,
+            pointRadius: 2,
+        };
+    });
+    if (perfChart) {
+        perfChart.data.datasets = datasets;
+        perfChart.update();
+        return;
+    }
+    perfChart = new Chart(canvas, {
+        type: 'line',
+        data: { datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            parsing: false,
+            scales: {
+                x: {
+                    type: 'category',
+                    ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+                },
+                y: { ticks: {
+                    callback: function (v) { return '$' + Number(v).toLocaleString(); },
+                } },
+            },
+            plugins: { legend: { position: 'bottom' } },
+        },
+    });
+}
+
+function renderPerfDetailTable(strategies) {
+    var wrap = document.getElementById('perf-detail-table');
+    if (!wrap) return;
+    if (!strategies.length) {
+        wrap.innerHTML = '';
+        return;
+    }
+    var rows = [];
+    strategies.forEach(function (s) {
+        s.series.forEach(function (p) {
+            rows.push({
+                date: p.date,
+                strategy: s.strategy_name,
+                open_positions: p.open_positions,
+                open_market_value: p.open_market_value,
+                unrealized_pnl: p.unrealized_pnl,
+                realized_pnl: p.realized_pnl,
+                cumulative_pnl: p.cumulative_pnl,
+            });
+        });
+    });
+    rows.sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+
+    var columns = [
+        { title: 'Date', field: 'date', width: 120 },
+        { title: 'Strategy', field: 'strategy', width: 180,
+            formatter: function (cell) { return strategyBadge(cell.getValue()); } },
+        { title: 'Open', field: 'open_positions', width: 80, hozAlign: 'right' },
+        { title: 'Market Value', field: 'open_market_value', width: 140,
+            hozAlign: 'right', formatter: function (cell) { return formatCurrency(cell.getValue()); } },
+        { title: 'Unrealized P&L', field: 'unrealized_pnl', width: 150,
+            hozAlign: 'right', cssClass: 'pnl-cell',
+            formatter: function (cell) { return formatCurrency(cell.getValue()); } },
+        { title: 'Realized P&L', field: 'realized_pnl', width: 150,
+            hozAlign: 'right',
+            formatter: function (cell) { return formatCurrency(cell.getValue()); } },
+        { title: 'Cumulative P&L', field: 'cumulative_pnl', width: 160,
+            hozAlign: 'right',
+            formatter: function (cell) {
+                var v = cell.getValue();
+                return '<span class="' + pnlClass(v) + '">' + formatCurrency(v) + '</span>';
+            } },
+    ];
+    if (perfDetailTable) {
+        perfDetailTable.setColumns(columns);
+        perfDetailTable.replaceData(rows);
+    } else {
+        perfDetailTable = new Tabulator('#perf-detail-table', {
+            data: rows,
+            columns: columns,
+            layout: 'fitDataFill',
+            height: '420px',
+            selectable: false,
+        });
     }
 }
 

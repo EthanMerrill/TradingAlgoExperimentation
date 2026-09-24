@@ -514,5 +514,85 @@ class TestRunCycleJobsEndpoints(unittest.TestCase):
         self.assertEqual(resp.status_code, 401)
 
 
+class TestStrategyPerformanceEndpoint(unittest.TestCase):
+    """Tests for the /api/strategy-performance endpoint (Performance tab)."""
+
+    def setUp(self):
+        self._orig_password = os.environ.get('DASHBOARD_PASSWORD')
+        os.environ['DASHBOARD_PASSWORD'] = 'testpass'
+        self.mock_storage = Mock()
+        self.mock_storage.load_strategy_performance.return_value = [
+            {
+                'snapshot_date': '2026-09-21',
+                'strategy_name': 'rsi_mean_reversion',
+                'equity': 100000.0, 'allocation_weight': 0.85,
+                'budget_notional': 85000.0, 'open_positions': 1,
+                'open_market_value': 9000.0, 'unrealized_pnl': 50.0,
+                'realized_pnl': 25.0,
+            },
+            {
+                'snapshot_date': '2026-09-22',
+                'strategy_name': 'rsi_mean_reversion',
+                'equity': 100010.0, 'allocation_weight': 0.85,
+                'budget_notional': 85000.0, 'open_positions': 2,
+                'open_market_value': 9500.0, 'unrealized_pnl': 80.0,
+                'realized_pnl': 25.0,
+            },
+            {
+                'snapshot_date': '2026-09-22',
+                'strategy_name': 'leveraged_flow_portfolio',
+                'equity': 100010.0, 'allocation_weight': 0.15,
+                'budget_notional': 15000.0, 'open_positions': 3,
+                'open_market_value': 14000.0, 'unrealized_pnl': 120.0,
+                'realized_pnl': -30.0,
+            },
+        ]
+        self.app = create_app(storage_backend=self.mock_storage)
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        if self._orig_password is not None:
+            os.environ['DASHBOARD_PASSWORD'] = self._orig_password
+        else:
+            os.environ.pop('DASHBOARD_PASSWORD', None)
+
+    @staticmethod
+    def _auth_headers():
+        import base64
+        credentials = base64.b64encode(b'admin:testpass').decode('utf-8')
+        return {'Authorization': f'Basic {credentials}'}
+
+    def test_requires_auth(self):
+        resp = self.client.get('/api/strategy-performance')
+        self.assertEqual(resp.status_code, 401)
+
+    def test_returns_strategies_with_series(self):
+        resp = self.client.get('/api/strategy-performance',
+                               headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn('strategies', data)
+        by_name = {s['strategy_name']: s for s in data['strategies']}
+        self.assertIn('rsi_mean_reversion', by_name)
+        self.assertIn('leveraged_flow_portfolio', by_name)
+
+        rsi = by_name['rsi_mean_reversion']
+        self.assertEqual(rsi['n_days'], 2)
+        self.assertEqual(rsi['first_date'], '2026-09-21')
+        self.assertEqual(rsi['last_date'], '2026-09-22')
+        self.assertEqual(rsi['realized_pnl'], 25.0)
+        self.assertEqual(len(rsi['series']), 2)
+        # Latest cumulative = realized + latest unrealized
+        self.assertAlmostEqual(
+            rsi['series'][-1]['cumulative_pnl'], 25.0 + 80.0)
+
+    def test_no_storage_returns_503(self):
+        app = create_app(storage_backend=None)
+        client = app.test_client()
+        resp = client.get('/api/strategy-performance',
+                          headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 503)
+
+
 if __name__ == '__main__':
     unittest.main()

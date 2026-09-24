@@ -371,6 +371,43 @@ ORDER_FIELDS = [
 ]
 
 
+STRATEGY_PERFORMANCE_FIELDS = [
+    "snapshot_date",
+    "strategy_name",
+    "equity",
+    "allocation_weight",
+    "budget_notional",
+    "open_positions",
+    "open_market_value",
+    "unrealized_pnl",
+    "realized_pnl",
+]
+
+
+def normalize_strategy_performance_record(record: Mapping[str, Any]) -> Dict[str, Any]:
+    """Normalize one per-strategy daily performance row for serialization.
+
+    ``snapshot_date`` is a fixed-width ``YYYY-MM-DD`` string so string ordering
+    equals chronological ordering (used for ORDER BY and for upserting by
+    (environment, snapshot_date, strategy_name)).
+    """
+    out: Dict[str, Any] = {}
+    for field in STRATEGY_PERFORMANCE_FIELDS:
+        value = record.get(field)
+        if field == "snapshot_date":
+            out[field] = _safe_str(value)
+        elif field == "strategy_name":
+            out[field] = _safe_str(value) or "rsi_mean_reversion"
+        elif field == "open_positions":
+            try:
+                out[field] = int(value or 0)
+            except (TypeError, ValueError):
+                out[field] = 0
+        else:
+            out[field] = _safe_round(value, 4)
+    return out
+
+
 def _parse_optional_datetime(value: Any) -> Optional[datetime]:
     """Parse a possibly-datetime/None/NaN value into a datetime or None."""
     if value is None:
@@ -501,6 +538,24 @@ class StorageBackend(ABC):
     def save_orders(self, orders, timestamp: Optional[str] = None) -> bool:
         """Persist broker orders. Default no-op; backends may override."""
         return False
+
+    def save_strategy_performance(
+        self, records: List[Dict[str, Any]],
+        snapshot_date: Optional[str] = None,
+    ) -> bool:
+        """Upsert one per-strategy performance row per strategy for a day.
+
+        ``records`` items carry the STRATEGY_PERFORMANCE_FIELDS; the
+        ``snapshot_date`` column comes from the argument (or each record).
+        Default no-op; backends may override.
+        """
+        return False
+
+    def load_strategy_performance(
+        self, strategy_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load per-strategy daily performance rows (chronological)."""
+        return []
 
     def load_orders(
         self, symbol: Optional[str] = None, status: Optional[str] = None

@@ -313,6 +313,63 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
             logger.error("Error fetching table %s: %s", name, e)
             return jsonify({'error': f'Failed to fetch table {name}'}), 500
 
+    # ---------- /api/strategy-performance (auth required) ----------
+    # Backs the dashboard "Performance" tab: per-strategy historic daily
+    # snapshots (one row per strategy per session) with derived cumulative
+    # P&L/return and per-strategy summary stats.
+
+    @app.route('/api/strategy-performance')
+    @_auth_required
+    def api_strategy_performance():
+        if storage_backend is None:
+            return jsonify({'error': 'Storage backend not available'}), 503
+
+        try:
+            rows = storage_backend.load_strategy_performance()
+        except Exception as e:
+            logger.error("Error loading strategy performance: %s", e)
+            return jsonify({'error': 'Failed to load strategy performance'}), 500
+
+        rows = [_json_safe(r) for r in rows]
+        strategies: dict[str, dict] = {}
+        for row in rows:
+            name = row.get('strategy_name') or 'rsi_mean_reversion'
+            bucket = strategies.setdefault(name, {
+                'strategy_name': name,
+                'n_days': 0,
+                'first_date': None,
+                'last_date': None,
+                'realized_pnl': 0.0,
+                'unrealized_pnl': 0.0,
+                'open_positions': 0,
+                'open_market_value': 0.0,
+                'series': [],
+            })
+            bucket['n_days'] += 1
+            bucket['first_date'] = bucket['first_date'] or row.get(
+                'snapshot_date')
+            bucket['last_date'] = row.get('snapshot_date')
+            # Each row's realized_pnl is the cumulative closed-position P&L
+            # already in the position book, so the latest row IS the total —
+            # do not sum across rows.
+            bucket['realized_pnl'] = row.get('realized_pnl')
+            bucket['open_positions'] = int(row.get('open_positions') or 0)
+            bucket['open_market_value'] = row.get('open_market_value')
+            bucket['unrealized_pnl'] = row.get('unrealized_pnl')
+            bucket['budget_notional'] = row.get('budget_notional')
+            bucket['equity'] = row.get('equity')
+            bucket['series'].append({
+                'date': row.get('snapshot_date'),
+                'cumulative_pnl': (
+                    float(row.get('realized_pnl') or 0.0)
+                    + float(row.get('unrealized_pnl') or 0.0)),
+                'unrealized_pnl': row.get('unrealized_pnl'),
+                'realized_pnl': row.get('realized_pnl'),
+                'open_market_value': row.get('open_market_value'),
+                'open_positions': row.get('open_positions'),
+            })
+        return jsonify({'strategies': list(strategies.values())})
+
     # (The old /api/open-orders endpoint was removed — the frontend never
     # called it; /api/live-alpaca covers the live-order use case.)
 

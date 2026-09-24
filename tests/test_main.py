@@ -301,5 +301,103 @@ class TestBacktestRetentionAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ['save', 'prune'])
 
 
+class TestStrategyPerformanceSnapshot(unittest.TestCase):
+    """Tests for the per-strategy end-of-session performance snapshot."""
+
+    def test_build_records_and_save(self):
+        from main import TradingAlgorithm
+
+        with patch('main.globalConfig') as cfg:
+            cfg.STRATEGIES_ENABLED = ['rsi_mean_reversion',
+                                      'leveraged_flow_portfolio']
+            cfg.STRATEGY_ALLOCATION = {'rsi_mean_reversion': 0.85,
+                                       'leveraged_flow_portfolio': 0.15}
+
+            with patch('main.TradingEngine') as engine_cls:
+                engine = Mock()
+                engine._strategy_budgets.return_value = {
+                    'rsi_mean_reversion': 85000.0,
+                    'leveraged_flow_portfolio': 15000.0,
+                }
+                engine_cls.return_value = engine
+
+                def _pos(symbol, qty, entry, current, strategy, closed=False,
+                         realized=None):
+                    p = Mock()
+                    p.symbol = symbol
+                    p.quantity = qty
+                    p.entry_price = entry
+                    p.current_price = current
+                    p.strategy_name = strategy
+                    p.closed = closed
+                    p.realized_return = realized
+                    return p
+
+                pm = Mock()
+                pm.positions = [
+                    _pos('AAPL', 100, 150.0, 155.0, 'rsi_mean_reversion'),
+                    _pos('AMD', 50, 100.0, 95.0, 'rsi_mean_reversion'),
+                    _pos('TSL3L', -200, 10.0, 10.5,
+                         'leveraged_flow_portfolio'),
+                    _pos('OLD', 10, 20.0, 22.0, 'rsi_mean_reversion',
+                         closed=True, realized=0.05),
+                ]
+
+                algorithm = object.__new__(TradingAlgorithm)
+                algorithm.positions_manager = pm
+                algorithm.trading_engine = engine
+
+                records = algorithm._build_strategy_performance_records(
+                    {'equity': 100000.0})
+
+                by_name = {r['strategy_name']: r for r in records}
+                self.assertEqual(set(by_name),
+                                 {'rsi_mean_reversion',
+                                  'leveraged_flow_portfolio'})
+
+                rsi = by_name['rsi_mean_reversion']
+                self.assertEqual(rsi['open_positions'], 2)
+                # 100*155 + 50*95
+                self.assertAlmostEqual(rsi['open_market_value'], 20250.0)
+                # (155-150)*100 + (95-100)*50 = 500 - 250
+                self.assertAlmostEqual(rsi['unrealized_pnl'], 250.0)
+                # 0.05 * 20 * 10
+                self.assertAlmostEqual(rsi['realized_pnl'], 10.0)
+                self.assertAlmostEqual(rsi['allocation_weight'], 0.85)
+
+                flow = by_name['leveraged_flow_portfolio']
+                self.assertEqual(flow['open_positions'], 1)
+                self.assertAlmostEqual(flow['open_market_value'], 2100.0)
+                # short: (10.5-10.0) * (-200) = -100
+                self.assertAlmostEqual(flow['unrealized_pnl'], -100.0)
+                self.assertAlmostEqual(flow['realized_pnl'], 0.0)
+
+                # Persisting uses storage.save_strategy_performance
+                with patch('main.storage') as mock_storage:
+                    algorithm._save_strategy_performance_snapshot(
+                        {'equity': 100000.0})
+                    mock_storage.save_strategy_performance.assert_called_once()
+                    args = mock_storage.save_strategy_performance.call_args[0]
+                    self.assertEqual(args[1], records[0]['snapshot_date'])
+
+    def test_snapshot_failure_is_non_fatal(self):
+        from main import TradingAlgorithm
+        with patch('main.globalConfig') as cfg:
+            cfg.STRATEGIES_ENABLED = ['rsi_mean_reversion']
+            cfg.STRATEGY_ALLOCATION = {}
+            algorithm = object.__new__(TradingAlgorithm)
+            pm = Mock()
+            pm.positions = None
+            algorithm.positions_manager = pm
+            engine = Mock()
+            engine._strategy_budgets.return_value = {}
+            algorithm.trading_engine = engine
+            # Should not raise even with broken storage
+            with patch('main.storage') as mock_storage:
+                mock_storage.save_strategy_performance.side_effect = \
+                    RuntimeError('boom')
+                algorithm._save_strategy_performance_snapshot({'equity': 1})
+
+
 if __name__ == '__main__':
     unittest.main()

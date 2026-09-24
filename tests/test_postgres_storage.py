@@ -404,5 +404,92 @@ class TestPostgresStorage(unittest.TestCase):
                          "20250610_170343")
 
 
+# --- strategy_daily_performance ---
+
+    def test_strategy_performance_schema_in_ddl(self):
+        """The DDL must create strategy_daily_performance with upsert key."""
+        from storage import postgres
+        ddl = postgres._ALL_DDL
+        self.assertIn("CREATE TABLE IF NOT EXISTS strategy_daily_performance",
+                      ddl)
+        self.assertIn("uq_sdp_env_date_strategy", ddl)
+
+    def test_save_strategy_performance_connected(self):
+        s = self._connected(env="dev")
+        records = [{
+            "snapshot_date": "2026-09-22",
+            "strategy_name": "leveraged_flow_portfolio",
+            "equity": 100000.0,
+            "allocation_weight": 0.15,
+            "budget_notional": 15000.0,
+            "open_positions": 3,
+            "open_market_value": 14000.0,
+            "unrealized_pnl": 120.5,
+            "realized_pnl": -30.0,
+        }]
+        self.assertTrue(s.save_strategy_performance(records, "2026-09-22"))
+        self._conn.executemany.assert_called_once()
+        sql = self._conn.executemany.call_args[0][0]
+        rows = self._conn.executemany.call_args[0][1]
+        self.assertIn(
+            "ON CONFLICT (environment, snapshot_date, strategy_name)", sql)
+        # environment + snapshot_date are the first two params of each row
+        self.assertEqual(rows[0][0], "dev")
+        self.assertEqual(rows[0][1], "2026-09-22")
+        self.assertEqual(rows[0][3], "leveraged_flow_portfolio")
+
+    def test_save_strategy_performance_empty_records(self):
+        s = self._connected()
+        self.assertTrue(s.save_strategy_performance([], "2026-09-22"))
+        self._conn.executemany.assert_not_called()
+
+    def test_save_strategy_performance_disconnected(self):
+        s = self._disconnected()
+        self.assertFalse(s.save_strategy_performance(
+            [{"snapshot_date": "2026-09-22",
+              "strategy_name": "rsi_mean_reversion"}]))
+
+    def test_load_strategy_performance_connected(self):
+        s = self._connected(env="dev")
+        self._conn.fetch = AsyncMock(return_value=[
+            {"snapshot_date": "2026-09-22",
+             "strategy_name": "rsi_mean_reversion",
+             "equity": 100000.0, "allocation_weight": 0.85,
+             "budget_notional": 85000.0, "open_positions": 2,
+             "open_market_value": 5000.0, "unrealized_pnl": 12.0,
+             "realized_pnl": 3.0},
+        ])
+        rows = s.load_strategy_performance()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["snapshot_date"], "2026-09-22")
+        sql = self._conn.fetch.call_args[0][0]
+        self.assertIn("FROM strategy_daily_performance", sql)
+        self.assertIn("ORDER BY snapshot_date", sql)
+
+    def test_load_strategy_performance_filtered(self):
+        s = self._connected(env="dev")
+        self._conn.fetch = AsyncMock(return_value=[])
+        s.load_strategy_performance("leveraged_flow_portfolio")
+        args = self._conn.fetch.call_args[0]
+        self.assertEqual(args[1], "dev")
+        self.assertEqual(args[2], "leveraged_flow_portfolio")
+
+    def test_load_strategy_performance_disconnected(self):
+        s = self._disconnected()
+        self.assertEqual(s.load_strategy_performance(), [])
+
+    def test_normalize_strategy_performance_record(self):
+        from storage.backend import normalize_strategy_performance_record
+        d = normalize_strategy_performance_record({
+            "snapshot_date": "2026-09-22",
+            "strategy_name": "rsi_mean_reversion",
+            "open_positions": 2.7,
+            "unrealized_pnl": float("nan"),
+        })
+        self.assertEqual(d["snapshot_date"], "2026-09-22")
+        self.assertEqual(d["open_positions"], 2)
+        self.assertIsNone(d["unrealized_pnl"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,11 +23,13 @@ from storage.backend import (
     clean_record_for_save,
     dict_to_backtest_result,
     normalize_position_for_save,
+    normalize_strategy_performance_record,
     order_to_dict,
     dict_to_order,
     retention_cutoff_timestamp,
     POSITION_FIELDS,
     ORDER_FIELDS,
+    STRATEGY_PERFORMANCE_FIELDS,
 )
 
 if TYPE_CHECKING:
@@ -230,9 +232,31 @@ CREATE INDEX IF NOT EXISTS idx_orders_env_symbol
     ON orders (environment, symbol);
 """
 
+_DDL_STRATEGY_PERFORMANCE = """
+CREATE TABLE IF NOT EXISTS strategy_daily_performance (
+    id                  SERIAL PRIMARY KEY,
+    snapshot_date       TEXT        NOT NULL,
+    environment         TEXT        NOT NULL,
+    strategy_name       TEXT        NOT NULL,
+    equity              DOUBLE PRECISION,
+    allocation_weight   DOUBLE PRECISION,
+    budget_notional     DOUBLE PRECISION,
+    open_positions      INTEGER     DEFAULT 0,
+    open_market_value   DOUBLE PRECISION,
+    unrealized_pnl      DOUBLE PRECISION,
+    realized_pnl        DOUBLE PRECISION,
+    created_at          TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_sdp_env_date_strategy
+        UNIQUE (environment, snapshot_date, strategy_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sdp_date
+    ON strategy_daily_performance (environment, snapshot_date);
+"""
+
 _ALL_DDL = (
     _DDL_BACKTEST_RESULTS + _DDL_POSITION_SNAPSHOTS
     + _DDL_SESSION_METADATA + _DDL_ORDERS
+    + _DDL_STRATEGY_PERFORMANCE
 )
 
 # ---------------------------------------------------------------------------
@@ -646,6 +670,94 @@ class PostgresStorage(StorageBackend):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error saving positions to Postgres: %s", exc)
             return False
+
+    # -- save_strategy_performance --------------------------------------------
+
+    def save_strategy_performance(
+        self, records: List[Dict[str, Any]],
+        snapshot_date: Optional[str] = None,
+    ) -> bool:
+        """Upsert one performance row per strategy for a snapshot date.
+
+        Idempotent: re-running the session on the same day replaces the rows
+        via ON CONFLICT (environment, snapshot_date, strategy_name).
+        """
+        if not self._connected:
+            logger.error(
+                "Postgres not connected — cannot save strategy performance")
+            return False
+        if not records:
+            return True
+        if snapshot_date is None:
+            snapshot_date = datetime.now().strftime("%Y-%m-%d")
+
+        cols = STRATEGY_PERFORMANCE_FIELDS
+        col_list = ", ".join(cols)
+        placeholders = ", ".join(
+            f"${i}" for i in range(3, len(cols) + 3))
+        update_set = ", ".join(
+            f"{c} = EXCLUDED.{c}"
+            for c in cols if c not in ("snapshot_date", "strategy_name"))
+        sql = (
+            "INSERT INTO strategy_daily_performance "
+            "(environment, snapshot_date, " + col_list + ") "
+            "VALUES ($1, $2, " + placeholders + ") "
+            f"ON CONFLICT (environment, snapshot_date, strategy_name) "
+            f"DO UPDATE SET {update_set}"
+        )
+
+        rows: List[tuple] = []
+        for record in records:
+            d = normalize_strategy_performance_record(record)
+            if snapshot_date:
+                d["snapshot_date"] = snapshot_date
+            if not d.get("snapshot_date"):
+                continue
+            tup = (self._env, d["snapshot_date"])
+            tup += tuple(d.get(c) for c in cols)
+            rows.append(tup)
+        if not rows:
+            return True
+
+        try:
+            _sync(self._execute_many(sql, rows))
+            logger.info(
+                "Saved %d strategy performance rows (date=%s)",
+                len(rows), snapshot_date)
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Error saving strategy performance to Postgres: %s", exc)
+            return False
+
+    # -- load_strategy_performance ---------------------------------------------
+
+    def load_strategy_performance(
+        self, strategy_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load per-strategy daily performance rows (chronological)."""
+        if not self._connected:
+            return []
+
+        col_list = ", ".join(STRATEGY_PERFORMANCE_FIELDS)
+        query = (
+            "SELECT " + col_list + " FROM strategy_daily_performance "
+            "WHERE environment = $1"
+        )
+        args: List[Any] = [self._env]
+        if strategy_name is not None:
+            args.append(strategy_name)
+            query += f" AND strategy_name = ${len(args)}"
+        query += " ORDER BY snapshot_date, strategy_name"
+
+        try:
+            rows = _sync(self._fetch(query, *args))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Error loading strategy performance from Postgres: %s", exc)
+            return []
+
+        return [dict(r) for r in rows]
 
     # -- save_orders ---------------------------------------------------------
 

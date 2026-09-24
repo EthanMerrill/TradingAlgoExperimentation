@@ -363,6 +363,34 @@ body {
     letter-spacing: 0.04em;
 }
 
+/* ── Performance tab ── */
+
+.perf-chart-wrap {
+    height: 300px;
+    padding: 8px 24px 16px;
+}
+
+.perf-chart-wrap canvas {
+    width: 100%;
+    height: 100%;
+}
+
+#perf-detail-table {
+    padding: 8px 24px 16px;
+}
+
+#perf-summary-cards .empty-msg {
+    padding: 20px 10px;
+    color: var(--text-secondary);
+    text-align: center;
+    font-style: italic;
+    flex: 1 1 100%;
+}
+
+.pnl-cell {
+    font-variant-numeric: tabular-nums;
+}
+
 .panel-subheading {
     margin: 8px 24px 4px;
     font-size: 0.95rem;

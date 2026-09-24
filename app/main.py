@@ -478,8 +478,112 @@ class TradingAlgorithm:
             storage.save_metadata(
                 self.session_metadata, timestamp)
 
+            # Per-strategy end-of-day performance snapshot (Phase: multi-
+            # strategy attribution). One row per strategy per day, upserted.
+            self._save_strategy_performance_snapshot(account_info)
+
         except (ValueError, TypeError, KeyError) as e:
             logger.error("Error saving session results: %s", e)
+
+    # ------------------------------------------------------------------
+    # Per-strategy daily performance snapshots
+    # ------------------------------------------------------------------
+
+    def _build_strategy_performance_records(
+        self, account_info: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Build one performance record per enabled strategy for today.
+
+        Combines the account equity with per-strategy capital budgets
+        (allocation) and per-strategy position attribution from the in-memory
+        position book:
+
+          * open_market_value — Σ current_price × |quantity| over open positions
+          * unrealized_pnl    — Σ (current − entry) × quantity (negative qty =
+                                short, so the sign works out naturally)
+          * realized_pnl      — Σ realized_return × entry_price × |quantity|
+                                over closed positions in the book
+
+        Strategies with no positions still get a row (zero P&L) so the daily
+        series never has gaps for an enabled strategy.
+        """
+        equity = float(account_info.get('equity', 0.0) or 0.0)
+        enabled = list(getattr(globalConfig, 'STRATEGIES_ENABLED', None)
+                       or ['rsi_mean_reversion'])
+        budgets = self.trading_engine._strategy_budgets(equity)
+        alloc = getattr(globalConfig, 'STRATEGY_ALLOCATION', None) or {}
+
+        open_by_strategy: Dict[str, List] = {}
+        for pos in (self.positions_manager.positions or []):
+            if getattr(pos, 'closed', False):
+                continue
+            open_by_strategy.setdefault(
+                getattr(pos, 'strategy_name', 'rsi_mean_reversion'), []).append(pos)
+
+        realized_by_strategy: Dict[str, float] = {}
+        for pos in (self.positions_manager.positions or []):
+            if not getattr(pos, 'closed', False):
+                continue
+            ret = getattr(pos, 'realized_return', None)
+            if ret is None:
+                continue
+            name = getattr(pos, 'strategy_name', 'rsi_mean_reversion')
+            try:
+                realized_by_strategy[name] = (
+                    realized_by_strategy.get(name, 0.0)
+                    + float(ret) * float(pos.entry_price)
+                    * abs(float(pos.quantity)))
+            except (TypeError, ValueError):
+                continue
+
+        records: List[Dict[str, Any]] = []
+        for name in enabled:
+            open_positions = open_by_strategy.get(name, [])
+            market_value = 0.0
+            unrealized = 0.0
+            for pos in open_positions:
+                try:
+                    qty = float(pos.quantity)
+                    market_value += float(pos.current_price) * abs(qty)
+                    unrealized += (float(pos.current_price)
+                                   - float(pos.entry_price)) * qty
+                except (TypeError, ValueError, AttributeError):
+                    continue
+            weight = alloc.get(name)
+            try:
+                weight = float(weight) if weight is not None else None
+            except (TypeError, ValueError):
+                weight = None
+            records.append({
+                'snapshot_date': datetime.now().strftime('%Y-%m-%d'),
+                'strategy_name': name,
+                'equity': equity,
+                'allocation_weight': weight,
+                'budget_notional': budgets.get(name),
+                'open_positions': len(open_positions),
+                'open_market_value': market_value,
+                'unrealized_pnl': unrealized,
+                'realized_pnl': realized_by_strategy.get(name, 0.0),
+            })
+        return records
+
+    def _save_strategy_performance_snapshot(
+        self, account_info: Dict[str, Any]) -> None:
+        """Persist today's per-strategy performance snapshot (best-effort)."""
+        try:
+            records = self._build_strategy_performance_records(account_info)
+            if not records:
+                return
+            snapshot_date = datetime.now().strftime('%Y-%m-%d')
+            saved = storage.save_strategy_performance(
+                records, snapshot_date)
+            if saved:
+                logger.info(
+                    "📊 Saved strategy performance snapshot (%d strategies, %s)",
+                    len(records), snapshot_date)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "Strategy performance snapshot failed (non-fatal): %s", e)
 
 
 def _daily_scheduler(schedule_time: str, shared_state: dict, algorithm: 'TradingAlgorithm'):

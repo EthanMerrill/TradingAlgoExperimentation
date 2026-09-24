@@ -8,6 +8,7 @@
     <!-- Tabulator 6.3.0 (pinned) -->
     <link href="https://unpkg.com/tabulator-tables@6.3.0/dist/css/tabulator_midnight.min.css" rel="stylesheet">
     <script src="https://unpkg.com/tabulator-tables@6.3.0/dist/js/tabulator.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 
@@ -46,6 +47,7 @@
     <!-- Tab bar -->
     <div id="tab-bar">
         <button class="tab-btn active" data-tab="positions">Positions</button>
+        <button class="tab-btn" data-tab="performance">Performance</button>
         <button class="tab-btn" data-tab="activity">Run Activity</button>
         <button class="tab-btn" data-tab="jobs">Jobs</button>
         <button class="tab-btn" data-tab="database">Database</button>
@@ -63,6 +65,18 @@
 
         <!-- Positions table -->
         <div id="positions-table"></div>
+    </section>
+
+    <!-- Performance tab (per-strategy historic performance) -->
+    <section id="tab-performance" class="tab-panel">
+        <div id="perf-summary-cards" class="activity-grid"></div>
+        <h2 class="panel-subheading">Cumulative P&amp;L by strategy</h2>
+        <div id="perf-chart-wrap" class="perf-chart-wrap">
+            <canvas id="perf-chart"></canvas>
+        </div>
+        <h2 class="panel-subheading">Daily snapshots</h2>
+        <div id="perf-detail-table"></div>
+        <div id="perf-error" class="db-error"></div>
     </section>
 
     <!-- Jobs tab (Phase 4: background job progress) -->
