@@ -490,9 +490,11 @@ class TestRunCycleJobsEndpoints(unittest.TestCase):
         self.assertEqual(detail.get_json()['status'], 'queued')
 
     def test_run_cycle_conflict_while_job_active(self):
-        first = self.client.post('/api/run-cycle', headers=self._auth_headers())
+        first = self.client.post(
+            '/api/run-cycle', headers=self._auth_headers())
         self.assertEqual(first.status_code, 202)
-        second = self.client.post('/api/run-cycle', headers=self._auth_headers())
+        second = self.client.post(
+            '/api/run-cycle', headers=self._auth_headers())
         self.assertEqual(second.status_code, 409)
 
     def test_jobs_listing(self):

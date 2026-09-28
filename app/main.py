@@ -568,7 +568,7 @@ class TradingAlgorithm:
         return records
 
     def _save_strategy_performance_snapshot(
-        self, account_info: Dict[str, Any]) -> None:
+            self, account_info: Dict[str, Any]) -> None:
         """Persist today's per-strategy performance snapshot (best-effort)."""
         try:
             records = self._build_strategy_performance_records(account_info)

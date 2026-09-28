@@ -79,6 +79,7 @@ def retention_cutoff_timestamp(retention_days: int,
     return (reference - timedelta(days=retention_days)).strftime(
         RUN_TIMESTAMP_FORMAT)
 
+
 POSITION_FIELDS = [
     "symbol",
     "shares",

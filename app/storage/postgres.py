@@ -544,7 +544,8 @@ class PostgresStorage(StorageBackend):
         try:
             rows = _sync(self._fetch(sql, self._env, cutoff))
         except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.error("Error pruning backtest results from Postgres: %s", exc)
+            logger.error(
+                "Error pruning backtest results from Postgres: %s", exc)
             return 0
 
         deleted = int(rows[0]["n"] or 0) if rows else 0
