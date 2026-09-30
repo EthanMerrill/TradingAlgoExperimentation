@@ -144,7 +144,11 @@ class StrategyOptimizer:
             detected_cpus,
             effective_workers,
         ) = resolve_worker_counts(globalConfig.N_JOBS)
-        batch_size = 1 if effective_workers > 1 else 10
+        # Symbols per batch. Fixed at 10 even when grid-level parallelism is
+        # active: batching amortizes per-batch overhead and keeps data fetches
+        # pipelined. Note each symbol's grid may still parallelize via joblib,
+        # so N_JOBS > 1 with a batch of 10 can oversubscribe CPU.
+        batch_size = 10
         logger.info(
             "⚡ CPU detection: os.cpu_count=%s, joblib.cpu_count=%s, selected=%d",
             os_detected_cpus, joblib_detected_cpus, detected_cpus

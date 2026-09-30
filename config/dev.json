@@ -35,12 +35,12 @@
 		}
 	},
 	"data_filtering": {
-		"min_volume": 500,
-		"max_volume": 80000,
-		"min_price": 5.0,
+		"min_volume": 1000000,
+		"max_volume": 250000000,
+		"min_price": 10.0,
 		"max_price": 350.0,
-		"min_market_cap": 800,
-		"max_market_cap": 80000
+		"min_market_cap": 1000000000,
+		"max_market_cap": 2000000000000
 	},
 	"api": {
 		"rate_limit_delay": 0.03

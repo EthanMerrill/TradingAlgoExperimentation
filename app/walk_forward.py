@@ -752,7 +752,9 @@ class WalkForwardValidator:
             detected_cpus,
             effective_workers,
         ) = resolve_worker_counts(globalConfig.N_JOBS)
-        batch_size = 1 if effective_workers > 1 else 10
+        # Symbols per batch. Matches StrategyOptimizer.optimize_universe: fixed
+        # at 10 even when grid-level parallelism is active (see note there).
+        batch_size = 10
         logger.info(
             "⚡ CPU detection: os.cpu_count=%s, joblib.cpu_count=%s, selected=%d",
             os_detected_cpus, joblib_detected_cpus, detected_cpus,
