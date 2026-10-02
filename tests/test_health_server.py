@@ -724,13 +724,15 @@ class TestApiRunsEndpoint(unittest.TestCase):
     def test_limit_is_bounded_and_passed_through(self):
         self.client.get('/api/runs?limit=25', headers=self._auth_headers())
         self.assertEqual(
-            self.mock_storage.load_session_metadata.call_args.kwargs.get('limit'),
+            self.mock_storage.load_session_metadata.call_args.kwargs.get(
+                'limit'),
             25)
         self.mock_storage.load_session_metadata.reset_mock()
         # Out-of-range values are clamped, never passed through raw.
         self.client.get('/api/runs?limit=99999', headers=self._auth_headers())
         self.assertEqual(
-            self.mock_storage.load_session_metadata.call_args.kwargs.get('limit'),
+            self.mock_storage.load_session_metadata.call_args.kwargs.get(
+                'limit'),
             500)
 
 

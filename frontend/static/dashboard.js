@@ -14,6 +14,17 @@ let liveAlpacaData = {};  // keyed by symbol, from /api/live-alpaca
 let currentStatusFilter = 'all';
 const REFRESH_INTERVAL_MS = 30_000;
 
+// Absolute API URL with any embedded credentials stripped. When the dashboard
+// is opened with credentials embedded in the page URL (a common basic-auth
+// bookmark), relative fetch URLs inherit them and the Fetch API rejects the
+// request, leaving every tab — including Performance — permanently empty.
+function apiUrl(path) {
+    const url = new URL(path, location.href);
+    url.username = '';
+    url.password = '';
+    return url.href;
+}
+
 // Database tab state
 const DB_PAGE_SIZE = 100;
 let dbTables = [];
@@ -25,6 +36,7 @@ let perfDetailTable = null;
 // Performance tab state
 let perfChart = null;
 let perfLoaded = false;
+let perfHasData = false;
 const PERF_COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#e57373', '#ba68c8', '#fff176'];
 
 // Run Activity / run-history state
@@ -511,7 +523,7 @@ function switchTab(tabName) {
     if (tabName === 'database' && dbTables.length === 0) {
         loadDbTables();
     }
-    if (tabName === 'performance' && !perfLoaded) {
+    if (tabName === 'performance' && (!perfLoaded || !perfHasData)) {
         fetchStrategyPerformance();
     }
     if (tabName === 'activity' && (!runsLoaded || runsData.length === 0)) {
@@ -528,7 +540,7 @@ function dbErrorMsg(msg) {
 async function loadDbTables() {
     dom.dbError.textContent = '';
     try {
-        const resp = await fetch('/api/db/tables');
+        const resp = await fetch(apiUrl('/api/db/tables'));
         if (resp.status === 501) {
             const data = await resp.json();
             dbErrorMsg(data.error || 'Database browsing not supported by this storage backend.');
@@ -567,10 +579,10 @@ async function loadDbTables() {
 async function loadDbTable(name, offset) {
     dom.dbError.textContent = '';
     try {
-        const resp = await fetch(
+        const resp = await fetch(apiUrl(
             '/api/db/table/' + encodeURIComponent(name) +
             '?limit=' + DB_PAGE_SIZE + '&offset=' + offset
-        );
+        ));
         if (resp.status === 501) {
             const data = await resp.json();
             dbErrorMsg(data.error || 'Database browsing not supported by this storage backend.');
@@ -626,15 +638,17 @@ function perfErrorMsg(msg) {
 async function fetchStrategyPerformance() {
     perfErrorMsg('');
     try {
-        const resp = await fetch('/api/strategy-performance');
+        const resp = await fetch(apiUrl('/api/strategy-performance'));
         if (!resp.ok) {
             const data = await resp.json().catch(function () { return {}; });
             perfErrorMsg(data.error || 'Failed to load performance (' + resp.status + ')');
             return;
         }
         const data = await resp.json();
-        renderPerformance(data.strategies || []);
+        const strategies = data.strategies || [];
+        renderPerformance(strategies);
         perfLoaded = true;
+        perfHasData = strategies.length > 0;
     } catch (err) {
         console.error('Failed to fetch /api/strategy-performance:', err);
         perfErrorMsg('Failed to load performance data.');
@@ -775,7 +789,7 @@ function renderPerfDetailTable(strategies) {
 
 async function fetchHealth() {
     try {
-        const resp = await fetch('/health');
+        const resp = await fetch(apiUrl('/health'));
         const data = await resp.json();
 
         // Environment
@@ -830,6 +844,7 @@ async function fetchHealth() {
         if (runKey && runKey !== lastHealthRunKey) {
             lastHealthRunKey = runKey;
             if (runsLoaded) fetchRuns();
+            if (perfLoaded) fetchStrategyPerformance();
         }
     } catch (err) {
         console.error('Failed to fetch /health:', err);
@@ -997,7 +1012,7 @@ function renderRunsTable(runs, selectedTs) {
 async function fetchRuns() {
     runsErrorMsg('');
     try {
-        var resp = await fetch('/api/runs?limit=200');
+        var resp = await fetch(apiUrl('/api/runs?limit=200'));
         if (!resp.ok) {
             var d = await resp.json().catch(function () { return {}; });
             runsErrorMsg(d.error || 'Failed to load run history (' + resp.status + ')');
@@ -1028,7 +1043,7 @@ async function selectRun(ts) {
     if (!ts) return;
     runsErrorMsg('');
     try {
-        var resp = await fetch('/api/runs/' + encodeURIComponent(ts));
+        var resp = await fetch(apiUrl('/api/runs/' + encodeURIComponent(ts)));
         if (!resp.ok) {
             var d = await resp.json().catch(function () { return {}; });
             runsErrorMsg(d.error || 'Failed to load run (' + resp.status + ')');
@@ -1062,7 +1077,7 @@ function clearRunSelection() {
 
 async function fetchLiveAlpaca() {
     try {
-        const resp = await fetch('/api/live-alpaca');
+        const resp = await fetch(apiUrl('/api/live-alpaca'));
         if (!resp.ok) {
             console.error('Live Alpaca fetch failed:', resp.status);
             liveAlpacaData = {};
@@ -1084,7 +1099,7 @@ async function fetchPositions() {
         await fetchLiveAlpaca();
 
         // 2. Fetch position records from storage
-        const resp = await fetch('/api/positions');
+        const resp = await fetch(apiUrl('/api/positions'));
 
         // Always show last-refresh timestamp after attempting fetch
         dom.lastRefresh.textContent = new Date().toLocaleTimeString();
@@ -1221,7 +1236,7 @@ function scheduleJobsPolling() {
 }
 
 async function fetchJobs() {
-    var resp = await fetch('/api/jobs');
+    var resp = await fetch(apiUrl('/api/jobs'));
     if (!resp.ok) return false;
     var data = await resp.json();
     renderJobs(data.jobs || []);
@@ -1317,7 +1332,7 @@ function setText(id, value) {
 // Poll a single job until it finishes, updating the Jobs panel live.
 function watchJob(jobId, onDone) {
     var poll = async function () {
-        var resp = await fetch('/api/jobs/' + encodeURIComponent(jobId));
+        var resp = await fetch(apiUrl('/api/jobs/' + encodeURIComponent(jobId)));
         if (resp.ok) {
             var job = await resp.json();
             renderJobs([job]);
@@ -1348,7 +1363,7 @@ function setupRunNowButton() {
         btn.textContent = '⏳ Running...';
 
         try {
-            var resp = await fetch('/api/run-cycle', { method: 'POST' });
+            var resp = await fetch(apiUrl('/api/run-cycle'), { method: 'POST' });
             var data = await resp.json();
             if (resp.ok && data.job_id) {
                 btn.textContent = '⏳ Queued';
@@ -1395,7 +1410,7 @@ function setupRunSessionButton() {
         btn.textContent = '⏳ Running...';
 
         try {
-            var resp = await fetch('/api/run-session', { method: 'POST' });
+            var resp = await fetch(apiUrl('/api/run-session'), { method: 'POST' });
             var data = await resp.json();
             if (resp.ok && data.job_id) {
                 btn.textContent = '⏳ Queued';
