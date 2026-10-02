@@ -119,6 +119,10 @@
 
     <!-- Run Activity tab -->
     <section id="tab-activity" class="tab-panel">
+        <div id="activity-scope" class="activity-scope">
+            <span id="activity-scope-label" class="scope-label">Latest run</span>
+            <button id="activity-latest-btn" class="link-btn" hidden>← Back to latest</button>
+        </div>
         <div id="activity-summary" class="activity-grid">
             <div class="metric">
                 <span class="metric-value" id="m-lines">—</span>
@@ -141,6 +145,14 @@
                 <span class="metric-label">Exits</span>
             </div>
         </div>
+        <div class="panel-heading-row">
+            <h2 class="panel-subheading">Run history</h2>
+            <button id="runs-refresh-btn" class="link-btn" title="Reload run history">↻ Refresh</button>
+        </div>
+        <p class="panel-hint">Select a run to see the orders it placed.</p>
+        <div id="runs-table"></div>
+        <div id="runs-error" class="db-error"></div>
+
         <h2 id="activity-subheading" class="panel-subheading">Orders placed this session</h2>
         <div id="orders-table"></div>
         <div id="activity-errors" class="db-error"></div>

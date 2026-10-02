@@ -596,5 +596,143 @@ class TestStrategyPerformanceEndpoint(unittest.TestCase):
         self.assertEqual(resp.status_code, 503)
 
 
+class TestApiRunsEndpoint(unittest.TestCase):
+    """Tests for the /api/runs run-history endpoints (Run Activity tab)."""
+
+    def setUp(self):
+        self._orig_password = os.environ.get('DASHBOARD_PASSWORD')
+        os.environ['DASHBOARD_PASSWORD'] = 'testpass'
+        self.mock_storage = Mock()
+        self.mock_storage.load_session_metadata.return_value = [
+            {
+                'timestamp': '20260930_141200',
+                'created_at': '2026-09-30T14:12:00+00:00',
+                'metadata': {
+                    'status': 'success',
+                    'dry_run': False,
+                    'start_time': '2026-09-30T14:05:00+00:00',
+                    'end_time': '2026-09-30T14:12:00+00:00',
+                    'backtest_count': 3,
+                    'portfolio_value': 10100.0,
+                    'results_summary': {
+                        'opportunities_found': 4,
+                        'orders_placed': 2,
+                        'new_positions': 1,
+                        'positions_exited': 1,
+                        'errors': [],
+                        'orders': [
+                            {'symbol': 'AAPL', 'action': 'buy', 'shares': 10,
+                             'price': 150.0, 'type': 'market',
+                             'strategy': 'rsi_mean_reversion',
+                             'timestamp': '2026-09-30T14:10:00+00:00'},
+                        ],
+                    },
+                },
+            },
+            {
+                'timestamp': '20260929_141000',
+                'created_at': None,
+                'metadata': {},  # empty -> safe defaults
+            },
+            {
+                'timestamp': '20260928_140000',
+                'created_at': None,
+                # legacy/partial row: only flattened trading_* keys
+                'metadata': {
+                    'trading_orders_placed': 5,
+                    'trading_errors': ['oops'],
+                    'backtest_count': 1,
+                },
+            },
+        ]
+        self.app = create_app(storage_backend=self.mock_storage)
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        if self._orig_password is not None:
+            os.environ['DASHBOARD_PASSWORD'] = self._orig_password
+        else:
+            os.environ.pop('DASHBOARD_PASSWORD', None)
+
+    @staticmethod
+    def _auth_headers():
+        import base64
+        credentials = base64.b64encode(b'admin:testpass').decode('utf-8')
+        return {'Authorization': f'Basic {credentials}'}
+
+    def test_requires_auth(self):
+        resp = self.client.get('/api/runs')
+        self.assertEqual(resp.status_code, 401)
+
+    def test_no_storage_returns_503(self):
+        app = create_app(storage_backend=None)
+        client = app.test_client()
+        resp = client.get('/api/runs', headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 503)
+
+    def test_list_returns_normalized_runs_without_orders(self):
+        resp = self.client.get('/api/runs', headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data['count'], 3)
+        run = data['runs'][0]
+        self.assertEqual(run['timestamp'], '20260930_141200')
+        self.assertEqual(run['status'], 'success')
+        self.assertEqual(run['backtest_count'], 3)
+        self.assertEqual(run['portfolio_value'], 10100.0)
+        self.assertEqual(run['order_count'], 1)
+        # Orders are omitted from the list payload (fetch detail for them).
+        self.assertNotIn('orders', run)
+        self.assertEqual(run['summary']['orders_placed'], 2)
+        self.assertEqual(run['summary']['opportunities_found'], 4)
+        self.assertEqual(run['summary']['positions_exited'], 1)
+
+    def test_duration_derived_from_start_end(self):
+        resp = self.client.get('/api/runs', headers=self._auth_headers())
+        run = resp.get_json()['runs'][0]
+        self.assertAlmostEqual(run['duration'], 420.0)
+
+    def test_list_falls_back_to_flattened_keys(self):
+        resp = self.client.get('/api/runs', headers=self._auth_headers())
+        runs = {r['timestamp']: r for r in resp.get_json()['runs']}
+        legacy = runs['20260928_140000']
+        self.assertEqual(legacy['summary']['orders_placed'], 5)
+        self.assertEqual(legacy['summary']['errors'], ['oops'])
+        # A run with no metadata yields safe defaults, never a crash.
+        empty = runs['20260929_141000']
+        self.assertIsNone(empty['summary']['orders_placed'])
+        self.assertEqual(empty['summary']['errors'], [])
+
+    def test_detail_includes_orders(self):
+        resp = self.client.get('/api/runs/20260930_141200',
+                               headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        run = resp.get_json()['run']
+        self.assertEqual(len(run['orders']), 1)
+        self.assertEqual(run['orders'][0]['symbol'], 'AAPL')
+
+    def test_detail_not_found(self):
+        self.mock_storage.load_session_metadata.return_value = []
+        resp = self.client.get('/api/runs/nope',
+                               headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 404)
+
+    def test_detail_requires_auth(self):
+        resp = self.client.get('/api/runs/20260930_141200')
+        self.assertEqual(resp.status_code, 401)
+
+    def test_limit_is_bounded_and_passed_through(self):
+        self.client.get('/api/runs?limit=25', headers=self._auth_headers())
+        self.assertEqual(
+            self.mock_storage.load_session_metadata.call_args.kwargs.get('limit'),
+            25)
+        self.mock_storage.load_session_metadata.reset_mock()
+        # Out-of-range values are clamped, never passed through raw.
+        self.client.get('/api/runs?limit=99999', headers=self._auth_headers())
+        self.assertEqual(
+            self.mock_storage.load_session_metadata.call_args.kwargs.get('limit'),
+            500)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -27,6 +27,13 @@ let perfChart = null;
 let perfLoaded = false;
 const PERF_COLORS = ['#4fc3f7', '#ffb74d', '#81c784', '#e57373', '#ba68c8', '#fff176'];
 
+// Run Activity / run-history state
+let runsLoaded = false;
+let runsData = [];
+let activityPinnedTs = null;   // historical run currently shown, or null = latest
+let latestActivity = { summary: {}, backtestCount: 0 };
+let lastHealthRunKey = null;   // identity of the last completed run (see fetchHealth)
+
 // Friendly labels + badge classes per strategy registry key.
 const STRATEGY_LABELS = {
     'rsi_mean_reversion': { label: 'RSI Mean Rev.', cls: 'badge-strategy-rsi' },
@@ -77,6 +84,11 @@ const dom = {
     mExits: $('#m-exits'),
     ordersTable: $('#orders-table'),
     activityErrors: $('#activity-errors'),
+    activitySubheading: $('#activity-subheading'),
+    activityScopeLabel: $('#activity-scope-label'),
+    activityLatestBtn: $('#activity-latest-btn'),
+    runsTable: $('#runs-table'),
+    runsError: $('#runs-error'),
 };
 
 // ── Helpers ──
@@ -502,6 +514,9 @@ function switchTab(tabName) {
     if (tabName === 'performance' && !perfLoaded) {
         fetchStrategyPerformance();
     }
+    if (tabName === 'activity' && (!runsLoaded || runsData.length === 0)) {
+        fetchRuns();
+    }
 }
 
 // ── Database browser ──
@@ -798,8 +813,24 @@ async function fetchHealth() {
             dom.backtestCount.title = '';
         }
 
-        // Run Activity summary + orders feed
-        renderActivity(data.last_run_summary || {}, data.last_run_backtest_count || 0);
+        // Run Activity summary + orders feed. When the user has pinned a
+        // historical run, don't let the periodic health poll overwrite it.
+        latestActivity = {
+            summary: data.last_run_summary || {},
+            backtestCount: data.last_run_backtest_count || 0,
+        };
+        if (activityPinnedTs === null) {
+            renderActivity(latestActivity.summary, latestActivity.backtestCount);
+        }
+
+        // A new completed run appears in /health as a fresh summary timestamp.
+        // Refresh the run-history list so it shows up without a manual reload
+        // (the startup cycle is not a background job, so no job callback fires).
+        var runKey = latestActivity.summary.timestamp || null;
+        if (runKey && runKey !== lastHealthRunKey) {
+            lastHealthRunKey = runKey;
+            if (runsLoaded) fetchRuns();
+        }
     } catch (err) {
         console.error('Failed to fetch /health:', err);
     }
@@ -819,8 +850,9 @@ function actionBadge(action) {
 function renderOrdersTable(orders) {
     if (!dom.ordersTable) return;
     if (!orders || !orders.length) {
+        var which = (activityPinnedTs !== null) ? 'this run' : 'the last run';
         dom.ordersTable.innerHTML =
-            '<div class="empty-msg">No orders recorded for the last run.</div>';
+            '<div class="empty-msg">No orders recorded for ' + which + '.</div>';
         return;
     }
 
@@ -868,7 +900,164 @@ function renderActivity(summary, backtestCount) {
             ? ('⚠ ' + errs.length + ' error(s): ' + errs.join('; ')) : '';
     }
 
+    // Heading reflects whether we're showing the latest session or a run
+    // selected from the run history, plus how many orders it placed.
+    if (dom.activitySubheading) {
+        var ordCount = (summary.orders && summary.orders.length) || 0;
+        var base = (activityPinnedTs !== null)
+            ? 'Orders placed in this run' : 'Orders placed this session';
+        dom.activitySubheading.textContent = ordCount
+            ? (base + ' (' + ordCount + ')') : base;
+    }
+
     renderOrdersTable(summary.orders);
+}
+
+// ── Run history (all historical runs) ──
+
+function runsErrorMsg(msg) {
+    var el = dom.runsError;
+    if (el) el.textContent = msg || '';
+}
+
+function formatRunTimestamp(ts) {
+    if (!ts) return '—';
+    var m = String(ts).match(/^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})$/);
+    if (!m) return String(ts);
+    var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+                     Number(m[4]), Number(m[5]), Number(m[6]));
+    if (isNaN(d.getTime())) return String(ts);
+    return d.toLocaleString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric',
+        hour: '2-digit', minute: '2-digit',
+    });
+}
+
+function formatDuration(seconds) {
+    if (seconds == null || isNaN(seconds)) return '—';
+    var s = Math.max(0, Math.round(Number(seconds)));
+    var m = Math.floor(s / 60);
+    s = s % 60;
+    return m ? (m + 'm ' + s + 's') : (s + 's');
+}
+
+function numOrDash(v) {
+    return (v == null || isNaN(v)) ? '—' : Number(v).toLocaleString();
+}
+
+function runStatusBadge(status) {
+    var v = String(status || 'unknown').toLowerCase();
+    var cls = { success: 'success', error: 'error', failed: 'error' }[v] || 'muted';
+    return '<span class="run-status ' + cls + '">' + escapeHtml(v) + '</span>';
+}
+
+function renderRunsTable(runs, selectedTs) {
+    if (!dom.runsTable) return;
+    if (!runs || !runs.length) {
+        dom.runsTable.innerHTML =
+            '<div class="empty-msg">No historical runs recorded yet.</div>';
+        return;
+    }
+    var html = '<table><thead><tr>' +
+        '<th>Run</th><th>Status</th><th>Backtests</th><th>Buy signals</th>' +
+        '<th>Orders</th><th>New</th><th>Exits</th><th>Duration</th>' +
+        '</tr></thead><tbody>';
+    runs.forEach(function (r) {
+        var s = r.summary || {};
+        var cls = (r.timestamp === selectedTs)
+            ? ' class="run-row selected"' : ' class="run-row"';
+        html += '<tr' + cls + ' data-ts="' + escapeHtml(r.timestamp || '') +
+            '" tabindex="0">' +
+            '<td>' + formatRunTimestamp(r.timestamp) +
+                (r.dry_run ? ' <span class="dry-tag">dry</span>' : '') + '</td>' +
+            '<td>' + runStatusBadge(r.status) + '</td>' +
+            '<td>' + numOrDash(r.backtest_count) + '</td>' +
+            '<td>' + numOrDash(s.opportunities_found) + '</td>' +
+            '<td>' + numOrDash(s.orders_placed) + '</td>' +
+            '<td>' + numOrDash(s.new_positions) + '</td>' +
+            '<td>' + numOrDash(s.positions_exited) + '</td>' +
+            '<td>' + formatDuration(r.duration) + '</td>' +
+            '</tr>';
+    });
+    html += '</tbody></table>';
+    dom.runsTable.innerHTML = html;
+
+    dom.runsTable.querySelectorAll('tr.run-row').forEach(function (row) {
+        var ts = row.getAttribute('data-ts');
+        row.addEventListener('click', function () { selectRun(ts); });
+        row.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Enter' || ev.key === ' ') {
+                ev.preventDefault();
+                selectRun(ts);
+            }
+        });
+    });
+}
+
+async function fetchRuns() {
+    runsErrorMsg('');
+    try {
+        var resp = await fetch('/api/runs?limit=200');
+        if (!resp.ok) {
+            var d = await resp.json().catch(function () { return {}; });
+            runsErrorMsg(d.error || 'Failed to load run history (' + resp.status + ')');
+            return;
+        }
+        var data = await resp.json();
+        runsData = data.runs || [];
+        runsLoaded = true;
+        renderRunsTable(runsData, activityPinnedTs);
+    } catch (err) {
+        console.error('Failed to fetch /api/runs:', err);
+        runsErrorMsg('Failed to load run history.');
+    }
+}
+
+function updateActivityScope(run) {
+    if (dom.activityScopeLabel) {
+        dom.activityScopeLabel.textContent = run
+            ? ('Viewing run: ' + formatRunTimestamp(run.timestamp))
+            : 'Latest run';
+    }
+    if (dom.activityLatestBtn) {
+        dom.activityLatestBtn.hidden = !run;
+    }
+}
+
+async function selectRun(ts) {
+    if (!ts) return;
+    runsErrorMsg('');
+    try {
+        var resp = await fetch('/api/runs/' + encodeURIComponent(ts));
+        if (!resp.ok) {
+            var d = await resp.json().catch(function () { return {}; });
+            runsErrorMsg(d.error || 'Failed to load run (' + resp.status + ')');
+            return;
+        }
+        var data = await resp.json();
+        var run = data.run;
+        activityPinnedTs = ts;
+        renderActivity(Object.assign({}, run.summary, { orders: run.orders }),
+                       run.backtest_count);
+        updateActivityScope(run);
+        renderRunsTable(runsData, activityPinnedTs);
+        // Make sure the freshly-loaded orders are visible even when the run
+        // history list is long.
+        if (dom.activitySubheading && dom.activitySubheading.scrollIntoView) {
+            dom.activitySubheading.scrollIntoView(
+                { behavior: 'smooth', block: 'nearest' });
+        }
+    } catch (err) {
+        console.error('Failed to fetch /api/runs/' + ts, err);
+        runsErrorMsg('Failed to load run.');
+    }
+}
+
+function clearRunSelection() {
+    activityPinnedTs = null;
+    updateActivityScope(null);
+    renderActivity(latestActivity.summary, latestActivity.backtestCount);
+    renderRunsTable(runsData, activityPinnedTs);
 }
 
 async function fetchLiveAlpaca() {
@@ -981,6 +1170,11 @@ document.querySelectorAll('.tab-btn').forEach(function (btn) {
         switchTab(this.dataset.tab);
     });
 });
+
+var runsRefreshBtn = document.getElementById('runs-refresh-btn');
+if (runsRefreshBtn) runsRefreshBtn.addEventListener('click', fetchRuns);
+var activityLatestBtn = document.getElementById('activity-latest-btn');
+if (activityLatestBtn) activityLatestBtn.addEventListener('click', clearRunSelection);
 
 dom.dbTableSelect.addEventListener('change', function () {
     dbOffset = 0;
@@ -1129,6 +1323,9 @@ function watchJob(jobId, onDone) {
             renderJobs([job]);
             if (job.status === 'done' || job.status === 'failed') {
                 if (onDone) onDone(job);
+                // A finished cycle may have produced a new run — refresh the
+                // Run Activity history so it shows up without a manual reload.
+                if (runsLoaded) setTimeout(fetchRuns, 500);
                 setTimeout(fetchJobs, 300);
                 return;
             }

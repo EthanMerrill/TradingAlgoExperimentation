@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for the PostgresStorage backend."""
+import json
 import os
 import sys
 import unittest
@@ -436,7 +437,19 @@ class TestPostgresStorage(unittest.TestCase):
         # environment + snapshot_date are the first two params of each row
         self.assertEqual(rows[0][0], "dev")
         self.assertEqual(rows[0][1], "2026-09-22")
-        self.assertEqual(rows[0][3], "leveraged_flow_portfolio")
+        # strategy_name follows snapshot_date (regression: snapshot_date used
+        # to be inserted twice, which Postgres rejects).
+        self.assertEqual(rows[0][2], "leveraged_flow_portfolio")
+        # The INSERT column list must not repeat any column, and the number of
+        # placeholders/row values must match the column count.
+        insert_cols = sql.split("(", 1)[1].split(")", 1)[0]
+        col_names = [c.strip() for c in insert_cols.split(",")]
+        self.assertEqual(
+            len(col_names), len(set(col_names)),
+            f"duplicate column in INSERT: {col_names}")
+        values_clause = sql.split("VALUES", 1)[1].split("ON CONFLICT", 1)[0]
+        self.assertEqual(values_clause.count("$"), len(col_names))
+        self.assertEqual(len(rows[0]), len(col_names))
 
     def test_save_strategy_performance_empty_records(self):
         s = self._connected()
@@ -489,6 +502,63 @@ class TestPostgresStorage(unittest.TestCase):
         self.assertEqual(d["snapshot_date"], "2026-09-22")
         self.assertEqual(d["open_positions"], 2)
         self.assertIsNone(d["unrealized_pnl"])
+
+    # --- load_session_metadata (Run Activity → Run history) ---
+
+    def test_load_session_metadata_parses_jsonb(self):
+        s = self._connected(env="dev")
+        self._conn.fetch = AsyncMock(return_value=[
+            {"timestamp": "20260930_141200",
+             "created_at": datetime(2026, 9, 30, 14, 12, tzinfo=timezone.utc),
+             "metadata": json.dumps({
+                 "backtest_count": 3,
+                 "results_summary": {"orders_placed": 2},
+             })},
+        ])
+        rows = s.load_session_metadata(limit=10)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["timestamp"], "20260930_141200")
+        self.assertEqual(rows[0]["metadata"]["backtest_count"], 3)
+        self.assertEqual(
+            rows[0]["metadata"]["results_summary"]["orders_placed"], 2)
+        # created_at is normalized to an ISO string
+        self.assertTrue(rows[0]["created_at"].startswith("2026-09-30T14:12"))
+
+    def test_load_session_metadata_accepts_dict_and_tolerates_bad_json(self):
+        s = self._connected()
+        self._conn.fetch = AsyncMock(return_value=[
+            {"timestamp": "a", "created_at": None,
+             "metadata": {"ok": True}},          # already-decoded dict
+            {"timestamp": "b", "created_at": None,
+             "metadata": "not json"},            # malformed
+            {"timestamp": "c", "created_at": None,
+             "metadata": None},                  # missing
+        ])
+        rows = s.load_session_metadata()
+        self.assertEqual(rows[0]["metadata"], {"ok": True})
+        self.assertEqual(rows[1]["metadata"], {})
+        self.assertEqual(rows[2]["metadata"], {})
+
+    def test_load_session_metadata_query_and_filters(self):
+        s = self._connected(env="qa")
+        self._conn.fetch = AsyncMock(return_value=[])
+        s.load_session_metadata(limit=25, timestamp="20260930_141200")
+        sql = self._conn.fetch.call_args[0][0]
+        args = self._conn.fetch.call_args[0][1:]
+        self.assertIn("FROM session_metadata", sql)
+        self.assertIn("ORDER BY timestamp DESC", sql)
+        self.assertIn("LIMIT", sql)
+        self.assertEqual(args[0], "qa")
+        self.assertEqual(args[1], "20260930_141200")
+        self.assertEqual(args[2], 25)
+
+    def test_load_session_metadata_disconnected(self):
+        self.assertEqual(self._disconnected().load_session_metadata(), [])
+
+    def test_load_session_metadata_swallows_db_errors(self):
+        s = self._connected()
+        self._conn.fetch = AsyncMock(side_effect=RuntimeError("boom"))
+        self.assertEqual(s.load_session_metadata(), [])
 
 
 if __name__ == "__main__":

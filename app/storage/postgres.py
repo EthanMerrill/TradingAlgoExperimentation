@@ -7,6 +7,7 @@ to change.  Schema is auto-created on first use (DDL is idempotent).
 Requires DATABASE_URL env var when STORAGE_BACKEND=postgres.
 """
 import asyncio
+import json
 import logging
 import math
 import threading
@@ -115,6 +116,30 @@ def _json_default(value):
     if hasattr(value, "isoformat"):  # pd.Timestamp and other date-likes
         return value.isoformat()
     return str(value)
+
+
+def _deserialize_metadata(raw: Any) -> Dict[str, Any]:
+    """Decode the ``session_metadata.metadata`` JSONB column safely.
+
+    asyncpg returns ``jsonb`` as text (no codec is registered on this pool),
+    so parse it here; tolerate a dict (if a codec is ever added), bytes, empty
+    strings, and malformed payloads without raising.
+    """
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        raw = raw.decode("utf-8", "replace")
+    if isinstance(raw, str):
+        if not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -694,15 +719,20 @@ class PostgresStorage(StorageBackend):
 
         cols = STRATEGY_PERFORMANCE_FIELDS
         col_list = ", ".join(cols)
+        # ``environment`` is the only column not already present in
+        # STRATEGY_PERFORMANCE_FIELDS (which itself starts with snapshot_date),
+        # so it is the sole extra column here. Re-listing ``snapshot_date``
+        # would make Postgres reject the INSERT with
+        # "column \"snapshot_date\" specified more than once".
         placeholders = ", ".join(
-            f"${i}" for i in range(3, len(cols) + 3))
+            f"${i}" for i in range(2, len(cols) + 2))
         update_set = ", ".join(
             f"{c} = EXCLUDED.{c}"
             for c in cols if c not in ("snapshot_date", "strategy_name"))
         sql = (
             "INSERT INTO strategy_daily_performance "
-            "(environment, snapshot_date, " + col_list + ") "
-            "VALUES ($1, $2, " + placeholders + ") "
+            "(environment, " + col_list + ") "
+            "VALUES ($1, " + placeholders + ") "
             f"ON CONFLICT (environment, snapshot_date, strategy_name) "
             f"DO UPDATE SET {update_set}"
         )
@@ -714,8 +744,7 @@ class PostgresStorage(StorageBackend):
                 d["snapshot_date"] = snapshot_date
             if not d.get("snapshot_date"):
                 continue
-            tup = (self._env, d["snapshot_date"])
-            tup += tuple(d.get(c) for c in cols)
+            tup = (self._env,) + tuple(d.get(c) for c in cols)
             rows.append(tup)
         if not rows:
             return True
@@ -845,7 +874,6 @@ class PostgresStorage(StorageBackend):
         clean["timestamp"] = timestamp
 
         try:
-            import json
             _sync(self._execute(
                 "INSERT INTO session_metadata (timestamp, environment, metadata) "
                 "VALUES ($1, $2, $3)",
@@ -857,6 +885,53 @@ class PostgresStorage(StorageBackend):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error("Error saving metadata to Postgres: %s", exc)
             return False
+
+    # -- load_session_metadata ------------------------------------------------
+
+    def load_session_metadata(
+        self, limit: Optional[int] = None, timestamp: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load stored session metadata rows, newest first (see ABC)."""
+        if not self._connected:
+            return []
+
+        query = (
+            "SELECT timestamp, created_at, metadata "
+            "FROM session_metadata WHERE environment = $1"
+        )
+        args: List[Any] = [self._env]
+        if timestamp is not None:
+            args.append(str(timestamp))
+            query += f" AND timestamp = ${len(args)}"
+        query += " ORDER BY timestamp DESC"
+        if limit is not None:
+            try:
+                limit = max(0, int(limit))
+            except (TypeError, ValueError):
+                limit = None
+            if limit is not None:
+                args.append(limit)
+                query += f" LIMIT ${len(args)}"
+
+        try:
+            rows = _sync(self._fetch(query, *args))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Error loading session metadata from Postgres: %s", exc)
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            created = d.get("created_at")
+            if hasattr(created, "isoformat"):
+                created = created.isoformat()
+            out.append({
+                "timestamp": d.get("timestamp"),
+                "created_at": created,
+                "metadata": _deserialize_metadata(d.get("metadata")),
+            })
+        return out
 
     # -- list_backtest_files -------------------------------------------------
 

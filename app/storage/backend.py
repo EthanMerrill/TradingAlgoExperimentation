@@ -558,6 +558,18 @@ class StorageBackend(ABC):
         """Load per-strategy daily performance rows (chronological)."""
         return []
 
+    def load_session_metadata(
+        self, limit: Optional[int] = None, timestamp: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Load stored session metadata rows, newest first.
+
+        Powers the dashboard "Run Activity → Run history" view. Each entry is
+        ``{'timestamp': str, 'created_at': str | None, 'metadata': dict}``.
+        ``limit`` caps the number of runs returned; ``timestamp`` narrows the
+        result to a single run. Default no-op; backends may override.
+        """
+        return []
+
     def load_orders(
         self, symbol: Optional[str] = None, status: Optional[str] = None
     ) -> List[Any]:

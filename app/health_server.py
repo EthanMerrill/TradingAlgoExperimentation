@@ -179,6 +179,97 @@ def _json_safe(value):
     return str(value)
 
 
+def _parse_dt(value: Any) -> Optional[datetime]:
+    """Best-effort parse of an ISO timestamp into a datetime."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+    return None
+
+
+def _run_duration_seconds(meta: dict) -> Optional[float]:
+    """Return the run's wall-clock duration in seconds, if derivable.
+
+    Prefers an explicit ``duration`` value; otherwise derives it from the
+    stored ``start_time``/``end_time``.
+    """
+    explicit = meta.get('duration')
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
+        try:
+            return float(explicit)
+        except (TypeError, ValueError):
+            pass
+    start = _parse_dt(meta.get('start_time'))
+    end = _parse_dt(meta.get('end_time'))
+    if start is not None and end is not None:
+        try:
+            return (end - start).total_seconds()
+        except TypeError:  # naive vs aware mismatch — ignore
+            return None
+    return None
+
+
+def _run_record(entry: dict, include_orders: bool = False) -> dict:
+    """Normalize a stored ``session_metadata`` row for the dashboard.
+
+    The metadata JSON carries the trading summary under ``results_summary``
+    and (for older rows) duplicated ``trading_*`` keys. This flattens both
+    into a stable shape the Run Activity tab can render, and deliberately
+    excludes the large ``config`` blob.
+    """
+    ts = entry.get('timestamp') if isinstance(entry, dict) else None
+    meta = entry.get('metadata') if isinstance(entry, dict) else None
+    if not isinstance(meta, dict):
+        meta = {}
+
+    summary = meta.get('results_summary')
+    if not isinstance(summary, dict):
+        summary = {}
+
+    def _pick(key: str, default: Any = None) -> Any:
+        # Prefer the nested results_summary, fall back to the flattened
+        # trading_<key> value used by the storage layer.
+        if key in summary:
+            return summary.get(key)
+        return meta.get('trading_' + key, default)
+
+    orders = _pick('orders', [])
+    if not isinstance(orders, (list, tuple)):
+        orders = []
+    orders = list(orders)
+
+    errors = _pick('errors', [])
+    if not isinstance(errors, (list, tuple)):
+        errors = []
+
+    record = {
+        'timestamp': ts,
+        'created_at': entry.get('created_at') if isinstance(entry, dict) else None,
+        'status': meta.get('status') or 'success',
+        'dry_run': bool(meta.get('dry_run')),
+        'start_time': meta.get('start_time'),
+        'end_time': meta.get('end_time'),
+        'duration': _run_duration_seconds(meta),
+        'backtest_count': meta.get('backtest_count') or 0,
+        'portfolio_value': meta.get('portfolio_value'),
+        'order_count': len(orders),
+        'summary': {
+            'opportunities_found': _pick('opportunities_found'),
+            'orders_placed': _pick('orders_placed'),
+            'new_positions': _pick('new_positions'),
+            'positions_exited': _pick('positions_exited'),
+            'errors': list(errors),
+        },
+    }
+    if include_orders:
+        record['orders'] = orders
+    return record
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -369,6 +460,54 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
                 'open_positions': row.get('open_positions'),
             })
         return jsonify({'strategies': list(strategies.values())})
+
+    # ---------- /api/runs (auth required) ----------
+    # Backs the dashboard "Run Activity → Run history" view: every persisted
+    # session (one row per cycle in the session_metadata table), newest first.
+    # The list omits per-run orders to keep the payload small; fetch
+    # /api/runs/<timestamp> for a single run's full detail (incl. orders).
+
+    @app.route('/api/runs')
+    @_auth_required
+    def api_runs():
+        if storage_backend is None:
+            return jsonify({'error': 'Storage backend not available'}), 503
+
+        try:
+            limit = int(request.args.get('limit', 100))
+        except (TypeError, ValueError):
+            limit = 100
+        limit = max(1, min(limit, 500))
+
+        try:
+            entries = storage_backend.load_session_metadata(limit=limit)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Error loading run history: %s", e)
+            return jsonify({'error': 'Failed to load run history'}), 500
+
+        runs = [_json_safe(_run_record(entry)) for entry in entries]
+        return jsonify({'runs': runs, 'count': len(runs), 'limit': limit})
+
+    # ---------- /api/runs/<timestamp> (auth required) ----------
+
+    @app.route('/api/runs/<timestamp>')
+    @_auth_required
+    def api_run_detail(timestamp):
+        if storage_backend is None:
+            return jsonify({'error': 'Storage backend not available'}), 503
+
+        try:
+            entries = storage_backend.load_session_metadata(
+                limit=1, timestamp=timestamp)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Error loading run %s: %s", timestamp, e)
+            return jsonify({'error': 'Failed to load run'}), 500
+
+        if not entries:
+            return jsonify({'error': 'Run not found'}), 404
+
+        run = _json_safe(_run_record(entries[0], include_orders=True))
+        return jsonify({'run': run})
 
     # (The old /api/open-orders endpoint was removed — the frontend never
     # called it; /api/live-alpaca covers the live-order use case.)

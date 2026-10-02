@@ -398,6 +398,12 @@ body {
     color: var(--text-primary);
 }
 
+.panel-hint {
+    margin: -2px 24px 4px;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
 #orders-table {
     padding: 8px 24px 16px;
 }
@@ -452,6 +458,136 @@ body {
 .badge-action.close { background: rgba(210, 153, 34, 0.2); color: #d29922; }
 .badge-action.cover { background: rgba(188, 140, 255, 0.18); color: #bc8cff; }
 .badge-action.sell { background: rgba(248, 81, 73, 0.18); color: #f85149; }
+
+/* ── Run history (Run Activity tab) ── */
+
+.activity-scope {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 24px 0;
+}
+
+.scope-label {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.link-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+}
+
+.link-btn:hover {
+    color: var(--blue);
+    text-decoration: underline;
+}
+
+.panel-heading-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin: 8px 24px 4px;
+}
+
+.panel-heading-row .panel-subheading {
+    margin: 0;
+}
+
+#runs-table {
+    padding: 8px 24px 16px;
+    max-height: 380px;
+    overflow-y: auto;
+}
+
+#runs-table table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+
+#runs-table th,
+#runs-table td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+#runs-table th {
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    background: var(--bg-tertiary);
+    position: sticky;
+    top: 0;
+}
+
+#runs-table td {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+#runs-table .empty-msg {
+    padding: 20px 10px;
+    color: var(--text-secondary);
+    text-align: center;
+    font-style: italic;
+}
+
+#runs-table tr.run-row {
+    cursor: pointer;
+}
+
+#runs-table tr.run-row:hover {
+    background: var(--bg-tertiary);
+}
+
+#runs-table tr.run-row.selected {
+    background: rgba(56, 139, 253, 0.12);
+    box-shadow: inset 3px 0 0 var(--blue);
+}
+
+#runs-table tr.run-row:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: -2px;
+}
+
+.run-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.run-status.success { background: rgba(63, 185, 80, 0.18); color: #3fb950; }
+.run-status.error { background: rgba(248, 81, 73, 0.18); color: #f85149; }
+.run-status.muted { background: rgba(150, 150, 150, 0.15); color: #aaa; }
+
+.dry-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.66rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    background: rgba(210, 153, 34, 0.2);
+    color: #d29922;
+}
 
 /* ── Tabulator overrides ── */
 
