@@ -1,4 +1,4 @@
-.PHONY: help install lint test test-integration run clean docker-build docker-run
+.PHONY: help install lint test test-integration security run clean docker-build docker-run
 
 help:
 	@echo "Common Makefile targets:"
@@ -6,6 +6,7 @@ help:
 	@echo "  lint             Run flake8 linter"
 	@echo "  test             Run all tests (pytest or custom runner)"
 	@echo "  test-integration Run live Alpaca order integration tests"
+	@echo "  security         Run secret-scanning guard (detect-secrets + logging check)"
 	@echo "  run              Run the main trading algorithm"
 	@echo "  clean            Remove Python cache and logs"
 	@echo "  docker-build     Build the Docker image"
@@ -16,6 +17,12 @@ install:
 
 lint:
 	flake8 app/ --max-line-length=120
+
+security:
+	# Static guard: no secret-named env value is emitted from print()/logger.
+	.venv/bin/python -m pytest tests/test_no_secret_logging.py -q
+	# Committed-secret scan against the audited baseline (all hooks).
+	.venv/bin/python -m pre_commit run --all-files
 
 test:
 	# Prefer pytest, fallback to custom runner if needed

@@ -89,6 +89,28 @@ def test_symbol() -> str:
     return os.getenv("TEST_SYMBOL", "F")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_order_test_state(request):
+    """Guarantee a clean symbol before/after any order-placing test.
+
+    These tests submit real (paper) orders.  Without isolation a failed
+    assertion aborts before the in-test cleanup, leaving an order/position
+    behind; repeated runs then accumulate a stray position and break the
+    ``qty == 1`` assertions.
+    """
+    if not {"trading_client", "test_symbol"}.issubset(set(request.fixturenames)):
+        yield
+        return
+
+    client = request.getfixturevalue("trading_client")
+    symbol = request.getfixturevalue("test_symbol")
+    _ensure_clean_symbol(client, symbol)
+    try:
+        yield
+    finally:
+        _ensure_clean_symbol(client, symbol)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -172,6 +194,30 @@ def _find_open_orders(client: TradingClient, symbol: str) -> List[object]:
     return list(client.get_orders(filter=request))
 
 
+def _find_entry_order(client: TradingClient, symbol: str) -> Optional[object]:
+    """Return the most recent bracket *entry* (parent) order for *symbol*.
+
+    A bracket parent is a BUY market order.  Once it fills it is no longer
+    ``OPEN``, so the OPEN list can contain only the SELL child legs — which is
+    why selecting ``open_orders[0]`` was wrong.  Search ALL statuses
+    newest-first and pick the newest BUY (children are all SELL).
+    """
+    request = GetOrdersRequest(
+        status=QueryOrderStatus.ALL, symbols=[symbol],
+        limit=50, direction='desc')
+    buys = [
+        o for o in client.get_orders(filter=request)
+        if _side_value(o) == "buy"
+    ]
+    if not buys:
+        return None
+    for order in buys:
+        type_val = getattr(order, "type", "")
+        if getattr(type_val, "value", type_val) == "market":
+            return order
+    return buys[0]
+
+
 def _cancel_all_open_for_symbol(client: TradingClient, symbol: str) -> None:
     """Cancel every open order for *symbol* (graceful no-op if none exist)."""
     for order in _find_open_orders(client, symbol):
@@ -183,6 +229,30 @@ def _cancel_all_open_for_symbol(client: TradingClient, symbol: str) -> None:
             # 422 = already filled/canceled — that's fine.
             logger.info(
                 "Order %s could not be cancelled (already terminal)", order_id)
+
+
+def _ensure_clean_symbol(client: TradingClient, symbol: str) -> None:
+    """Best-effort: cancel open orders for *symbol* and flatten any position.
+
+    Used before/after every ordering test so a failed assertion can never leave
+    a fragment behind (which previously accumulated into a stray multi-share
+    position and broke the ``qty == 1`` assertions on later runs).
+    """
+    _cancel_all_open_for_symbol(client, symbol)
+    time.sleep(1.0)
+
+    # A cancel releases held shares asynchronously — retry the flatten.
+    for _ in range(3):
+        held = [p for p in client.get_all_positions()
+                if getattr(p, "symbol", "") == symbol]
+        if not held:
+            return
+        try:
+            client.close_position(symbol)
+            logger.info("Flattened leftover %s position via close_position", symbol)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.info("close_position(%s) not accepted yet: %s", symbol, exc)
+        time.sleep(1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -221,14 +291,13 @@ class TestPlaceBuyOrder:
         assert result is True, "place_buy_order should return True on success"
 
         # ---- Verify in Alpaca ----
-        open_orders = _find_open_orders(trading_client, test_symbol)
-        assert len(open_orders) >= 1, (
-            f"Expected at least 1 open order for {test_symbol} in Alpaca; "
-            f"found {len(open_orders)}"
+        # The bracket parent (BUY market) may already be filled, so it can be
+        # absent from the OPEN list; locate it across ALL statuses.
+        entry = _find_entry_order(trading_client, test_symbol)
+        assert entry is not None, (
+            f"Expected a bracket entry (BUY) order for {test_symbol} in "
+            f"Alpaca; found none"
         )
-
-        # The entry leg should be the first order (or find it by order_class).
-        entry = open_orders[0]
         entry_id = str(getattr(entry, "id", ""))
 
         assert getattr(entry, "symbol", "") == test_symbol
@@ -371,10 +440,8 @@ class TestFullOrderLifecycle:
         assert result is True
 
         # ---- Find & verify in Alpaca ----
-        open_orders = _find_open_orders(trading_client, test_symbol)
-        assert len(open_orders) >= 1
-
-        entry = open_orders[0]
+        entry = _find_entry_order(trading_client, test_symbol)
+        assert entry is not None, "bracket entry (BUY) order not found in Alpaca"
         entry_id = str(getattr(entry, "id", ""))
         assert getattr(entry, "symbol", "") == test_symbol
         assert str(getattr(entry, "qty", "")) == "1"
@@ -478,10 +545,8 @@ class TestStorageValidation:
         pos = captured_positions[0]
 
         # ---- 1. Compare Position against Alpaca order ----
-        open_orders = _find_open_orders(trading_client, test_symbol)
-        assert len(open_orders) >= 1
-
-        entry = open_orders[0]
+        entry = _find_entry_order(trading_client, test_symbol)
+        assert entry is not None, "bracket entry (BUY) order not found in Alpaca"
         entry_id = str(getattr(entry, "id", ""))
         order = _wait_for_order_update(trading_client, entry_id)
 

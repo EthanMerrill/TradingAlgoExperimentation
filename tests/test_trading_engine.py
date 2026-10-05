@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pandas as pd
@@ -222,6 +223,59 @@ class TestTradingEngine(unittest.TestCase):
         self.assertEqual(created.order_id, "order_1")
         saved = mock_save_orders.call_args[0][0][0]
         self.assertEqual(saved.leg, "entry")
+
+    def test_place_buy_order_records_bracket_legs(self):
+        """The bracket's child SL/TP legs are persisted as their own rows.
+
+        Previously only the parent market order was stored, which made it look
+        like a new position had no take-profit order until a later session.
+        """
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = SimpleNamespace(
+            id="order_1",
+            legs=[
+                SimpleNamespace(
+                    id="leg_tp", client_order_id="AAPL-BUY-TEST-TP",
+                    type="limit", side="sell", qty=5, status="held",
+                    stop_price=None, limit_price=110.0),
+                SimpleNamespace(
+                    id="leg_sl", client_order_id="AAPL-BUY-TEST-SL",
+                    type="stop", side="sell", qty=5, status="held",
+                    stop_price=95.0, limit_price=94.5),
+            ],
+        )
+        opp = TradingOpportunity(
+            symbol="AAPL",
+            current_rsi=25.0,
+            target_rsi_lower=30,
+            target_rsi_upper=70,
+            rsi_period=14,
+            backtest_return=0.15,
+            alpha=0.05,
+            win_rate=0.9,
+            entry_price=100.0,
+            stop_loss_price=95.0,
+            take_profit_price=110.0,
+            num_trades=10,
+        )
+
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-BUY-TEST"), \
+                patch('trading_engine.storage.save_orders') as mock_save_orders:
+            result = self.engine.place_buy_order(opp, 5)
+
+        self.assertTrue(result)
+        saved_batches = [c.args[0] for c in mock_save_orders.call_args_list]
+        all_saved = [o for batch in saved_batches for o in batch]
+        leg_tags = {o.leg for o in all_saved}
+        self.assertIn("entry", leg_tags)
+        self.assertIn("take_profit", leg_tags)
+        self.assertIn("stop_loss", leg_tags)
+        tp = next(o for o in all_saved if o.leg == "take_profit")
+        self.assertEqual(tp.limit_price, 110.0)
+        sl = next(o for o in all_saved if o.leg == "stop_loss")
+        self.assertEqual(sl.stop_price, 95.0)
 
     def test_place_oco_close_order_dry_run(self):
         self.engine.set_dry_run_mode(True)
@@ -1038,6 +1092,44 @@ class TestBreachedStopHandling(unittest.TestCase):
         mock_market.assert_not_called()
         self.assertEqual(out['orders_placed'], 1)
         self.assertEqual(out['positions_exited'], 0)
+
+    def test_oco_success_persists_new_sl_tp(self):
+        """On broker acceptance the recomputed levels become the stored ones."""
+        pos = self._position()
+        summary = self._summary()
+
+        with patch.object(self.engine,
+                          'calculate_todays_stop_loss_and_take_profit',
+                          return_value=(15.17, 18.36)), \
+                patch.object(self.engine, '_get_current_price',
+                             return_value=16.50), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True):
+            out = self.engine.update_portfolio_orders(summary, [pos])
+
+        self.assertEqual(pos.stop_loss_price, 15.17)
+        self.assertEqual(pos.take_profit_price, 18.36)
+        self.assertEqual(out['orders_placed'], 1)
+
+    def test_oco_failure_keeps_stored_sl_tp(self):
+        """A rejected/skipped OCO must not leave storage advertising new levels."""
+        pos = self._position()
+        original_stop, original_take = (
+            pos.stop_loss_price, pos.take_profit_price)
+        summary = self._summary()
+
+        with patch.object(self.engine,
+                          'calculate_todays_stop_loss_and_take_profit',
+                          return_value=(15.17, 18.36)), \
+                patch.object(self.engine, '_get_current_price',
+                             return_value=16.50), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=False):
+            out = self.engine.update_portfolio_orders(summary, [pos])
+
+        self.assertEqual(pos.stop_loss_price, original_stop)
+        self.assertEqual(pos.take_profit_price, original_take)
+        self.assertEqual(out['orders_placed'], 0)
 
     def test_breached_stop_is_not_closed_when_quote_unavailable(self):
         """Unknown price => no breach => normal OCO path (no liquidation)."""

@@ -16,15 +16,22 @@ class TestConfig(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        # Clear any existing environment variables
+        # Clear any existing environment variables *for this test only*.
+        # `patch.dict` snapshots os.environ and restores it on cleanup; the
+        # previous bare `del os.environ[...]` permanently removed the
+        # credentials that tests/conftest-loaded `.env` provides, which made
+        # the live integration tests skip themselves for the rest of the run.
+        self._env_patcher = patch.dict(os.environ)
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+
         env_vars_to_clear = [
             'ENVIRONMENT', 'ALPACA_DEV_PAPER_KEY', 'ALPACA_DEV_PAPER_SECRET',
             'ALPACA_QA_PAPER_KEY', 'ALPACA_QA_PAPER_SECRET',
             'ALPACA_LIVE_KEY', 'ALPACA_LIVE_SECRET'
         ]
         for var in env_vars_to_clear:
-            if var in os.environ:
-                del os.environ[var]
+            os.environ.pop(var, None)
 
     @patch('config.load_dotenv')
     @patch.dict(os.environ, {

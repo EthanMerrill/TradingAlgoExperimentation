@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -249,6 +249,48 @@ class PositionsManager:
                 row['intraday']) else False,
         )
 
+    def _broker_sl_tp_by_symbol(
+        self,
+    ) -> Dict[str, Tuple[Optional[float], Optional[float]]]:
+        """Map symbol -> (stop_loss_price, take_profit_price) from the broker.
+
+        Reads the currently-open protective legs (Alpaca bracket / OCO children)
+        so the stored snapshot can carry the levels that are *actually working*
+        instead of an entry-anchored heuristic.  Best-effort: returns ``{}``
+        when the provider has no ``get_open_orders`` method or the lookup fails.
+        """
+        provider = self.data_provider
+        getter = getattr(provider, 'get_open_orders', None)
+        if getter is None:
+            return {}
+        try:
+            orders_df = getter()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "Could not fetch broker open orders for SL/TP reconcile: %s", e)
+            return {}
+        if orders_df is None or getattr(orders_df, 'empty', True):
+            return {}
+
+        result: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
+        try:
+            for _, row in orders_df.iterrows():
+                symbol = str(row.get('symbol'))
+                leg = str(row.get('leg_type') or '')
+                sl, tp = result.get(symbol, (None, None))
+                if leg == 'stop_loss':
+                    price = row.get('stop_price')
+                    if pd.notna(price):
+                        sl = float(price)
+                elif leg == 'take_profit':
+                    price = row.get('limit_price')
+                    if pd.notna(price):
+                        tp = float(price)
+                result[symbol] = (sl, tp)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Error building broker SL/TP map: %s", e)
+        return result
+
     def get_and_reconcile_positions(self) -> List[Position]:
         """
         Retrieves positions from storage and alpaca and updates prices
@@ -286,6 +328,11 @@ class PositionsManager:
             len(alpaca_positions), len(
                 cloud_positions), alpaca_symbols_list, cloud_symbols_list
         )
+
+        # Broker's currently-open protective levels, keyed by symbol, so the
+        # stored SL/TP reflects what is actually working at the broker rather
+        # than a heuristic that can diverge from the live orders.
+        broker_sl_tp = self._broker_sl_tp_by_symbol()
 
         # Normalize cloud schema when there is no prior snapshot but Alpaca has open positions.
         if cloud_positions.empty:
@@ -529,6 +576,29 @@ class PositionsManager:
                             logger.warning(
                                 "Backtest enrichment failed for Alpaca-only symbol %s: %s", symbol, e)
 
+                    # Prefer the broker's actual open protective levels; fall
+                    # back to the entry-anchored heuristic only when the broker
+                    # reports none (e.g. a bracket still held or expired).
+                    broker_levels = broker_sl_tp.get(symbol) or (None, None)
+                    if broker_levels[0] is not None:
+                        sl_price = float(broker_levels[0])
+                    elif entry_price > 0:
+                        sl_price = entry_price * (
+                            1 + globalConfig.STOP_LOSS_PCT
+                            if position_side == 'short'
+                            else 1 - globalConfig.STOP_LOSS_PCT)
+                    else:
+                        sl_price = np.nan
+                    if broker_levels[1] is not None:
+                        tp_price = float(broker_levels[1])
+                    elif entry_price > 0:
+                        tp_price = entry_price * (
+                            1 - globalConfig.TAKE_PROFIT_PCT
+                            if position_side == 'short'
+                            else 1 + globalConfig.TAKE_PROFIT_PCT)
+                    else:
+                        tp_price = np.nan
+
                     new_rows.append({
                         'symbol': symbol,
                         'shares': float(alpaca_row.get('qty', 0) or 0),
@@ -542,16 +612,8 @@ class PositionsManager:
                         'rsi_upper': rsi_upper,
                         'alpha': alpha,
                         'composite_score': composite_score,
-                        'stop_loss_price': (
-                            (entry_price * (1 + globalConfig.STOP_LOSS_PCT))
-                            if entry_price > 0 and position_side == 'short'
-                            else (entry_price * (1 - globalConfig.STOP_LOSS_PCT))
-                            if entry_price > 0 else np.nan),
-                        'take_profit_price': (
-                            (entry_price * (1 - globalConfig.TAKE_PROFIT_PCT))
-                            if entry_price > 0 and position_side == 'short'
-                            else (entry_price * (1 + globalConfig.TAKE_PROFIT_PCT))
-                            if entry_price > 0 else np.nan),
+                        'stop_loss_price': sl_price,
+                        'take_profit_price': tp_price,
                         'exit_date': pd.NaT,
                         'exit_price': np.nan,
                         'realized_return': np.nan,
@@ -667,6 +729,17 @@ class PositionsManager:
                     # from the broker's current state.
                     cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
                         alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
+                    # Keep stored protective levels aligned with the broker's
+                    # actual open orders: they can differ from the strategy's
+                    # intended levels (e.g. when an OCO refresh was skipped).
+                    levels = broker_sl_tp.get(symbol)
+                    if levels:
+                        if levels[0] is not None:
+                            cloud_positions.at[index,
+                                               'stop_loss_price'] = levels[0]
+                        if levels[1] is not None:
+                            cloud_positions.at[index,
+                                               'take_profit_price'] = levels[1]
                     # Ensure any datetime-like columns remain compatible when
                     # overwriting values coming from Alpaca.
                     if 'entry_date' in cloud_positions.columns:

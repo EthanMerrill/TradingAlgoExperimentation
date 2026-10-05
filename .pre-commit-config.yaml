@@ -1,0 +1,31 @@
+# Pre-commit hooks. Install once with:  pre-commit install
+#
+# Two layers of secret protection:
+#   1. detect-secrets — blocks hardcoded secrets (files) against the audited
+#      .secrets.baseline. Run `detect-secrets audit .secrets.baseline` after
+#      triaging a new false positive.
+#   2. no-secret-logging — blocks a secret-named env value being passed to
+#      print()/logger.*() (the runtime pattern detect-secrets cannot see).
+repos:
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: |
+          (?x)^(
+            \.venv/.*|
+            (.*/)?logs/.*|
+            .*\.log|
+            \.secrets\.baseline
+          )$
+
+  - repo: local
+    hooks:
+      - id: no-secret-logging
+        name: no secret-value logging
+        entry: pytest tests/test_no_secret_logging.py -q
+        language: python
+        additional_dependencies: [pytest]
+        pass_filenames: false
+        always_run: true

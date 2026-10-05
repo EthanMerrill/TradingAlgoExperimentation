@@ -322,6 +322,60 @@ class TestDataProvider(unittest.TestCase):
 
     @patch('data_provider.globalConfig')
     @patch('data_provider.time.sleep')
+    def test_get_current_snapshot_uses_quote_midpoint_without_trade(self, _mock_sleep, mock_config):
+        """With no recent trade, the quote midpoint stands in as the price."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_client_class:
+            mock_client = Mock()
+            mock_client.get_stock_snapshot.return_value = {
+                'AAPL': {'latest_quote': {
+                    'bid_price': 13.50, 'ask_price': 13.55,
+                    'bid_size': 1, 'ask_size': 1}}}
+            mock_client_class.return_value = mock_client
+
+            data_provider = DataProvider()
+            result = data_provider.get_current_snapshot('AAPL')
+
+        self.assertEqual(result['price'], 13.525)
+
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
+    def test_get_current_positions_uses_snapshot_price_fallback(self, _mock_sleep, mock_config):
+        """A missing broker current_price is filled from the snapshot price."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+        mock_config.PAPER_TRADE = True
+        mock_config.API_RATE_LIMIT_DELAY = 0.0
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_hist, \
+                patch('data_provider.TradingClient') as mock_trade:
+            hist = Mock()
+            hist.get_stock_snapshot.return_value = {
+                'AAPL': {'latest_trade': {'price': 151.50, 'size': 100}}}
+            mock_hist.return_value = hist
+
+            position = Mock()
+            position.symbol = 'AAPL'
+            position.qty = 10
+            position.side = 'long'
+            position.market_value = 0
+            position.avg_entry_price = 150.0
+            position.unrealized_pl = 0
+            position.unrealized_plpc = 0
+            position.current_price = 0
+
+            trade = Mock()
+            trade.get_all_positions.return_value = [position]
+            mock_trade.return_value = trade
+
+            data_provider = DataProvider()
+            df = data_provider.get_current_positions_df()
+
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df.iloc[0]['current_price'], 151.50)
+
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
     def test_filter_symbols_by_max_volume(self, _mock_sleep, mock_config):
         """Test universe filter excludes symbols above max volume."""
         mock_config.get_alpaca_config.return_value = self.mock_config

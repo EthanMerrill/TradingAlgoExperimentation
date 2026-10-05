@@ -666,6 +666,69 @@ class TradingEngine:
             logger.error("Error calculating short position sizes: %s", e)
             return []
 
+    def _persist_bracket_legs(self, order: Any, symbol: str,
+                              parent_client_order_id: Optional[str]) -> None:
+        """Persist the child stop-loss / take-profit legs of a bracket entry.
+
+        The parent market order is recorded separately (``leg='entry'``).
+        Recording each child lets the order ledger (and dashboard) reflect a
+        position's actual protective orders instead of showing only the parent
+        submission — which previously made new positions look like they had no
+        take-profit order until a later session's OCO refresh.
+        """
+        legs = getattr(order, 'legs', None)
+        if not isinstance(legs, (list, tuple)) or not legs:
+            logger.debug(
+                "No bracket legs returned for %s — nothing to record", symbol)
+            return
+
+        def _num(leg_obj: Any, attr: str) -> Optional[float]:
+            val = getattr(leg_obj, attr, None)
+            if val in (None, ''):
+                return None
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return None
+
+        rows = []
+        for leg in legs:
+            leg_type = _status_str(getattr(leg, 'type', None)
+                                   or getattr(leg, 'order_type', None))
+            if 'stop' in leg_type:
+                leg_tag = 'stop_loss'
+            elif leg_type == 'limit':
+                leg_tag = 'take_profit'
+            else:
+                continue
+
+            leg_cid = getattr(leg, 'client_order_id', None)
+            if not leg_cid or str(leg_cid) == str(parent_client_order_id):
+                # Deterministic, unique fallback so the upsert key cannot
+                # overwrite the parent entry row.
+                base = (parent_client_order_id or f'{symbol}-bracket')[:38]
+                leg_cid = f'{base}-{leg_tag[:7]}'
+
+            leg_order_id = getattr(leg, 'id', None)
+            rows.append(Order(
+                client_order_id=str(leg_cid),
+                order_id=str(leg_order_id) if leg_order_id is not None else None,
+                symbol=symbol,
+                side=_status_str(getattr(leg, 'side', None)) or 'sell',
+                qty=_num(leg, 'qty') or 0.0,
+                order_type=leg_type,
+                order_class='bracket',
+                status=_status_str(getattr(leg, 'status', None)) or 'new',
+                stop_price=_num(leg, 'stop_price'),
+                limit_price=_num(leg, 'limit_price'),
+                submitted_at=utc_now(),
+                leg=leg_tag,
+            ))
+
+        if rows:
+            storage.save_orders(rows)
+            logger.info("Recorded %d bracket leg(s) for %s", len(rows), symbol)
+
     def _place_order(self, opportunity: TradingOpportunity, shares: int, side: OrderSide, quantity_sign: int,
                      label: str, profit_label: str) -> bool:
         """Unified order placement for long (buy) and short (sell) orders.
@@ -734,6 +797,18 @@ class TradingEngine:
                             opportunity.stop_loss_price, profit_label, opportunity.take_profit_price)
 
                 order_success = True
+
+                # Record the bracket's child protective legs so the ledger (and
+                # dashboard) reflects the real stop-loss / take-profit orders.
+                # Previously only the parent market order was stored, which made
+                # it look like no take-profit order existed for new positions.
+                try:
+                    self._persist_bracket_legs(
+                        order, opportunity.symbol, client_order_id)
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.error(
+                        "Error recording bracket legs for %s: %s",
+                        opportunity.symbol, e)
 
                 # Use the broker's actual fill as the recorded entry price.
                 # `opportunity.entry_price` is a heuristic (the last OHLCV
@@ -1724,8 +1799,12 @@ class TradingEngine:
             p for p in daily_positions if p.symbol not in positions_to_close
         ]
         for position in active_positions:
-            # Calculate today's stop loss and take profit based on current price
-            position.stop_loss_price, position.take_profit_price = self.calculate_todays_stop_loss_and_take_profit(
+            # Calculate today's stop loss and take profit based on current
+            # price. Do NOT write them onto the position yet: if the broker
+            # rejects the OCO (or we skip the refresh because the shares are
+            # held), persisting them would leave position_snapshots advertising
+            # levels Alpaca does not actually have.
+            new_stop, new_take = self.calculate_todays_stop_loss_and_take_profit(
                 position)
 
             pos_side = getattr(position, 'side', 'long')
@@ -1741,30 +1820,38 @@ class TradingEngine:
             except Exception:  # pylint: disable=broad-exception-caught
                 current_price = None
 
-            if self._is_stop_breached(pos_side, position.stop_loss_price,
-                                      current_price):
+            if self._is_stop_breached(pos_side, new_stop, current_price):
                 logger.warning(
                     "⛔ %s %s stop already breached (stop $%.2f vs market "
                     "$%.2f) — force closing instead of placing an invalid stop",
-                    pos_side, position.symbol, float(position.stop_loss_price),
+                    pos_side, position.symbol, float(new_stop),
                     float(current_price))
                 self._force_close_position(
                     session_summary, position, "stop_loss_breached")
                 continue
 
             if self.dry_run:
+                position.stop_loss_price = new_stop
+                position.take_profit_price = new_take
                 logger.info("🔍 DRY RUN: Would update stop loss for %s to $%.2f and take profit to $%.2f",
-                            position.symbol, position.stop_loss_price, position.take_profit_price)
+                            position.symbol, new_stop, new_take)
+            elif self.place_oco_close_order(position.symbol, abs(position.quantity), new_stop, new_take, side=pos_side):
+                # Only advertise the new levels once the broker accepted them,
+                # so the stored snapshot always matches the live OCO.
+                position.stop_loss_price = new_stop
+                position.take_profit_price = new_take
+                session_summary['orders_placed'] += 1
+                self._record_order(
+                    session_summary, symbol=position.symbol,
+                    action='OCO', shares=abs(position.quantity),
+                    order_type='oco',
+                    strategy=getattr(position, 'strategy_name', None),
+                    reason='update_sl_tp')
             else:
-                # Place OCO close order with updated stop loss and take profit
-                if self.place_oco_close_order(position.symbol, abs(position.quantity), position.stop_loss_price, position.take_profit_price, side=pos_side):
-                    session_summary['orders_placed'] += 1
-                    self._record_order(
-                        session_summary, symbol=position.symbol,
-                        action='OCO', shares=abs(position.quantity),
-                        order_type='oco',
-                        strategy=getattr(position, 'strategy_name', None),
-                        reason='update_sl_tp')
+                logger.warning(
+                    "Kept existing SL/TP for %s in storage — OCO refresh did "
+                    "not succeed (intended stop $%.2f, take $%.2f)",
+                    position.symbol, float(new_stop), float(new_take))
         return session_summary
 
     def identify_purchases(self, session_summary: Dict[str, Any], backtest_results: List[BacktestResult]) -> Dict[str, Any]:
@@ -2024,10 +2111,13 @@ class TradingEngine:
         return session_summary
 
     def _refresh_order_statuses(self) -> None:
-        """Refresh persisted order statuses from the broker.
+        """Reconcile persisted (non-terminal) orders with the broker.
 
-        Reads non-terminal orders from the ledger, fetches their current
-        status from Alpaca, and upserts any changes back via save_orders.
+        Reads non-terminal orders from the ledger and upserts their current
+        status, broker order id, and stop/limit prices from Alpaca.  Prices are
+        included because the broker may re-price or re-id an order, and the
+        ledger previously drifted from Alpaca whenever that happened (the old
+        implementation refreshed ``status`` only).
         """
         try:
             open_orders = storage.get_open_orders_stored()
@@ -2036,17 +2126,45 @@ class TradingEngine:
             cids = [o.client_order_id for o in open_orders if o.client_order_id]
             if not cids:
                 return
-            status_map = data_provider.get_order_status_map(cids)
+
+            details_fn = getattr(data_provider, 'get_order_details_map', None)
+            if details_fn is not None:
+                details = details_fn(cids)
+            else:
+                # Fallback for providers without the richer lookup.
+                status_map = data_provider.get_order_status_map(cids)
+                details = {c: {'status': s} for c, s in status_map.items()}
+
             updated = []
             for o in open_orders:
-                new_status = status_map.get(o.client_order_id)
+                info = details.get(o.client_order_id) or {}
+                new_status = info.get('status')
+                new_order_id = info.get('order_id')
+                new_stop = info.get('stop_price')
+                new_limit = info.get('limit_price')
+
+                changed = False
                 if new_status and new_status != o.status:
                     o.status = new_status
+                    changed = True
+                if (new_order_id is not None
+                        and str(new_order_id) != str(o.order_id or '')):
+                    o.order_id = str(new_order_id)
+                    changed = True
+                if new_stop is not None and new_stop != o.stop_price:
+                    o.stop_price = new_stop
+                    changed = True
+                if new_limit is not None and new_limit != o.limit_price:
+                    o.limit_price = new_limit
+                    changed = True
+
+                if changed:
                     updated.append(o)
+
             if updated:
                 storage.save_orders(updated)
                 logger.info(
-                    "Refreshed %d order statuses from Alpaca", len(updated))
+                    "Reconciled %d order(s) with Alpaca", len(updated))
         except Exception as e:
             logger.error("Error refreshing order statuses: %s", e)
 

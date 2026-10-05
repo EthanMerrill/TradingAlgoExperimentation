@@ -63,8 +63,17 @@ class Config:
             if not os.getenv(var):
                 print(f"Info: Optional environment variable {var} not set.")
 
+        # Never print the secret value itself — only whether it is present.
+        # (This previously echoed the full key, including the LIVE key in prod.)
+        secret_env = (
+            'ALPACA_DEV_PAPER_SECRET' if self.ENVIRONMENT == 'dev'
+            else 'ALPACA_QA_PAPER_SECRET' if self.ENVIRONMENT == 'qa'
+            else 'ALPACA_LIVE_SECRET'
+        )
         print(
-            f"Info: Running in '{self.ENVIRONMENT}' environment. Using Alpaca secret: {os.getenv('ALPACA_DEV_PAPER_SECRET', 'Not Set') if self.ENVIRONMENT == 'dev' else os.getenv('ALPACA_QA_PAPER_SECRET', 'Not Set') if self.ENVIRONMENT == 'qa' else os.getenv('ALPACA_LIVE_SECRET', 'Not Set')}")
+            f"Info: Running in '{self.ENVIRONMENT}' environment. "
+            f"Alpaca secret ({secret_env}): "
+            f"{'loaded' if os.getenv(secret_env) else 'Not Set'}")
 
     def load_json_config(self):
         """Load configuration from environment-specific JSON file."""

@@ -129,6 +129,27 @@ class TestPositionsManager(unittest.TestCase):
 
         self.assertEqual(len(self.manager.positions), 1)
 
+    def test_broker_sl_tp_by_symbol_maps_legs(self):
+        """Stop-loss / take-profit legs are mapped to their symbol's levels."""
+        self.data.get_open_orders.return_value = pd.DataFrame([
+            {'symbol': 'NVOC', 'leg_type': 'stop_loss',
+             'stop_price': 13.72, 'limit_price': 13.65},
+            {'symbol': 'NVOC', 'leg_type': 'take_profit',
+             'stop_price': None, 'limit_price': 14.67},
+        ])
+
+        levels = self.manager._broker_sl_tp_by_symbol()
+
+        self.assertEqual(levels['NVOC'], (13.72, 14.67))
+
+    def test_broker_sl_tp_by_symbol_is_best_effort(self):
+        """No provider method / no open orders => empty map, never an error."""
+        other = PositionsManager(Mock(), Mock(spec=[]))
+        self.assertEqual(other._broker_sl_tp_by_symbol(), {})
+
+        self.data.get_open_orders.return_value = pd.DataFrame()
+        self.assertEqual(self.manager._broker_sl_tp_by_symbol(), {})
+
     def test_close_position_handles_tz_aware_cloud_column(self):
         """Regression: Postgres-loaded frames have tz-aware datetime columns.
 

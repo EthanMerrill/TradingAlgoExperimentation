@@ -1,0 +1,27 @@
+name: security
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  secrets:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev tooling
+        run: pip install -r requirements-dev.txt
+
+      # Blocks any secret not already recorded (and audited) in the baseline.
+      - name: Scan committed secrets (detect-secrets)
+        run: pre-commit run detect-secrets --all-files --show-diff-on-failure
+
+      # Blocks secret-named env values being emitted from print()/logger.*().
+      - name: Guard against secret logging in source
+        run: pytest tests/test_no_secret_logging.py -q

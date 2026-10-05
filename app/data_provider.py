@@ -54,6 +54,16 @@ def _lower_str(value: Any) -> str:
     return str(value).lower()
 
 
+def _to_float(value: Any) -> Optional[float]:
+    """Coerce a broker numeric (often a string) to float, or None."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class DataProvider:
     """Modern data provider using Alpaca's latest API.
 
@@ -295,9 +305,12 @@ class DataProvider:
                 # if current price is not available, fetch it from the snapshot
                 if not current_price and symbol:
                     snapshot = self.get_current_snapshot(symbol)
-                    if snapshot and 'latest_trade' in snapshot:
-                        position_data[-1]['current_price'] = snapshot['latest_trade'].get(
-                            'price', 0.0)
+                    # get_current_snapshot returns a flat 'price' key (from the
+                    # latest trade, or the quote midpoint as a fallback) — not
+                    # a nested 'latest_trade' dict.
+                    if snapshot and snapshot.get('price') is not None:
+                        position_data[-1]['current_price'] = float(
+                            snapshot['price'])
 
             return pd.DataFrame(position_data)
 
@@ -753,6 +766,15 @@ class DataProvider:
                         'ask_size': int(latest_quote.get('ask_size', 0))
                     })
 
+            # When there is no recent trade, fall back to the quote midpoint so
+            # callers still get a usable, near-market price instead of None
+            # (which made the dashboard fall back to a stale stored value).
+            if 'price' not in result:
+                bid = result.get('bid_price')
+                ask = result.get('ask_price')
+                if bid and ask and bid > 0 and ask > 0:
+                    result['price'] = (bid + ask) / 2.0
+
             # Get daily bar data
             daily_bar = getattr(snapshot, 'daily_bar', None) or (
                 snapshot.get('daily_bar') if isinstance(snapshot, dict) else None)
@@ -997,6 +1019,29 @@ class DataProvider:
                 result[cid] = str(raw.value).lower()
             else:
                 result[cid] = str(raw).lower()
+        return result
+
+    def get_order_details_map(self, client_order_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Fetch current broker state for a list of client_order_ids.
+
+        Returns a mapping of client_order_id -> dict with ``status``,
+        ``order_id``, ``stop_price`` and ``limit_price`` (empty dict when the
+        order cannot be found).  Unlike :meth:`get_order_status_map`, this
+        carries the prices too, so the local order ledger can be reconciled
+        against Alpaca (which may re-price or re-id a replaced order).
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        for cid in (client_order_ids or []):
+            order = self.get_order_by_client_id_safe(cid)
+            if order is None:
+                result[cid] = {}
+                continue
+            result[cid] = {
+                'status': _lower_str(getattr(order, 'status', None)),
+                'order_id': getattr(order, 'id', None),
+                'stop_price': _to_float(getattr(order, 'stop_price', None)),
+                'limit_price': _to_float(getattr(order, 'limit_price', None)),
+            }
         return result
 
 
