@@ -45,8 +45,9 @@ class TradingAlgorithm:
             'portfolio_value': 0,
             'results_summary': {}
         }
-        # Backtest results from the most recent cycle — consumed by the
-        # bar-loop worker (Phase D) to evaluate intraday strategies during RTH.
+        # Backtest results from the most recent cycle — passed to the bar-loop
+        # worker (Phase D) as context for intraday strategies during RTH. Bar-
+        # loop strategies are evaluated even when this is empty.
         self._last_backtest_results: List = []
 
     @property

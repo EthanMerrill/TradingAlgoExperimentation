@@ -46,6 +46,11 @@ class BarLoopEngine:
         self.trading_engine = trading_engine
         self.positions_manager = positions_manager
         self.dry_run = False
+        # Reuse strategy instances across cycles so per-session state (e.g. a
+        # strategy's once-per-day signal dedupe) survives. Re-instantiating
+        # each cycle would reset that state and re-emit the same signals on
+        # every 60s poll.
+        self._strategy_cache: Dict[str, Strategy] = {}
 
     def set_dry_run_mode(self, dry_run: bool) -> None:
         """Enable/disable dry run (no real orders, no persistence)."""
@@ -56,7 +61,11 @@ class BarLoopEngine:
     # ------------------------------------------------------------------
 
     def enabled_bar_loop_strategies(self) -> List[Strategy]:
-        """Registered bar_loop strategies enabled in config, instantiated."""
+        """Registered bar_loop strategies enabled in config, instantiated.
+
+        Instances are cached and reused across calls (see ``_strategy_cache``)
+        so per-session dedupe state is not lost between intraday cycles.
+        """
         strategies: List[Strategy] = []
         for name in (getattr(globalConfig, "STRATEGIES_ENABLED", None) or []):
             try:
@@ -67,11 +76,16 @@ class BarLoopEngine:
                 continue
             if getattr(cls, "execution_style", "session") != "bar_loop":
                 continue
-            try:
-                strategies.append(cls.create())
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                logger.error(
-                    "Bar loop: failed to instantiate '%s': %s", name, e)
+            strategy = self._strategy_cache.get(name)
+            if strategy is None:
+                try:
+                    strategy = cls.create()
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.error(
+                        "Bar loop: failed to instantiate '%s': %s", name, e)
+                    continue
+                self._strategy_cache[name] = strategy
+            strategies.append(strategy)
         return strategies
 
     def has_open_intraday_positions(self) -> bool:
@@ -106,9 +120,15 @@ class BarLoopEngine:
     def run_intraday_cycle(self, backtest_results: List[Any], as_of: Optional[datetime] = None) -> Dict[str, Any]:
         """Evaluate each enabled bar_loop strategy and place entry orders.
 
+        Bar-loop strategies compute their live signals from fresh market data
+        rather than from the nightly backtest, so each enabled strategy is
+        evaluated even when the backtest produced no (profitable) results for
+        it. Any matching backtest results are still passed through as context.
+
         Args:
             backtest_results: Backtest results for the current cycle (grouped by
-                strategy_name; each bar_loop strategy receives its own subset).
+                strategy_name; each bar_loop strategy receives its own subset,
+                which may be empty).
             as_of: Evaluation timestamp (defaults to now).
 
         Returns:
@@ -123,10 +143,6 @@ class BarLoopEngine:
             'errors': [],
             'dry_run': self.dry_run,
         }
-        if not backtest_results:
-            logger.info("📈 Intraday cycle: no backtest results — skipping")
-            return summary
-
         strategies = self.enabled_bar_loop_strategies()
         if not strategies:
             logger.debug("📈 Intraday cycle: no enabled bar_loop strategies")
@@ -134,13 +150,13 @@ class BarLoopEngine:
 
         for strategy in strategies:
             results = [
-                r for r in backtest_results
+                r for r in (backtest_results or [])
                 if getattr(r, "strategy_name", None) == strategy.name
             ]
             if not results:
                 logger.debug(
-                    "📈 Intraday cycle: no results for '%s'", strategy.name)
-                continue
+                    "📈 Intraday cycle: no backtest results for '%s' — "
+                    "evaluating live signals anyway", strategy.name)
 
             ctx = StrategyContext(
                 data_provider=data_provider,

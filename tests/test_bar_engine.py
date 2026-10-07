@@ -146,6 +146,13 @@ class TestBarLoopEngine(unittest.TestCase):
         names = [s.name for s in strategies]
         self.assertEqual(names, ["test_bar_loop"])  # session fake excluded
 
+    def test_enabled_bar_loop_strategies_reuse_instances(self):
+        # Same instance across cycles => per-session dedupe state survives.
+        first = self.bar_engine.enabled_bar_loop_strategies()
+        second = self.bar_engine.enabled_bar_loop_strategies()
+        self.assertEqual(len(first), 1)
+        self.assertIs(first[0], second[0])
+
     def test_is_rth_and_session_ended(self):
         open_dt = US_EASTERN.localize(
             datetime(2026, 9, 1, 11, 0))  # Tue 11:00 ET
@@ -194,6 +201,23 @@ class TestBarLoopEngine(unittest.TestCase):
         self.assertEqual(
             [r.strategy_name for r in strategy.last_ctx.strategy_results],
             ["test_bar_loop"])
+
+    def test_strategy_evaluated_without_backtest_results(self):
+        # Bar-loop strategies compute signals from fresh data, so they must be
+        # evaluated even when the nightly backtest produced nothing for them.
+        strategy = _BarLoopFake()
+        self.engine._signals_to_opportunities = Mock(return_value=[])
+        self.engine._execute_purchases = Mock()
+        with patch.object(self.bar_engine, "enabled_bar_loop_strategies",
+                          return_value=[strategy]):
+            self.bar_engine.run_intraday_cycle([])
+            self.assertIsNotNone(strategy.last_ctx)
+            self.assertEqual(strategy.last_ctx.strategy_results, [])
+
+            strategy.last_ctx = None
+            self.bar_engine.run_intraday_cycle([self._result("other")])
+            self.assertIsNotNone(strategy.last_ctx)
+            self.assertEqual(strategy.last_ctx.strategy_results, [])
 
     def test_close_intraday_positions_only_intraday(self):
         intraday_pos = Mock()

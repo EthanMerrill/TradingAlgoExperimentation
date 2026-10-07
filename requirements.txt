@@ -12,6 +12,10 @@ waitress>=3.0.0
 # Date/time handling
 pytz>=2023.3
 holidays>=0.35
+# IANA tz database for stdlib `zoneinfo` (pulled in by pandas>=3 for tz
+# conversions). Required in slim containers that ship no system zoneinfo,
+# otherwise `ZoneInfo("US/Eastern")` raises ZoneInfoNotFoundError.
+tzdata>=2024.1
 
 # Environment and configuration
 python-dotenv>=1.0.0

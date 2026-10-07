@@ -20,9 +20,10 @@ FROM python:3.13-slim AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/New_York
 
-# Minimal runtime deps (curl for the HEALTHCHECK)
+# Minimal runtime deps (curl for the HEALTHCHECK; tzdata so both glibc and
+# Python's stdlib `zoneinfo` can resolve named zones such as US/Eastern).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates \
+    curl ca-certificates tzdata \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built wheels
