@@ -689,31 +689,50 @@ function renderPerfSummaryCards(strategies) {
 function renderPerfChart(strategies) {
     var canvas = document.getElementById('perf-chart');
     if (!canvas) return;
+
+    // Share one chronological category axis across strategies: build the
+    // sorted union of snapshot dates, then align each strategy's values to it
+    // (null where a strategy has no snapshot for that date).
+    var dateSet = {};
+    strategies.forEach(function (s) {
+        (s.series || []).forEach(function (p) {
+            if (p.date) dateSet[p.date] = true;
+        });
+    });
+    var labels = Object.keys(dateSet).sort();
+    var indexByDate = {};
+    labels.forEach(function (d, i) { indexByDate[d] = i; });
+
     var datasets = strategies.map(function (s, i) {
         var color = PERF_COLORS[i % PERF_COLORS.length];
+        var values = labels.map(function () { return null; });
+        (s.series || []).forEach(function (p) {
+            var idx = indexByDate[p.date];
+            if (idx !== undefined) values[idx] = Number(p.cumulative_pnl);
+        });
         return {
             label: (strategyInfo(s.strategy_name) || {}).label || s.strategy_name,
-            data: s.series.map(function (p) {
-                return { x: p.date, y: Number(p.cumulative_pnl) };
-            }),
+            data: values,
             borderColor: color,
             backgroundColor: color,
             tension: 0.2,
             pointRadius: 2,
+            spanGaps: true,
         };
     });
     if (perfChart) {
+        perfChart.data.labels = labels;
         perfChart.data.datasets = datasets;
         perfChart.update();
         return;
     }
     perfChart = new Chart(canvas, {
         type: 'line',
-        data: { datasets: datasets },
+        data: { labels: labels, datasets: datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
-            parsing: false,
+            interaction: { mode: 'index', intersect: false },
             scales: {
                 x: {
                     type: 'category',
@@ -723,7 +742,18 @@ function renderPerfChart(strategies) {
                     callback: function (v) { return '$' + Number(v).toLocaleString(); },
                 } },
             },
-            plugins: { legend: { position: 'bottom' } },
+            plugins: {
+                legend: { position: 'bottom' },
+                tooltip: {
+                    callbacks: {
+                        label: function (ctx) {
+                            var v = ctx.parsed.y;
+                            return ctx.dataset.label + ': ' +
+                                (v == null ? '—' : formatCurrency(v));
+                        },
+                    },
+                },
+            },
         },
     });
 }
