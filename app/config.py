@@ -103,6 +103,17 @@ class Config:
             self.MAX_SHORT_LONG_RATIO = trading.get(
                 'max_short_long_ratio', 0.30)
 
+            # Only submit entry orders during regular trading hours. Off-hours
+            # submissions queue at the broker and produce phantom positions
+            # recorded at estimated prices.
+            self.ENFORCE_RTH_ENTRIES = trading.get(
+                'enforce_rth_entries', True)
+
+            # Reconcile cancels broker orders whose symbol has no live position
+            # (orphan legs) — a resting sell on a flat symbol can open a short.
+            self.CANCEL_ORPHAN_ORDERS = trading.get(
+                'cancel_orphan_orders', True)
+
             # Backtesting parameters
             backtesting = config_data.get('backtesting', {})
             self.BACKTEST_INIT_CASH = backtesting.get('init_cash', 10000)
@@ -227,6 +238,12 @@ class Config:
         self.MIN_WIN_RATE = 0.7  # Minimum win rate of 70%
         self.ENABLE_SHORT_SELLING = False
         self.MAX_SHORT_LONG_RATIO = 0.30  # Max 30% short notional exposure
+
+        # Only submit entry orders during regular trading hours.
+        self.ENFORCE_RTH_ENTRIES = True
+
+        # Cancel broker orders on symbols with no live position (orphans).
+        self.CANCEL_ORPHAN_ORDERS = True
 
         # Keep-alive & health server defaults
         self.KEEP_ALIVE = os.getenv(

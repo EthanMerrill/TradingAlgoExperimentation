@@ -530,7 +530,7 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
 
         try:
             # 1. Get all open bracket-leg orders from Alpaca
-            orders_df = data_provider.get_open_orders()
+            orders_df = data_provider.get_open_orders(tag_orphans=True)
 
             # 2. Collect symbols from ALL sources:
             #    (a) open bracket-leg orders from Alpaca

@@ -291,6 +291,43 @@ class PositionsManager:
             logger.warning("Error building broker SL/TP map: %s", e)
         return result
 
+    def _cancel_orphan_orders(self, live_symbols: set) -> None:
+        """Cancel active broker orders whose symbol has no open position.
+
+        An orphan leg (e.g. a bracket child that outlived its position) is
+        dangerous: a resting sell on a flat symbol can open an unintended
+        short. Reconcile is the authority that the broker holds no such
+        position, so any active order on a symbol outside ``live_symbols`` is
+        cancelled. Gated by ``globalConfig.CANCEL_ORPHAN_ORDERS``; always
+        logged. Best-effort — never raises into the reconcile path.
+        """
+        if not getattr(globalConfig, 'CANCEL_ORPHAN_ORDERS', True):
+            return
+        getter = getattr(self.data_provider, 'get_active_orders', None)
+        cancel = getattr(self.data_provider, 'cancel_order', None)
+        if getter is None or cancel is None:
+            return
+        try:
+            orders_df = getter()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Orphan-order check could not fetch orders: %s", e)
+            return
+        if not isinstance(orders_df, pd.DataFrame) or orders_df.empty:
+            return
+        if 'symbol' not in orders_df.columns:
+            return
+
+        orphans = orders_df[~orders_df['symbol'].astype(str).isin(live_symbols)]
+        for _, row in orphans.iterrows():
+            order_id = row.get('order_id')
+            if not order_id:
+                continue
+            if cancel(str(order_id)):
+                logger.warning(
+                    "Cancelled ORPHAN order %s (%s %s) for %s — no live "
+                    "position in Alpaca", order_id, row.get('order_type'),
+                    row.get('side'), row.get('symbol'))
+
     def get_and_reconcile_positions(self) -> List[Position]:
         """
         Retrieves positions from storage and alpaca and updates prices
@@ -328,6 +365,10 @@ class PositionsManager:
             len(alpaca_positions), len(
                 cloud_positions), alpaca_symbols_list, cloud_symbols_list
         )
+
+        # Alpaca is the authority on what is open: cancel any active broker
+        # order whose symbol has no live position (orphan legs).
+        self._cancel_orphan_orders(set(alpaca_symbols_list))
 
         # Broker's currently-open protective levels, keyed by symbol, so the
         # stored SL/TP reflects what is actually working at the broker rather

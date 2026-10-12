@@ -22,6 +22,7 @@ from storage import storage
 from order import Order, generate_client_order_id
 from positions import Position, PositionsManager
 from utils import ensure_utc, utc_now
+from utils.calendar import is_regular_trading_hours  # type: ignore
 from strategies.base import StrategyContext
 from strategies.registry import get_strategy
 from strategies.base import BacktestResult
@@ -138,6 +139,12 @@ class TradingEngine:
         self._positions_manager: Optional[PositionsManager] = None
         self._last_position_update: Optional[datetime] = None
         self.dry_run: bool = False
+        # Entries may only be submitted during regular trading hours (RTH).
+        # After-hours market/bracket orders queue, never fill within the
+        # confirmation window, and get recorded at an estimated price — the
+        # source of phantom positions. Unit tests disable this.
+        self.enforce_rth_entries: bool = bool(
+            getattr(globalConfig, 'ENFORCE_RTH_ENTRIES', True))
         # Most recent order-placement failure, surfaced into the session
         # summary's `errors` so failures are visible in the dashboard instead
         # of only appearing in the log.
@@ -765,6 +772,20 @@ class TradingEngine:
                     self._last_order_error = (
                         f"trading client unavailable — could not place "
                         f"{label} order for {opportunity.symbol}")
+                    return False
+
+                # RTH guard: refuse to submit entries outside regular trading
+                # hours. Off-hours market/bracket orders queue at the broker
+                # and cannot fill within the confirmation window, which is what
+                # produced positions recorded at estimated prices. (Queueing
+                # the signal for the next open is a later step.)
+                if self.enforce_rth_entries and not is_regular_trading_hours():
+                    logger.warning(
+                        "Skipping %s entry for %s — outside regular trading "
+                        "hours (RTH 09:30–16:00 ET). Signal not submitted.",
+                        label, opportunity.symbol)
+                    self._last_order_error = (
+                        f"{opportunity.symbol}: entry skipped — outside RTH")
                     return False
 
                 client_order_id = self._make_unique_client_order_id(

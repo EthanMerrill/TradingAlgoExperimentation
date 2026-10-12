@@ -57,6 +57,9 @@ class TestTradingEngine(unittest.TestCase):
         # reach the real broker to resolve asset shortability.
         self.engine.ENTRY_FILL_WAIT_SECONDS = 0
         self.engine._is_shortable = Mock(return_value=True)
+        # Order-mechanics tests mock the broker and are time-independent; the
+        # RTH entry guard has dedicated coverage in test_rth_guard.py.
+        self.engine.enforce_rth_entries = False
 
     def test_positions_manager_starts_none(self):
         """Before injection, _positions_manager is None."""

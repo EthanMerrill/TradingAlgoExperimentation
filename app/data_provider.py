@@ -890,7 +890,7 @@ class DataProvider:
             logger.error("Error getting current price for %s: %s", symbol, e)
             return None
 
-    def get_open_orders(self) -> pd.DataFrame:
+    def get_open_orders(self, tag_orphans: bool = False) -> pd.DataFrame:
         """
         Get all currently open orders from Alpaca.
 
@@ -976,6 +976,8 @@ class DataProvider:
                 })
 
             df = pd.DataFrame(order_data)
+            if tag_orphans and not df.empty:
+                df = self._tag_orphan_legs(df)
             logger.info(
                 "Fetched %d open SL/TP orders from Alpaca (all statuses)", len(df))
             return df
@@ -983,6 +985,81 @@ class DataProvider:
         except Exception as e:
             logger.error("Error fetching open orders: %s", e)
             return pd.DataFrame()
+
+    def _tag_orphan_legs(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Relabel legs whose symbol has no open position as ``orphan``.
+
+        Bracket/OCO children can outlive their position (e.g. an entry that
+        filled then exited). Such a leg looks like live protection but belongs
+        to nothing, so callers that render protection should skip it.
+        Best-effort: on any failure the frame is returned unchanged.
+        """
+        try:
+            positions_df = self.get_current_positions_df()
+            if positions_df is None or positions_df.empty:
+                held = set()
+            else:
+                held = set(positions_df['symbol'].astype(str).tolist())
+            df = df.copy()
+            df.loc[~df['symbol'].astype(str).isin(held), 'leg_type'] = 'orphan'
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not tag orphan legs: %s", e)
+        return df
+
+    def get_active_orders(self) -> pd.DataFrame:
+        """Return every non-terminal order across all symbols (any type).
+
+        Unlike :meth:`get_open_orders` (which keeps only protective legs), this
+        includes market/entry orders, so callers can find *orphan* orders on
+        symbols with no open position.
+
+        Returns:
+            DataFrame with columns: symbol, order_id, order_type, side, qty,
+            limit_price, stop_price, status, order_class
+        """
+        if self.trading_client is None:
+            logger.error("Trading client not available — cannot fetch orders")
+            return pd.DataFrame()
+        try:
+            from alpaca.trading.requests import GetOrdersRequest
+
+            request = GetOrdersRequest(
+                status='all', limit=500, direction='desc')
+            orders = self.trading_client.get_orders(filter=request)
+            _resolved = {'filled', 'canceled', 'cancelled', 'expired',
+                         'rejected', 'suspended', 'pending_cancel',
+                         'done_for_day', 'stopped', 'replaced'}
+            rows = []
+            for o in (orders or []):
+                status = _lower_str(getattr(o, 'status', None))
+                if status in _resolved:
+                    continue
+                rows.append({
+                    'symbol': getattr(o, 'symbol', None),
+                    'order_id': getattr(o, 'id', None),
+                    'order_type': _lower_str(getattr(o, 'type', None)),
+                    'side': _lower_str(getattr(o, 'side', None)),
+                    'qty': float(getattr(o, 'qty', 0) or 0),
+                    'limit_price': float(getattr(o, 'limit_price', 0) or 0) or None,
+                    'stop_price': float(getattr(o, 'stop_price', 0) or 0) or None,
+                    'status': status,
+                    'order_class': _lower_str(getattr(o, 'order_class', None)),
+                })
+            return pd.DataFrame(rows)
+        except Exception as e:
+            logger.error("Error fetching active orders: %s", e)
+            return pd.DataFrame()
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel a single order by id. Returns True on success."""
+        if self.trading_client is None or not order_id:
+            return False
+        try:
+            self.trading_client.cancel_order_by_id(order_id)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Cancel failed for order %s: %s", order_id, e)
+            return False
 
     def get_order_by_client_id_safe(self, client_order_id: str) -> Optional[Any]:
         """Fetch an order by client_order_id, returning None if not found.

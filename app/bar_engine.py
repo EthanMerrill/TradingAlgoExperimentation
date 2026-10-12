@@ -10,33 +10,16 @@ Reuses TradingEngine for order placement/sizing and PositionsManager for state,
 so dry-run and position tagging behave identically to the daily path.
 """
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime
 from typing import Any, Dict, List, Optional
-
-import pytz
 
 from config import globalConfig  # type: ignore
 from data_provider import data_provider
 from strategies.base import Strategy, StrategyContext
 from strategies.registry import get_strategy
+from utils.calendar import is_regular_trading_hours, is_session_ended  # type: ignore
 
 logger = logging.getLogger(__name__)
-
-US_EASTERN = pytz.timezone("US/Eastern")
-RTH_OPEN = dtime(9, 30)
-RTH_CLOSE = dtime(16, 0)
-
-
-def _as_et(dt: datetime) -> datetime:
-    """Normalize a datetime to US/Eastern.
-
-    TZ-aware datetimes are converted; naive datetimes are treated as UTC
-    (the container default, matching strategy.py's EST conversion) then
-    converted.
-    """
-    if dt.tzinfo is not None:
-        return dt.astimezone(US_EASTERN)
-    return dt.replace(tzinfo=pytz.UTC).astimezone(US_EASTERN)
 
 
 class BarLoopEngine:
@@ -101,17 +84,11 @@ class BarLoopEngine:
 
     def is_rth(self, as_of: Optional[datetime] = None) -> bool:
         """True during regular trading hours (Mon–Fri, 9:30–16:00 ET)."""
-        now = _as_et(as_of or datetime.now())
-        if now.weekday() >= 5:
-            return False
-        return RTH_OPEN <= now.time() <= RTH_CLOSE
+        return is_regular_trading_hours(as_of)
 
     def session_ended(self, as_of: Optional[datetime] = None) -> bool:
         """True when RTH has ended for the day (weekday after 16:00 ET)."""
-        now = _as_et(as_of or datetime.now())
-        if now.weekday() >= 5:
-            return False
-        return now.time() > RTH_CLOSE
+        return is_session_ended(as_of)
 
     # ------------------------------------------------------------------
     # Entry cycle

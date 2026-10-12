@@ -163,6 +163,7 @@ def _make_engine(trading_client: TradingClient) -> TradingEngine:
     engine._positions_manager.open_position = Mock()
     engine._positions_manager.close_position = Mock()
     engine.dry_run = False
+    engine.enforce_rth_entries = False
     return engine
 
 
