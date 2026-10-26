@@ -189,6 +189,8 @@ class TestPositionTagging(unittest.TestCase):
         self.engine._positions_manager.open_position = Mock()
         # Don't block on the best-effort entry fill wait in unit tests.
         self.engine.ENTRY_FILL_WAIT_SECONDS = 0
+        # Order-mechanics test; RTH enforcement is covered elsewhere.
+        self.engine.enforce_rth_entries = False
 
     def test_place_buy_order_tags_strategy(self):
         self.engine.set_dry_run_mode(False)

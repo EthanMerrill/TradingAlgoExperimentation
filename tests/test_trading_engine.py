@@ -227,27 +227,13 @@ class TestTradingEngine(unittest.TestCase):
         saved = mock_save_orders.call_args[0][0][0]
         self.assertEqual(saved.leg, "entry")
 
-    def test_place_buy_order_records_bracket_legs(self):
-        """The bracket's child SL/TP legs are persisted as their own rows.
-
-        Previously only the parent market order was stored, which made it look
-        like a new position had no take-profit order until a later session.
-        """
+    def test_place_buy_order_arms_oco_after_confirmed_fill(self):
+        """Brackets are deferred: a simple entry is submitted, then the OCO is
+        armed only once the fill is confirmed (D2)."""
         self.engine.set_dry_run_mode(False)
         self.engine.trading_client = Mock()
         self.engine.trading_client.submit_order.return_value = SimpleNamespace(
-            id="order_1",
-            legs=[
-                SimpleNamespace(
-                    id="leg_tp", client_order_id="AAPL-BUY-TEST-TP",
-                    type="limit", side="sell", qty=5, status="held",
-                    stop_price=None, limit_price=110.0),
-                SimpleNamespace(
-                    id="leg_sl", client_order_id="AAPL-BUY-TEST-SL",
-                    type="stop", side="sell", qty=5, status="held",
-                    stop_price=95.0, limit_price=94.5),
-            ],
-        )
+            id="order_1")
         opp = TradingOpportunity(
             symbol="AAPL",
             current_rsi=25.0,
@@ -265,20 +251,105 @@ class TestTradingEngine(unittest.TestCase):
 
         with patch.object(self.engine, '_make_unique_client_order_id',
                           return_value="AAPL-BUY-TEST"), \
-                patch('trading_engine.storage.save_orders') as mock_save_orders:
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(100.0, 5.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True) as mock_oco, \
+                patch('trading_engine.storage.save_orders'):
             result = self.engine.place_buy_order(opp, 5)
 
         self.assertTrue(result)
-        saved_batches = [c.args[0] for c in mock_save_orders.call_args_list]
-        all_saved = [o for batch in saved_batches for o in batch]
-        leg_tags = {o.leg for o in all_saved}
-        self.assertIn("entry", leg_tags)
-        self.assertIn("take_profit", leg_tags)
-        self.assertIn("stop_loss", leg_tags)
-        tp = next(o for o in all_saved if o.leg == "take_profit")
-        self.assertEqual(tp.limit_price, 110.0)
-        sl = next(o for o in all_saved if o.leg == "stop_loss")
-        self.assertEqual(sl.stop_price, 95.0)
+        # The entry must be a simple order (no bracket children on submit).
+        submitted = self.engine.trading_client.submit_order.call_args[0][0]
+        self.assertIsNone(getattr(submitted, 'stop_loss', None))
+        self.assertIsNone(getattr(submitted, 'take_profit', None))
+        # Protection is armed after the fill, against the filled quantity.
+        mock_oco.assert_called_once_with(
+            "AAPL", 5.0, 95.0, 110.0, side="long")
+
+    def test_place_buy_order_cancels_unfilled_entry(self):
+        """An entry that does not confirm is cancelled; no brackets are armed."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = SimpleNamespace(
+            id="order_1")
+        opp = TradingOpportunity(
+            symbol="AAPL", current_rsi=25.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=95.0, take_profit_price=110.0, num_trades=10,
+        )
+
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-BUY-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(None, None, 'new')), \
+                patch.object(self.engine, '_cancel_entry_order') as mock_cancel, \
+                patch.object(self.engine, 'place_oco_close_order') as mock_oco, \
+                patch('trading_engine.storage.save_orders'):
+            result = self.engine.place_buy_order(opp, 5)
+
+        # Position is still recorded (D2), but never left bracketed.
+        self.assertTrue(result)
+        mock_cancel.assert_called_once_with("order_1")
+        mock_oco.assert_not_called()
+
+    def test_place_buy_order_rejected_records_no_position(self):
+        """A terminally rejected entry must not create a phantom position."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = SimpleNamespace(
+            id="order_1")
+        opp = TradingOpportunity(
+            symbol="AAPL", current_rsi=25.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=95.0, take_profit_price=110.0, num_trades=10,
+        )
+
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-BUY-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(None, None, 'rejected')), \
+                patch.object(self.engine, 'place_oco_close_order') as mock_oco, \
+                patch('trading_engine.storage.save_orders'):
+            result = self.engine.place_buy_order(opp, 5)
+
+        self.assertFalse(result)
+        self.engine._positions_manager.open_position.assert_not_called()
+        mock_oco.assert_not_called()
+
+    def test_wait_for_entry_fill_reports_filled_qty(self):
+        """The fill poller returns price, filled qty, and status."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.get_order_by_id.return_value = SimpleNamespace(
+            status="filled", filled_avg_price="100.50", filled_qty="4")
+        price, qty, status = self.engine._wait_for_entry_fill(
+            "order_1", timeout=1.0)
+        self.assertEqual(price, 100.50)
+        self.assertEqual(qty, 4.0)
+        self.assertEqual(status, "filled")
+
+    def test_place_market_close_order_retries_on_short_sell_block(self):
+        """A close rejected because an entry BUY is live is retried once."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.side_effect = [
+            Exception("cannot open a short sell while a long buy order is open"),
+            SimpleNamespace(id="exit_1"),
+        ]
+
+        with patch.object(self.engine, '_cancel_open_orders_for_symbol',
+                          return_value=["blocker"]), \
+                patch.object(self.engine, '_wait_for_orders_cancelled',
+                             return_value=True), \
+                patch('trading_engine.storage.save_orders'):
+            order_id = self.engine.place_market_close_order(
+                "AAPL", 5, "test", side="long")
+
+        self.assertEqual(order_id, "exit_1")
+        self.assertEqual(self.engine.trading_client.submit_order.call_count, 2)
 
     def test_place_oco_close_order_dry_run(self):
         self.engine.set_dry_run_mode(True)
@@ -1372,6 +1443,8 @@ class TestAuditFixes(unittest.TestCase):
         self.engine._positions_manager.close_position = Mock()
         self.engine.ENTRY_FILL_WAIT_SECONDS = 0
         self.engine.dry_run = False
+        # These are order-mechanics tests; RTH enforcement is covered elsewhere.
+        self.engine.enforce_rth_entries = False
 
     def _summary(self):
         return {
@@ -1510,8 +1583,10 @@ class TestAuditFixes(unittest.TestCase):
 
         with patch.object(self.engine, '_make_unique_client_order_id',
                           return_value="cid-1"), \
-                patch.object(self.engine, '_wait_for_order_fill',
-                             return_value=101.37), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(101.37, 10.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True), \
                 patch('trading_engine.storage'):
             self.assertTrue(self.engine.place_buy_order(op, 10))
 
@@ -1526,8 +1601,8 @@ class TestAuditFixes(unittest.TestCase):
 
         with patch.object(self.engine, '_make_unique_client_order_id',
                           return_value="cid-1"), \
-                patch.object(self.engine, '_wait_for_order_fill',
-                             return_value=None), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(None, None, 'new')), \
                 patch('trading_engine.storage'):
             self.assertTrue(self.engine.place_buy_order(op, 10))
 
@@ -1541,8 +1616,8 @@ class TestAuditFixes(unittest.TestCase):
 
         with patch.object(self.engine, '_make_unique_client_order_id',
                           return_value="cid-1"), \
-                patch.object(self.engine, '_wait_for_order_fill',
-                             return_value=None), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(None, None, 'new')), \
                 patch('trading_engine.storage'):
             self.engine.place_buy_order(self._opp(), 10)
 

@@ -673,69 +673,6 @@ class TradingEngine:
             logger.error("Error calculating short position sizes: %s", e)
             return []
 
-    def _persist_bracket_legs(self, order: Any, symbol: str,
-                              parent_client_order_id: Optional[str]) -> None:
-        """Persist the child stop-loss / take-profit legs of a bracket entry.
-
-        The parent market order is recorded separately (``leg='entry'``).
-        Recording each child lets the order ledger (and dashboard) reflect a
-        position's actual protective orders instead of showing only the parent
-        submission — which previously made new positions look like they had no
-        take-profit order until a later session's OCO refresh.
-        """
-        legs = getattr(order, 'legs', None)
-        if not isinstance(legs, (list, tuple)) or not legs:
-            logger.debug(
-                "No bracket legs returned for %s — nothing to record", symbol)
-            return
-
-        def _num(leg_obj: Any, attr: str) -> Optional[float]:
-            val = getattr(leg_obj, attr, None)
-            if val in (None, ''):
-                return None
-            try:
-                return float(val)
-            except (TypeError, ValueError):
-                return None
-
-        rows = []
-        for leg in legs:
-            leg_type = _status_str(getattr(leg, 'type', None)
-                                   or getattr(leg, 'order_type', None))
-            if 'stop' in leg_type:
-                leg_tag = 'stop_loss'
-            elif leg_type == 'limit':
-                leg_tag = 'take_profit'
-            else:
-                continue
-
-            leg_cid = getattr(leg, 'client_order_id', None)
-            if not leg_cid or str(leg_cid) == str(parent_client_order_id):
-                # Deterministic, unique fallback so the upsert key cannot
-                # overwrite the parent entry row.
-                base = (parent_client_order_id or f'{symbol}-bracket')[:38]
-                leg_cid = f'{base}-{leg_tag[:7]}'
-
-            leg_order_id = getattr(leg, 'id', None)
-            rows.append(Order(
-                client_order_id=str(leg_cid),
-                order_id=str(leg_order_id) if leg_order_id is not None else None,
-                symbol=symbol,
-                side=_status_str(getattr(leg, 'side', None)) or 'sell',
-                qty=_num(leg, 'qty') or 0.0,
-                order_type=leg_type,
-                order_class='bracket',
-                status=_status_str(getattr(leg, 'status', None)) or 'new',
-                stop_price=_num(leg, 'stop_price'),
-                limit_price=_num(leg, 'limit_price'),
-                submitted_at=utc_now(),
-                leg=leg_tag,
-            ))
-
-        if rows:
-            storage.save_orders(rows)
-            logger.info("Recorded %d bracket leg(s) for %s", len(rows), symbol)
-
     def _place_order(self, opportunity: TradingOpportunity, shares: int, side: OrderSide, quantity_sign: int,
                      label: str, profit_label: str) -> bool:
         """Unified order placement for long (buy) and short (sell) orders.
@@ -796,16 +733,14 @@ class TradingEngine:
                     )
                 )
 
+                # Simple market entry — protection is armed only after the
+                # fill is confirmed (below), so an unfilled/queued entry never
+                # leaves orphan bracket legs at the broker.
                 order_request = MarketOrderRequest(
                     symbol=opportunity.symbol,
                     qty=shares,
                     side=side,
                     time_in_force=TimeInForce.DAY,
-                    order_class=OrderClass.BRACKET,
-                    stop_loss=StopLossRequest(
-                        stop_price=opportunity.stop_loss_price),
-                    take_profit=TakeProfitRequest(
-                        limit_price=opportunity.take_profit_price),
                     client_order_id=client_order_id,
                 )
 
@@ -819,35 +754,47 @@ class TradingEngine:
 
                 order_success = True
 
-                # Record the bracket's child protective legs so the ledger (and
-                # dashboard) reflects the real stop-loss / take-profit orders.
-                # Previously only the parent market order was stored, which made
-                # it look like no take-profit order existed for new positions.
-                try:
-                    self._persist_bracket_legs(
-                        order, opportunity.symbol, client_order_id)
-                except Exception as e:  # pylint: disable=broad-exception-caught
-                    logger.error(
-                        "Error recording bracket legs for %s: %s",
-                        opportunity.symbol, e)
+                # Confirm the fill before assuming a position exists. A market
+                # order during RTH fills almost immediately; a queued/held
+                # order is cancelled so it cannot fill later.
+                entry_fill_price, filled_qty, entry_status = \
+                    self._wait_for_entry_fill(
+                        placed_order_id, timeout=self.ENTRY_FILL_WAIT_SECONDS)
 
-                # Use the broker's actual fill as the recorded entry price.
-                # `opportunity.entry_price` is a heuristic (the last OHLCV
-                # close), so recording it misstates P&L — the same class of
-                # error fixed for exits.
-                entry_fill_price = self._wait_for_order_fill(
-                    placed_order_id, timeout=self.ENTRY_FILL_WAIT_SECONDS)
-                if entry_fill_price is not None:
+                if entry_status in {'rejected', 'canceled', 'cancelled',
+                                    'expired', 'suspended'}:
+                    logger.error(
+                        "Entry order %s for %s reached terminal status '%s' — "
+                        "no position recorded", placed_order_id,
+                        opportunity.symbol, entry_status)
+                    order_success = False
+                elif entry_fill_price is None:
+                    logger.warning(
+                        "Could not confirm entry fill for %s (status=%s) — "
+                        "cancelling the entry and recording the estimated price "
+                        "$%.2f", opportunity.symbol, entry_status,
+                        opportunity.entry_price)
+                    self._cancel_entry_order(placed_order_id)
+                else:
                     logger.info(
                         "Confirmed entry fill for %s: %d shares @ $%.2f "
-                        "(estimated $%.2f)",
-                        opportunity.symbol, shares, entry_fill_price,
+                        "(estimated $%.2f)", opportunity.symbol,
+                        filled_qty or shares, entry_fill_price,
                         opportunity.entry_price)
-                else:
-                    logger.warning(
-                        "Could not confirm entry fill for %s; recording the "
-                        "estimated price $%.2f",
-                        opportunity.symbol, opportunity.entry_price)
+
+                # Arm protection only against actually-filled shares.
+                if order_success and entry_fill_price is not None:
+                    protected = self.place_oco_close_order(
+                        opportunity.symbol,
+                        float(filled_qty) if filled_qty else float(shares),
+                        opportunity.stop_loss_price,
+                        opportunity.take_profit_price,
+                        side="short" if quantity_sign < 0 else "long")
+                    if not protected:
+                        logger.error(
+                            "Entry filled for %s but protective OCO could not "
+                            "be placed — position is UNPROTECTED until the next "
+                            "reconcile re-arms it.", opportunity.symbol)
 
         except Exception as e:
             error_msg = "Error placing %s order for %s: %s" % (
@@ -899,7 +846,7 @@ class TradingEngine:
                             side="buy" if side == OrderSide.BUY else "sell",
                             qty=float(shares),
                             order_type="market",
-                            order_class="bracket",
+                            order_class="simple",
                             status="new",
                             stop_price=opportunity.stop_loss_price,
                             limit_price=opportunity.take_profit_price,
@@ -1708,7 +1655,21 @@ class TradingEngine:
                 time_in_force=TimeInForce.DAY,
                 client_order_id=client_order_id,
             )
-            order = self.trading_client.submit_order(order_request)
+            try:
+                order = self.trading_client.submit_order(order_request)
+            except Exception as submit_exc:  # pylint: disable=broad-exception-caught
+                if 'cannot open a short sell' not in str(submit_exc).lower():
+                    raise
+                # A close SELL was interpreted as opening a short because a
+                # stale entry BUY is still live. Cancel the blocker(s) and
+                # retry once.
+                logger.warning(
+                    "Close for %s blocked by an open entry order; cancelling "
+                    "blocking orders and retrying once", symbol)
+                cancelled = self._cancel_open_orders_for_symbol(symbol)
+                if cancelled:
+                    self._wait_for_orders_cancelled(cancelled)
+                order = self.trading_client.submit_order(order_request)
             placed_order_id = getattr(order, 'id', None)
             logger.info("Market %s order placed for %d shares of %s (reason: %s) — order %s",
                         action, shares, symbol, reason, placed_order_id)
@@ -1787,6 +1748,62 @@ class TradingEngine:
             "falling back to estimated exit price",
             order_id, timeout, last_status)
         return None
+
+    def _wait_for_entry_fill(self, order_id: Optional[str],
+                             timeout: float = 5.0,
+                             poll_interval: float = 0.5):
+        """Poll an entry order; return ``(fill_price, filled_qty, status)``.
+
+        Unlike :meth:`_wait_for_order_fill` (exit path), this surfaces the
+        order status so the caller can distinguish a terminal rejection from
+        an order that is merely still queued, and reports the filled quantity
+        so partial fills are protected correctly.
+        """
+        if not order_id or self.trading_client is None or self.dry_run:
+            return None, None, 'unknown'
+
+        deadline = time.monotonic() + timeout
+        last_status = 'unknown'
+        while time.monotonic() < deadline:
+            try:
+                order = self.trading_client.get_order_by_id(order_id)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "Could not poll entry order %s: %s", order_id, e)
+                return None, None, 'unknown'
+
+            status = _status_str(getattr(order, 'status', None)) or last_status
+            last_status = status
+            filled_price = getattr(order, 'filled_avg_price', None)
+            filled_qty = getattr(order, 'filled_qty', None)
+
+            if status == 'filled' and filled_price is not None:
+                try:
+                    price = float(filled_price)
+                except (TypeError, ValueError):
+                    return None, None, status
+                try:
+                    qty = float(filled_qty) if filled_qty is not None else None
+                except (TypeError, ValueError):
+                    qty = None
+                return price, qty, status
+
+            if status in _TERMINAL_ORDER_STATUSES:
+                return None, None, status
+
+            time.sleep(poll_interval)
+
+        return None, None, last_status
+
+    def _cancel_entry_order(self, order_id: Optional[str]) -> None:
+        """Best-effort cancel of an entry order that did not fill in time."""
+        if not order_id or self.trading_client is None or self.dry_run:
+            return
+        try:
+            self.trading_client.cancel_order_by_id(order_id)
+            logger.warning("Cancelled unfilled entry order %s", order_id)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Could not cancel entry order %s: %s", order_id, e)
 
     def update_portfolio_orders(self, session_summary: Dict[str, Any], current_positions: List[Position]) -> Dict[str, Any]:
         """
