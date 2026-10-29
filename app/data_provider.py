@@ -40,6 +40,23 @@ def _parse_timeframe(timeframe: str) -> TimeFrame:
     return TimeFrame(size, unit)
 
 
+class _RawAsset:
+    """Attribute-style view over a raw Alpaca asset JSON dict.
+
+    Lets the universe-filtering code use ``getattr`` uniformly whether the
+    underlying data came from typed SDK models or the raw-JSON fallback.
+    """
+
+    def __init__(self, data: Dict[str, Any]) -> None:
+        self._data = data
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self.__dict__['_data'].get(name)
+        except (KeyError, TypeError):
+            return None
+
+
 def _lower_str(value: Any) -> str:
     """Coerce a value (possibly an Alpaca SDK enum) to a lowercase string.
 
@@ -142,9 +159,20 @@ class DataProvider:
                 raw = getattr(asset, 'shortable', None)
                 if raw is not None:
                     result = bool(raw)
-            except Exception as e:  # pylint: disable=broad-exception-caught
-                logger.debug(
-                    "Could not resolve shortability for %s: %s", symbol, e)
+            except Exception:  # pylint: disable=broad-exception-caught
+                # The typed model may fail validation for assets listed on an
+                # exchange the installed SDK does not know (e.g. TXSE); retry
+                # with the raw endpoint.
+                try:
+                    raw = self.trading_client.get(f"/assets/{symbol}")
+                    if isinstance(raw, dict) and raw.get('shortable') is not None:
+                        result = bool(raw['shortable'])
+                    elif isinstance(raw, dict):
+                        result = False
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.debug(
+                        "Could not resolve shortability for %s: %s",
+                        symbol, e)
 
         self._shortable_cache[symbol] = result
         return result
@@ -467,6 +495,30 @@ class DataProvider:
             logger.error("Error fetching account info: %s", e)
             return {}
 
+    def _fetch_tradable_assets_raw(self) -> List[Dict[str, Any]]:
+        """Fetch the asset list as raw JSON dicts.
+
+        The typed ``get_all_assets()`` path validates every asset against the
+        SDK's ``AssetExchange`` enum. When Alpaca lists assets on an exchange
+        the installed SDK does not know yet (e.g. ``TXSE`` — Texas Stock
+        Exchange), that validation raises and the whole universe fetch fails,
+        silently emptying the tradable universe. Fetching the same endpoint as
+        raw JSON avoids the enum and keeps the universe complete.
+        """
+        client = self.trading_client
+        if client is None:
+            return []
+        try:
+            response = client.get("/assets", {"status": "active"})
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Raw assets fetch failed: %s", e)
+            return []
+        if not isinstance(response, list):
+            logger.error("Unexpected raw assets response type: %s",
+                         type(response))
+            return []
+        return response
+
     def get_stock_universe(self, date: Optional[datetime] = None) -> pd.DataFrame:
         """
         Get filtered universe of stocks for trading.
@@ -486,8 +538,19 @@ class DataProvider:
                 logger.error("Trading client not available")
                 return pd.DataFrame()
 
-            # Get all active assets
-            assets = self.trading_client.get_all_assets()
+            # Get all active assets, tolerating exchange values unknown to the
+            # installed SDK (see _fetch_tradable_assets_raw).
+            assets: List[Any] = []
+            try:
+                assets = list(self.trading_client.get_all_assets())
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "Typed assets fetch failed (%s) — falling back to raw JSON",
+                    e)
+            if not assets:
+                assets = [
+                    _RawAsset(d) for d in self._fetch_tradable_assets_raw()
+                ]
             print(f"Total assets fetched: {len(assets)}")
             # Filter for tradable stocks
             tradable_stocks = []

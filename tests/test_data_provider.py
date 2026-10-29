@@ -456,6 +456,99 @@ class TestDataProvider(unittest.TestCase):
             self.assertEqual(filtered, ['MSFT', 'AMD'])
 
 
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
+    def test_get_stock_universe_falls_back_to_raw_assets(self, _mock_sleep,
+                                                         mock_config):
+        """Typed assets fetch failing (unknown exchange enum, e.g. TXSE)
+        must not empty the universe — the raw JSON fallback engages."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+        mock_config.PAPER_TRADE = True
+        mock_config.API_RATE_LIMIT_DELAY = 0.0
+        mock_config.MIN_PRICE = 8.0
+        mock_config.MAX_PRICE = 350.0
+        mock_config.MIN_VOLUME = 0
+        mock_config.MAX_VOLUME = None
+        mock_config.MAX_MARKET_CAP = None
+        mock_config.MIN_MARKET_CAP = None
+
+        raw_assets = [
+            {'symbol': 'AAPL', 'name': 'Apple', 'exchange': 'NASDAQ',
+             'tradable': True, 'status': 'active'},
+            {'symbol': 'TXSE1', 'name': 'Texas Listing', 'exchange': 'TXSE',
+             'tradable': True, 'status': 'active'},
+        ]
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_hist_cls, \
+                patch('data_provider.TradingClient') as mock_trading_cls:
+            mock_historical = Mock()
+            mock_historical.get_stock_snapshot.return_value = {
+                'AAPL': {
+                    'latest_trade': {'price': 150.0},
+                    'previous_daily_bar': {'volume': 1_000_000},
+                },
+                'TXSE1': {
+                    'latest_trade': {'price': 25.0},
+                    'previous_daily_bar': {'volume': 1_000_000},
+                },
+            }
+            mock_hist_cls.return_value = mock_historical
+
+            mock_client = Mock()
+            # Typed path fails the way the SDK does on an unknown exchange.
+            mock_client.get_all_assets.side_effect = ValueError(
+                "simulated AssetExchange validation failure")
+            # Raw fallback returns plain dicts.
+            mock_client.get.return_value = raw_assets
+            mock_trading_cls.return_value = mock_client
+
+            data_provider = DataProvider()
+            df = data_provider.get_stock_universe()
+
+            mock_client.get.assert_called_once()
+            symbols = set(df['symbol'])
+            self.assertIn('AAPL', symbols)
+
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
+    def test_get_stock_universe_uses_typed_assets_when_available(
+            self, _mock_sleep, mock_config):
+        """When the typed fetch works, the raw fallback is not called."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+        mock_config.PAPER_TRADE = True
+        mock_config.API_RATE_LIMIT_DELAY = 0.0
+        mock_config.MIN_PRICE = 8.0
+        mock_config.MAX_PRICE = 350.0
+        mock_config.MIN_VOLUME = 0
+        mock_config.MAX_VOLUME = None
+        mock_config.MAX_MARKET_CAP = None
+        mock_config.MIN_MARKET_CAP = None
+
+        typed_asset = SimpleNamespace(
+            symbol='AAPL', name='Apple', exchange='NASDAQ',
+            tradable=True, status='active', market_cap=None)
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_hist_cls, \
+                patch('data_provider.TradingClient') as mock_trading_cls:
+            mock_historical = Mock()
+            mock_historical.get_stock_snapshot.return_value = {
+                'AAPL': {
+                    'latest_trade': {'price': 150.0},
+                    'previous_daily_bar': {'volume': 1_000_000},
+                },
+            }
+            mock_hist_cls.return_value = mock_historical
+
+            mock_client = Mock()
+            mock_client.get_all_assets.return_value = [typed_asset]
+            mock_trading_cls.return_value = mock_client
+
+            data_provider = DataProvider()
+            df = data_provider.get_stock_universe()
+
+            mock_client.get.assert_not_called()
+            self.assertEqual(list(df['symbol']), ['AAPL'])
+
 class TestDataProviderOrderHistory(unittest.TestCase):
     """Test cases for the DataProvider order history methods."""
 
@@ -797,6 +890,7 @@ class TestTechnicalIndicators(unittest.TestCase):
             self.assertTrue(all(0 <= val <= 100 for val in valid_k))
         if len(valid_d) > 0:
             self.assertTrue(all(0 <= val <= 100 for val in valid_d))
+
 
 
 if __name__ == '__main__':
