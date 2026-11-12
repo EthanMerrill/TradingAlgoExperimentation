@@ -149,8 +149,12 @@ class TradingEngine:
     # the market is closed, so it queues) must not stall the trading cycle.
     # Exits use a longer wait because the realized return depends on it.
     ENTRY_FILL_WAIT_SECONDS = 5.0
-    # Max wait for a cancelled entry order to reach a terminal status.
-    ENTRY_CANCEL_SETTLE_SECONDS = 10.0
+    # Fallback max wait for a cancelled entry order to reach a terminal status
+    # (overridden by config ENTRY_CANCEL_SETTLE_SECONDS).
+    ENTRY_CANCEL_SETTLE_SECONDS = 30.0
+    # A watched (cancel-unsettled) entry older than this is logged at ERROR and
+    # its cancel is re-attempted; it stays on the watch list.
+    UNSETTLED_ENTRY_MAX_AGE_SECONDS = 30 * 60
 
 
     def __init__(self):
@@ -184,6 +188,10 @@ class TradingEngine:
         # above. Kept separate because strategies share `_ohlcv_cache` as a
         # plain symbol->DataFrame mapping.
         self._ohlcv_meta: Dict[str, Tuple[datetime, float]] = {}
+        # Cancelled entries whose cancel never settled (client_order_id ->
+        # watch record). Persisted via storage; loaded lazily on first resolve.
+        self._unsettled_entries: Dict[str, Dict[str, Any]] = {}
+        self._unsettled_loaded: bool = False
 
     def set_positions_manager(self, manager: PositionsManager) -> None:
         """Inject a shared PositionsManager instance (single source of state)."""
@@ -850,15 +858,19 @@ class TradingEngine:
                     # (bounded) for a terminal status before re-querying.
                     settled = self._wait_for_orders_cancelled(
                         [str(placed_order_id)],
-                        timeout=self.ENTRY_CANCEL_SETTLE_SECONDS)
+                        timeout=self._entry_cancel_settle_seconds())
                     entry_fill_price, entry_filled_qty = \
                         self._requery_entry_fill(placed_order_id)
                     if not settled:
                         logger.error(
                             "Entry order %s for %s did not reach a terminal "
                             "status after cancel — it may still fill. NOT "
-                            "recording a position; reconcile must pick it up.",
-                            placed_order_id, opportunity.symbol)
+                            "recording a position now; added to the "
+                            "unsettled-entry watch list (resolved on the next "
+                            "tick; reconcile also adopts any real position).", placed_order_id, opportunity.symbol)
+                        self._register_unsettled_entry(
+                            opportunity, placed_order_id, client_order_id,
+                            shares, side, quantity_sign, label)
                         entry_fill_price, entry_filled_qty = None, None
                         order_success = False
                     elif entry_fill_price is None or not entry_filled_qty:
@@ -885,17 +897,8 @@ class TradingEngine:
 
                 # Arm protection only against actually-filled shares.
                 if order_success and entry_fill_price is not None:
-                    protected = self.place_oco_close_order(
-                        opportunity.symbol,
-                        float(entry_filled_qty),
-                        opportunity.stop_loss_price,
-                        opportunity.take_profit_price,
-                        side="short" if quantity_sign < 0 else "long")
-                    if not protected:
-                        logger.error(
-                            "Entry filled for %s but protective OCO could not "
-                            "be placed — position is UNPROTECTED until the next "
-                            "reconcile re-arms it.", opportunity.symbol)
+                    self._arm_entry_protection(
+                        opportunity, float(entry_filled_qty), quantity_sign)
 
         except Exception as e:
             error_msg = "Error placing %s order for %s: %s" % (
@@ -922,14 +925,81 @@ class TradingEngine:
                 else opportunity.entry_price)
             recorded_qty = (
                 entry_filled_qty if entry_filled_qty else float(shares))
-            try:
+            self._record_entry_position(
+                opportunity, order_id=placed_order_id,
+                client_order_id=client_order_id, side=side,
+                quantity_sign=quantity_sign, filled_qty=recorded_qty,
+                fill_price=recorded_entry_price)
+        elif not self.dry_run:
+            logger.warning(
+                "Order for %s did not succeed — position NOT added to manager", opportunity.symbol)
+
+        return order_success
+
+    def _entry_cancel_settle_seconds(self) -> float:
+        """Configured max wait for a cancelled entry to settle."""
+        try:
+            return float(getattr(globalConfig, 'ENTRY_CANCEL_SETTLE_SECONDS',
+                                 self.ENTRY_CANCEL_SETTLE_SECONDS))
+        except (TypeError, ValueError):
+            return float(self.ENTRY_CANCEL_SETTLE_SECONDS)
+
+    def _arm_entry_protection(self, opportunity: TradingOpportunity,
+                              filled_qty: float, quantity_sign: int) -> bool:
+        """Arm the protective OCO for actually-filled entry shares."""
+        protected = self.place_oco_close_order(
+            opportunity.symbol,
+            float(filled_qty),
+            opportunity.stop_loss_price,
+            opportunity.take_profit_price,
+            side="short" if quantity_sign < 0 else "long")
+        if not protected:
+            logger.error(
+                "Entry filled for %s but protective OCO could not "
+                "be placed — position is UNPROTECTED until the next "
+                "reconcile re-arms it.", opportunity.symbol)
+        return bool(protected)
+
+    def _record_entry_position(
+            self, opportunity: TradingOpportunity, *,
+            order_id: Optional[str], client_order_id: Optional[str],
+            side: OrderSide, quantity_sign: int, filled_qty: float,
+            fill_price: float, entry_date: Optional[datetime] = None,
+            ledger_status: str = "new", adopt_existing: bool = False) -> None:
+        """Record a filled entry as a Position and persist it to the ledger.
+
+        With ``adopt_existing`` an already-open position for the symbol (e.g.
+        adopted by reconcile as an untagged rsi position) is updated in place
+        (strategy, SL/TP, order ids) instead of opening a second one.
+        """
+        entry_ts = entry_date or utc_now()
+        try:
+            existing = (self._find_open_position(opportunity.symbol)
+                        if adopt_existing else None)
+            if existing is not None:
+                existing.strategy_name = opportunity.strategy_name
+                existing.stop_loss_price = opportunity.stop_loss_price
+                existing.take_profit_price = opportunity.take_profit_price
+                existing.client_order_id = client_order_id
+                existing.order_id = order_id
+                existing.intraday = opportunity.intraday
+                existing.alpha = opportunity.alpha
+                existing.rsi_period = opportunity.rsi_period
+                existing.rsi_lower = opportunity.target_rsi_lower
+                existing.rsi_upper = opportunity.target_rsi_upper
+                logger.info(
+                    "Updated existing %s position (adopted by reconcile) "
+                    "with strategy=%s SL/TP from the watched entry",
+                    opportunity.symbol, opportunity.strategy_name)
+                self._positions_manager.persist_positions()
+            else:
                 new_position = Position(
                     symbol=opportunity.symbol,
-                    quantity=recorded_qty * quantity_sign,
-                    entry_price=recorded_entry_price,
-                    current_price=recorded_entry_price,
+                    quantity=filled_qty * quantity_sign,
+                    entry_price=fill_price,
+                    current_price=fill_price,
                     current_rsi=opportunity.current_rsi,
-                    entry_date=utc_now(),
+                    entry_date=entry_ts,
                     alpha=opportunity.alpha,
                     rsi_period=opportunity.rsi_period,
                     rsi_lower=opportunity.target_rsi_lower,
@@ -938,44 +1008,180 @@ class TradingEngine:
                     take_profit_price=opportunity.take_profit_price,
                     closed=False,
                     exit_date=None,
-                    order_id=placed_order_id,
+                    order_id=order_id,
                     client_order_id=client_order_id,
                     strategy_name=opportunity.strategy_name,
                     intraday=opportunity.intraday,
                 )
-
                 self._positions_manager.open_position(new_position)
-            except Exception as e:
-                logger.error("Error adding position to positions manager for %s: %s",
-                             opportunity.symbol, e)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Error adding position to positions manager for %s: %s",
+                         opportunity.symbol, e)
 
-            # Persist the order to the ledger (idempotent via client_order_id).
+        # Persist the order to the ledger (idempotent via client_order_id).
+        try:
+            if client_order_id:
+                storage.save_orders([
+                    Order(
+                        client_order_id=client_order_id,
+                        order_id=order_id,
+                        symbol=opportunity.symbol,
+                        side="buy" if side == OrderSide.BUY else "sell",
+                        qty=filled_qty,
+                        order_type="market",
+                        order_class="simple",
+                        status=ledger_status,
+                        stop_price=opportunity.stop_loss_price,
+                        limit_price=opportunity.take_profit_price,
+                        submitted_at=entry_ts,
+                        filled_at=entry_ts if ledger_status == "filled" else None,
+                        leg="entry",
+                    )
+                ])
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving order to storage for %s: %s",
+                         opportunity.symbol, e)
+
+    # -- unsettled-entry watch list ------------------------------------------
+
+    def _register_unsettled_entry(
+            self, opportunity: TradingOpportunity, order_id: Optional[str],
+            client_order_id: Optional[str], shares: int, side: OrderSide,
+            quantity_sign: int, label: str) -> None:
+        """Watch a cancelled entry whose cancel has not settled; persist it."""
+        key = client_order_id or str(order_id)
+        self._unsettled_entries[key] = {
+            'client_order_id': client_order_id or key,
+            'order_id': str(order_id) if order_id else None,
+            'symbol': opportunity.symbol,
+            'shares': shares,
+            'side': 'buy' if side == OrderSide.BUY else 'sell',
+            'quantity_sign': quantity_sign,
+            'label': label,
+            'opportunity': asdict(opportunity),
+            'first_seen': utc_now().isoformat(),
+        }
+        try:
+            storage.save_unsettled_entries([self._unsettled_entries[key]])
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Could not persist unsettled entry %s: %s", key, e)
+
+    def _load_unsettled_entries_once(self) -> None:
+        """Load persisted watch records (after a restart) exactly once."""
+        if self._unsettled_loaded:
+            return
+        self._unsettled_loaded = True
+        try:
+            rows = storage.load_unsettled_entries()
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Could not load unsettled entries: %s", e)
+            return
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if isinstance(row, dict) and row.get('client_order_id'):
+                self._unsettled_entries.setdefault(
+                    row['client_order_id'], row)
+
+    def _drop_unsettled_entry(self, key: str) -> None:
+        self._unsettled_entries.pop(key, None)
+        try:
+            storage.delete_unsettled_entries([key])
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("Could not delete unsettled entry %s: %s", key, e)
+
+    def resolve_unsettled_entries(self) -> Dict[str, int]:
+        """Resolve cancelled-but-unsettled entry orders on the watch list.
+
+        Terminal + filled: record the position (or update one reconcile already
+        adopted) and arm the OCO. Terminal + unfilled: drop. Still not terminal
+        after UNSETTLED_ENTRY_MAX_AGE_SECONDS: ERROR, re-attempt the cancel and
+        keep watching. No-op in dry-run.
+        """
+        summary = {'resolved': 0, 'filled': 0, 'pending': 0}
+        if self.dry_run or self.trading_client is None:
+            return summary
+        self._load_unsettled_entries_once()
+        for key, rec in list(self._unsettled_entries.items()):
             try:
-                if client_order_id:
-                    storage.save_orders([
-                        Order(
-                            client_order_id=client_order_id,
-                            order_id=placed_order_id,
-                            symbol=opportunity.symbol,
-                            side="buy" if side == OrderSide.BUY else "sell",
-                            qty=recorded_qty,
-                            order_type="market",
-                            order_class="simple",
-                            status="new",
-                            stop_price=opportunity.stop_loss_price,
-                            limit_price=opportunity.take_profit_price,
-                            submitted_at=utc_now(),
-                            leg="entry",
-                        )
-                    ])
-            except Exception as e:
-                logger.error("Error saving order to storage for %s: %s",
-                             opportunity.symbol, e)
-        elif not self.dry_run:
-            logger.warning(
-                "Order for %s did not succeed — position NOT added to manager", opportunity.symbol)
+                outcome = self._resolve_one_unsettled(key, rec)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.error("Error resolving unsettled entry %s: %s", key, e)
+                outcome = 'pending'
+            if outcome == 'pending':
+                summary['pending'] += 1
+            else:
+                summary['resolved'] += 1
+                if outcome == 'filled':
+                    summary['filled'] += 1
+        return summary
 
-        return order_success
+    def _resolve_one_unsettled(self, key: str, rec: Dict[str, Any]) -> str:
+        """Return 'pending', 'filled' or 'unfilled' for one watch record."""
+        order_id = rec.get('order_id')
+        symbol = rec.get('symbol')
+        try:
+            order = self.trading_client.get_order_by_id(order_id)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Could not poll unsettled entry %s (%s): %s",
+                           order_id, symbol, e)
+            return 'pending'
+
+        status = _status_str(getattr(order, 'status', None))
+        if status not in _TERMINAL_ORDER_STATUSES:
+            first_seen = _parse_queued_at(rec.get('first_seen'))
+            age = ((utc_now() - first_seen).total_seconds()
+                   if first_seen else 0.0)
+            if age > self.UNSETTLED_ENTRY_MAX_AGE_SECONDS:
+                logger.error(
+                    "Unsettled entry %s for %s still '%s' after %.0f min — "
+                    "re-attempting cancel; position may be UNPROTECTED",
+                    order_id, symbol, status, age / 60)
+                self._cancel_entry_order(order_id)
+            return 'pending'
+
+        try:
+            filled_qty = float(getattr(order, 'filled_qty', None) or 0)
+        except (TypeError, ValueError):
+            filled_qty = 0.0
+        if filled_qty <= 0:
+            logger.info("Unsettled entry %s for %s ended '%s' unfilled — "
+                        "dropping from watch list", order_id, symbol, status)
+            self._drop_unsettled_entry(key)
+            return 'unfilled'
+
+        opp_data = rec.get('opportunity') or {}
+        opportunity = TradingOpportunity(**{
+            k: v for k, v in opp_data.items() if k in _OPPORTUNITY_FIELDS})
+        price_raw = getattr(order, 'filled_avg_price', None)
+        try:
+            fill_price = float(price_raw)
+        except (TypeError, ValueError):
+            fill_price = float(opportunity.entry_price)
+            logger.warning(
+                "Unsettled entry %s for %s has no fill price — using the "
+                "estimated entry price $%.2f", order_id, symbol, fill_price)
+        filled_at = getattr(order, 'filled_at', None)
+        entry_date = (ensure_utc(filled_at)
+                      if isinstance(filled_at, datetime) else None)
+        quantity_sign = int(rec.get('quantity_sign') or 1)
+        side = OrderSide.BUY if rec.get('side') == 'buy' else OrderSide.SELL
+
+        adopted = self._find_open_position(symbol) is not None
+        logger.warning(
+            "Unsettled entry %s for %s resolved '%s': filled %.0f @ $%.2f%s",
+            order_id, symbol, status, filled_qty, fill_price,
+            " (position already adopted by reconcile)" if adopted else "")
+        self._record_entry_position(
+            opportunity, order_id=order_id,
+            client_order_id=rec.get('client_order_id'), side=side,
+            quantity_sign=quantity_sign, filled_qty=filled_qty,
+            fill_price=fill_price, entry_date=entry_date,
+            ledger_status="filled", adopt_existing=True)
+        if not adopted or not self._get_active_orders_for_symbol(symbol):
+            self._arm_entry_protection(opportunity, filled_qty, quantity_sign)
+        self._drop_unsettled_entry(key)
+        return 'filled'
 
     def place_buy_order(self, opportunity: TradingOpportunity, shares: int) -> bool:
         """Place a buy order for a trading opportunity."""
@@ -2488,6 +2694,7 @@ class TradingEngine:
 
         try:
             logger.info("Starting trading session...")
+            self.resolve_unsettled_entries()
             # Submit any entries queued during off-hours cycles before
             # processing this session's own opportunities.
             if self.enforce_rth_entries:

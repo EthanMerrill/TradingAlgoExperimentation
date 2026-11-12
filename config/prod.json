@@ -3,6 +3,7 @@
 		"paper_trade": false,
 		"max_positions": 10,
 		"max_new_positions": 2,
+		"entry_cancel_settle_seconds": 30,
 		"position_size_pct": 0.1,
 		"min_cash_pct": 0.1,
 		"stop_loss_pct": 0.05,

@@ -604,6 +604,21 @@ class StorageBackend(ABC):
         """Mark pending signals resolved ('submitted'/'expired'). Default no-op."""
         return False
 
+    # -- unsettled_entries (cancelled-but-unsettled entry watch list) ---------
+
+    def save_unsettled_entries(self, entries: List[Dict[str, Any]]) -> bool:
+        """Persist unsettled-entry watch records (upsert by client_order_id).
+        Default no-op."""
+        return False
+
+    def load_unsettled_entries(self) -> List[Dict[str, Any]]:
+        """Load unsettled-entry watch records. Default no-op."""
+        return []
+
+    def delete_unsettled_entries(self, client_order_ids: List[str]) -> bool:
+        """Delete resolved unsettled-entry records. Default no-op."""
+        return False
+
     def get_open_orders_stored(self, symbol: Optional[str] = None) -> List[Any]:
         """Load persisted orders that are not in a terminal status."""
         return [

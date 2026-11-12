@@ -748,6 +748,11 @@ def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
                 bar_engine.set_dry_run_mode(dry)
                 results = algorithm.last_backtest_results
 
+                # Resolve cancelled-but-unsettled entries (record/protect any
+                # fill) before anything else touches the broker this tick.
+                if not dry:
+                    algorithm.trading_engine.resolve_unsettled_entries()
+
                 if bar_engine.is_rth(now):
                     # Submit entries queued by off-hours cycles on the first
                     # RTH tick of the day (before the intraday cycle runs).

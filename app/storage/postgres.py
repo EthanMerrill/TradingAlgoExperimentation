@@ -297,10 +297,24 @@ CREATE INDEX IF NOT EXISTS idx_pending_env_status
     ON pending_signals (environment, status);
 """
 
+_DDL_UNSETTLED_ENTRIES = """
+CREATE TABLE IF NOT EXISTS unsettled_entries (
+    id                SERIAL PRIMARY KEY,
+    environment       TEXT        NOT NULL,
+    client_order_id   TEXT        NOT NULL,
+    order_id          TEXT,
+    symbol            TEXT        NOT NULL,
+    entry             JSONB       NOT NULL,
+    first_seen        TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_unsettled_env_coid UNIQUE (environment, client_order_id)
+);
+"""
+
 _ALL_DDL = (
     _DDL_BACKTEST_RESULTS + _DDL_POSITION_SNAPSHOTS
     + _DDL_SESSION_METADATA + _DDL_ORDERS
     + _DDL_STRATEGY_PERFORMANCE + _DDL_PENDING_SIGNALS
+    + _DDL_UNSETTLED_ENTRIES
 )
 
 # ---------------------------------------------------------------------------
@@ -1094,6 +1108,79 @@ class PostgresStorage(StorageBackend):
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.error(
                 "Error resolving pending signals in Postgres: %s", exc)
+            return False
+
+    # -- unsettled_entries (cancelled-but-unsettled entry watch list) ---------
+
+    def save_unsettled_entries(self, entries: List[Dict[str, Any]]) -> bool:
+        """Upsert unsettled-entry watch records by (environment, client_order_id).
+
+        Each dict needs ``client_order_id`` and ``symbol``; ``order_id`` is
+        optional. The whole dict is stored as JSON in ``entry``.
+        """
+        if not self._connected:
+            logger.error(
+                "Postgres not connected — cannot save unsettled entries")
+            return False
+        if not entries:
+            return True
+
+        sql = (
+            "INSERT INTO unsettled_entries "
+            "(environment, client_order_id, order_id, symbol, entry) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (environment, client_order_id) DO UPDATE SET "
+            "order_id = EXCLUDED.order_id, entry = EXCLUDED.entry"
+        )
+        rows: List[tuple] = []
+        for e in entries:
+            try:
+                rows.append((
+                    self._env, e["client_order_id"],
+                    str(e["order_id"]) if e.get("order_id") else None,
+                    e["symbol"], json.dumps(e, default=_json_default)))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.error("Cannot serialize unsettled entry: %s", exc)
+        if not rows:
+            return False
+        try:
+            _sync(self._execute_many(sql, rows))
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving unsettled entries to Postgres: %s", exc)
+            return False
+
+    def load_unsettled_entries(self) -> List[Dict[str, Any]]:
+        """Load all unsettled-entry watch records for this environment."""
+        if not self._connected:
+            return []
+        try:
+            rows = _sync(self._fetch(
+                "SELECT entry FROM unsettled_entries "
+                "WHERE environment = $1 ORDER BY first_seen ASC", self._env))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Error loading unsettled entries from Postgres: %s", exc)
+            return []
+        return [_deserialize_metadata(dict(r).get("entry")) for r in rows]
+
+    def delete_unsettled_entries(self, client_order_ids: List[str]) -> bool:
+        """Remove resolved unsettled-entry watch records."""
+        if not self._connected:
+            return False
+        if not client_order_ids:
+            return True
+        placeholders = ", ".join(
+            f"${i}" for i in range(2, 2 + len(client_order_ids)))
+        try:
+            _sync(self._execute(
+                f"DELETE FROM unsettled_entries WHERE environment = $1 "
+                f"AND client_order_id IN ({placeholders})",
+                self._env, *client_order_ids))
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Error deleting unsettled entries from Postgres: %s", exc)
             return False
 
     # -- list_backtest_files -------------------------------------------------

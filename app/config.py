@@ -109,6 +109,12 @@ class Config:
             self.ENFORCE_RTH_ENTRIES = trading.get(
                 'enforce_rth_entries', True)
 
+            # Max seconds to wait for a cancelled, unconfirmed entry order to
+            # reach a terminal status. If it still hasn't settled, the order
+            # goes on the unsettled-entry watch list (resolved on later ticks).
+            self.ENTRY_CANCEL_SETTLE_SECONDS = float(trading.get(
+                'entry_cancel_settle_seconds', 30))
+
             # Queue entry signals generated outside regular trading hours and
             # submit them at the next market open instead of dropping them.
             self.QUEUE_OFF_HOURS_ENTRIES = trading.get(
@@ -264,6 +270,8 @@ class Config:
 
         # Only submit entry orders during regular trading hours.
         self.ENFORCE_RTH_ENTRIES = True
+        # Max seconds to wait for a cancelled entry to settle (see above).
+        self.ENTRY_CANCEL_SETTLE_SECONDS = 30.0
 
         # Queue off-hours entry signals for the next market open.
         self.QUEUE_OFF_HOURS_ENTRIES = True
