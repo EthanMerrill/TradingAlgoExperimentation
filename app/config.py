@@ -188,10 +188,22 @@ class Config:
             self.MIN_VOLUME = data_filtering.get('min_volume', 1000000)
             self.MIN_PRICE = data_filtering.get('min_price', 15.0)
             self.MAX_PRICE = data_filtering.get('max_price', 200.0)
-            self.MIN_MARKET_CAP = data_filtering.get(
-                'min_market_cap', 1000000000)
             self.MAX_VOLUME = data_filtering.get('max_volume')
-            self.MAX_MARKET_CAP = data_filtering.get('max_market_cap')
+            # Alpaca exposes no market cap, so size/quality is filtered with
+            # proxies it does expose. All default to off (None / False).
+            # Volume-based thresholds use the account's data feed (IEX on the
+            # free plan, a few percent of consolidated volume).
+            self.MIN_DOLLAR_VOLUME = data_filtering.get('min_dollar_volume')
+            self.MAX_MARGIN_REQUIREMENT = data_filtering.get(
+                'max_margin_requirement')
+            self.REQUIRE_OPTIONS = data_filtering.get('require_options', False)
+            self.EXCLUDE_LEVERAGED_ETFS = data_filtering.get(
+                'exclude_leveraged_etfs', False)
+            for dead_key in ('min_market_cap', 'max_market_cap'):
+                if dead_key in data_filtering:
+                    print(f"Warning: data_filtering.{dead_key} is ignored — "
+                          "Alpaca provides no market cap. Use min_dollar_volume / "
+                          "max_margin_requirement / require_options instead.")
 
             # API parameters
             api = config_data.get('api', {})

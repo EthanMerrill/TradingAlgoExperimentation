@@ -57,6 +57,62 @@ class _RawAsset:
             return None
 
 
+# Leveraged / inverse fund detection from the asset name. Alpaca has no
+# leverage field, and 2x single-stock funds (TSLL, NVDL, MSTU) carry the same
+# 30% margin requirement as ordinary stocks, so the margin filter misses them.
+# The leverage words only count when the name also looks like a fund, so
+# operating companies ("Build-A-Bear", "Ultra Clean Holdings") never match.
+_FUND_NAME_RE = re.compile(r"\b(ETF|ETN|Fund|Trust|ProShares|Direxion)\b", re.I)
+_LEVERAGE_NAME_RE = re.compile(
+    r"(?<![\w.])-?\d+(\.\d+)?x\b"            # 2x, 3X, -1x
+    r"|\b(ultra(pro)?|leveraged|inverse|daily|bull|bear)\b"
+    r"|\bshort\b(?![- ](term|duration|maturity))",  # not "Short-Term Treasury"
+    re.I)
+
+
+def is_leveraged_or_inverse_fund(name: Optional[str]) -> bool:
+    """True when an asset name looks like a leveraged or inverse ETF/ETN."""
+    if not name:
+        return False
+    return bool(_FUND_NAME_RE.search(name) and _LEVERAGE_NAME_RE.search(name))
+
+
+def _cfg_number(name: str) -> Optional[float]:
+    """Numeric config value, or None when unset (also None for non-numbers)."""
+    value = getattr(globalConfig, name, None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _cfg_flag(name: str) -> bool:
+    """Boolean config flag; anything but a literal True is off."""
+    return getattr(globalConfig, name, False) is True
+
+
+def _passes_asset_filters(asset: Any) -> bool:
+    """Universe filters that need only the Alpaca asset record.
+
+    * ``max_margin_requirement``: Alpaca's maintenance margin requirement is
+      30% for ordinary liquid names and 50-100% for leveraged ETFs and
+      volatile/hard-to-margin stocks, so a cap of 30 drops both.
+    * ``require_options``: listed options imply an established, liquid name.
+    * ``exclude_leveraged_etfs``: name-based, see ``is_leveraged_or_inverse_fund``.
+    """
+    max_margin = _cfg_number('MAX_MARGIN_REQUIREMENT')
+    if max_margin is not None:
+        margin = _to_float(getattr(asset, 'maintenance_margin_requirement', None))
+        if margin is None or margin > max_margin:
+            return False
+    if _cfg_flag('REQUIRE_OPTIONS'):
+        if 'has_options' not in (getattr(asset, 'attributes', None) or []):
+            return False
+    if _cfg_flag('EXCLUDE_LEVERAGED_ETFS'):
+        if is_leveraged_or_inverse_fund(getattr(asset, 'name', None)):
+            return False
+    return True
+
+
 def _lower_str(value: Any) -> str:
     """Coerce a value (possibly an Alpaca SDK enum) to a lowercase string.
 
@@ -590,20 +646,22 @@ class DataProvider:
                         symbol):
                     tradable_stocks.append(asset)
 
+            n_tradable = len(tradable_stocks)
+            tradable_stocks = [
+                a for a in tradable_stocks if _passes_asset_filters(a)]
             symbols = [getattr(asset, 'symbol', '')
                        for asset in tradable_stocks if getattr(asset, 'symbol', None)]
-            symbol_market_caps = {}
-            for asset in tradable_stocks:
-                symbol = getattr(asset, 'symbol', None)
-                market_cap = self._extract_market_cap(asset)
-                if symbol and market_cap is not None:
-                    symbol_market_caps[symbol] = market_cap
             logger.info(
-                "Found %d tradable stocks before price filtering", len(symbols))
+                "Found %d tradable stocks (%d after asset filters: "
+                "max_margin_requirement=%s, require_options=%s, "
+                "exclude_leveraged_etfs=%s) before price filtering",
+                n_tradable, len(symbols),
+                _cfg_number('MAX_MARGIN_REQUIREMENT'),
+                _cfg_flag('REQUIRE_OPTIONS'),
+                _cfg_flag('EXCLUDE_LEVERAGED_ETFS'))
 
             # Apply price filtering using snapshots
-            price_filtered_symbols = self._filter_symbols_by_price(
-                symbols, symbol_market_caps)
+            price_filtered_symbols = self._filter_symbols_by_price(symbols)
 
             # Create universe dataframe with price-filtered symbols
             universe_data = []
@@ -626,26 +684,19 @@ class DataProvider:
             logger.error("Error getting stock universe: %s", e)
             return pd.DataFrame()
 
-    def _extract_market_cap(self, asset: Any) -> Optional[float]:
-        """Extract market cap from an Alpaca asset if available."""
-        raw_market_cap = getattr(asset, 'market_cap', None)
-        if raw_market_cap is None:
-            return None
-
-        try:
-            return float(raw_market_cap)
-        except (TypeError, ValueError):
-            return None
-
-    def _filter_symbols_by_price(self, symbols: List[str], symbol_market_caps: Optional[Dict[str, float]] = None) -> List[str]:
+    def _filter_symbols_by_price(self, symbols: List[str]) -> List[str]:
         """
-        Filter symbols by current price using Alpaca snapshots API.
+        Filter symbols by price, volume and dollar volume using snapshots.
+
+        Volume is the previous daily bar from the account's data feed. On the
+        free IEX feed that is only a few percent of consolidated volume, so
+        ``min_volume`` / ``min_dollar_volume`` thresholds are in IEX terms.
 
         Args:
             symbols: List of symbols to filter
 
         Returns:
-            List of symbols that meet minimum price criteria
+            List of symbols that meet the price / volume criteria
         """
         if not self.historical_client:
             logger.warning(
@@ -718,16 +769,12 @@ class DataProvider:
                                     daily_volume = float(
                                         previous_bar['volume'])
 
-                            market_cap = None
-                            if symbol_market_caps:
-                                market_cap = symbol_market_caps.get(symbol)
-
-                            # Apply price, volume, and optional market cap filters
+                            # Apply price, volume, and dollar-volume filters
                             if current_price is not None and daily_volume is not None:
                                 max_volume = getattr(
                                     globalConfig, 'MAX_VOLUME', None)
-                                max_market_cap = getattr(
-                                    globalConfig, 'MAX_MARKET_CAP', None)
+                                min_dollar_volume = _cfg_number(
+                                    'MIN_DOLLAR_VOLUME')
 
                                 within_price_range = (
                                     current_price >= globalConfig.MIN_PRICE and
@@ -737,13 +784,12 @@ class DataProvider:
                                     daily_volume >= globalConfig.MIN_VOLUME and
                                     (max_volume is None or daily_volume <= max_volume)
                                 )
-                                within_market_cap = (
-                                    max_market_cap is None or
-                                    market_cap is None or
-                                    market_cap <= max_market_cap
+                                within_dollar_volume = (
+                                    min_dollar_volume is None or
+                                    current_price * daily_volume >= min_dollar_volume
                                 )
 
-                                if within_price_range and within_volume_range and within_market_cap:
+                                if within_price_range and within_volume_range and within_dollar_volume:
                                     filtered_symbols.append(symbol)
 
                 except Exception as batch_error:
@@ -756,7 +802,7 @@ class DataProvider:
                 time.sleep(self._rate_limit_delay)
 
             max_volume = getattr(globalConfig, 'MAX_VOLUME', None)
-            max_market_cap = getattr(globalConfig, 'MAX_MARKET_CAP', None)
+            min_dollar_volume = _cfg_number('MIN_DOLLAR_VOLUME')
             logger.info(
                 "Universe filtering: %d/%d symbols passed ($%s - $%s, volume >= %s%s%s)",
                 len(filtered_symbols),
@@ -765,7 +811,7 @@ class DataProvider:
                 globalConfig.MAX_PRICE,
                 f"{globalConfig.MIN_VOLUME:,}",
                 f", volume <= {max_volume:,}" if max_volume is not None else "",
-                f", market_cap <= {max_market_cap:,} when available" if max_market_cap is not None else ""
+                f", dollar volume >= {min_dollar_volume:,.0f}" if min_dollar_volume is not None else ""
             )
             return filtered_symbols
 

@@ -202,9 +202,12 @@ class TestConfig(unittest.TestCase):
         'ALPACA_DEV_PAPER_KEY': 'test_key',
         'ALPACA_DEV_PAPER_SECRET': 'test_secret',
     })
-    @patch('builtins.open', mock_open(read_data='{"data_filtering": {"min_volume": 1000, "max_volume": 2500000, "min_price": 10.0, "max_price": 250.0, "max_market_cap": 5000000000}}'))
+    @patch('builtins.open', mock_open(read_data=(
+        '{"data_filtering": {"min_volume": 1000, "max_volume": 2500000, "min_price": 10.0, '
+        '"max_price": 250.0, "min_dollar_volume": 20000000, "max_margin_requirement": 30, '
+        '"require_options": true, "exclude_leveraged_etfs": true}}')))
     def test_data_filtering_max_limits_loaded(self, _mock_dotenv):
-        """Test that max volume and max market cap are loaded from config."""
+        """Volume/price limits and the Alpaca-based universe filters load from config."""
         from config import Config
 
         test_config = Config()
@@ -213,7 +216,10 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(test_config.MAX_VOLUME, 2500000)
         self.assertEqual(test_config.MIN_PRICE, 10.0)
         self.assertEqual(test_config.MAX_PRICE, 250.0)
-        self.assertEqual(test_config.MAX_MARKET_CAP, 5000000000)
+        self.assertEqual(test_config.MIN_DOLLAR_VOLUME, 20000000)
+        self.assertEqual(test_config.MAX_MARGIN_REQUIREMENT, 30)
+        self.assertTrue(test_config.REQUIRE_OPTIONS)
+        self.assertTrue(test_config.EXCLUDE_LEVERAGED_ETFS)
 
     @patch('config.load_dotenv')
     @patch.dict(os.environ, {
@@ -223,13 +229,16 @@ class TestConfig(unittest.TestCase):
     })
     @patch('builtins.open', mock_open(read_data='{"data_filtering": {"min_volume": 1000, "min_price": 10.0, "max_price": 250.0}}'))
     def test_data_filtering_max_limits_default_none(self, _mock_dotenv):
-        """Test that max filters default to None when omitted."""
+        """Optional universe filters default to off when omitted."""
         from config import Config
 
         test_config = Config()
 
         self.assertIsNone(test_config.MAX_VOLUME)
-        self.assertIsNone(test_config.MAX_MARKET_CAP)
+        self.assertIsNone(test_config.MIN_DOLLAR_VOLUME)
+        self.assertIsNone(test_config.MAX_MARGIN_REQUIREMENT)
+        self.assertFalse(test_config.REQUIRE_OPTIONS)
+        self.assertFalse(test_config.EXCLUDE_LEVERAGED_ETFS)
 
     @patch('config.load_dotenv')
     @patch.dict(os.environ, {

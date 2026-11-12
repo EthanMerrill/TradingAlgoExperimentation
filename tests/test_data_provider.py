@@ -404,7 +404,6 @@ class TestDataProvider(unittest.TestCase):
         mock_config.MAX_PRICE = 350.0
         mock_config.MIN_VOLUME = 20
         mock_config.MAX_VOLUME = 2000000
-        mock_config.MAX_MARKET_CAP = None
 
         snapshots = {
             'AAPL': {
@@ -431,34 +430,27 @@ class TestDataProvider(unittest.TestCase):
 
     @patch('data_provider.globalConfig')
     @patch('data_provider.time.sleep')
-    def test_filter_symbols_by_max_market_cap_missing_cap_passes(self, _mock_sleep, mock_config):
-        """Test market-cap filter only excludes symbols with known cap above the max."""
+    def test_filter_symbols_by_min_dollar_volume(self, _mock_sleep, mock_config):
+        """Symbols whose price x previous-day volume is below the floor are dropped."""
         mock_config.get_alpaca_config.return_value = self.mock_config
         mock_config.PAPER_TRADE = True
         mock_config.API_RATE_LIMIT_DELAY = 0.0
         mock_config.MIN_PRICE = 8.0
-        mock_config.MAX_PRICE = 350.0
-        mock_config.MIN_VOLUME = 20
-        mock_config.MAX_VOLUME = 5000000
-        mock_config.MAX_MARKET_CAP = 200000000000
+        mock_config.MAX_PRICE = 1000.0
+        mock_config.MIN_VOLUME = 0
+        mock_config.MAX_VOLUME = None
+        mock_config.MIN_DOLLAR_VOLUME = 20_000_000
 
         snapshots = {
-            'AAPL': {
-                'latest_trade': {'price': 150.0},
-                'previous_daily_bar': {'volume': 1200000},
-            },
-            'MSFT': {
-                'latest_trade': {'price': 300.0},
-                'previous_daily_bar': {'volume': 1000000},
-            },
-            'AMD': {
-                'latest_trade': {'price': 110.0},
-                'previous_daily_bar': {'volume': 1400000},
-            },
-        }
-        symbol_market_caps = {
-            'AAPL': 250000000000,
-            'AMD': 150000000000,
+            # 150 * 200k = 30M  -> passes
+            'AAPL': {'latest_trade': {'price': 150.0},
+                     'previous_daily_bar': {'volume': 200_000}},
+            # 20 * 900k = 18M -> below the floor despite higher share volume
+            'CHEAP': {'latest_trade': {'price': 20.0},
+                      'previous_daily_bar': {'volume': 900_000}},
+            # exactly at the floor -> passes
+            'EDGE': {'latest_trade': {'price': 100.0},
+                     'previous_daily_bar': {'volume': 200_000}},
         }
 
         with patch('data_provider.StockHistoricalDataClient') as mock_historical_class, \
@@ -470,10 +462,87 @@ class TestDataProvider(unittest.TestCase):
 
             data_provider = DataProvider()
             filtered = data_provider._filter_symbols_by_price(
-                ['AAPL', 'MSFT', 'AMD'], symbol_market_caps=symbol_market_caps)
+                ['AAPL', 'CHEAP', 'EDGE'])
 
-            self.assertEqual(filtered, ['MSFT', 'AMD'])
+            self.assertEqual(filtered, ['AAPL', 'EDGE'])
 
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
+    def test_get_stock_universe_applies_asset_filters(self, _mock_sleep, mock_config):
+        """Margin cap, options requirement and leveraged-ETF exclusion use the
+        Alpaca asset record (raw and typed assets expose the same fields)."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+        mock_config.PAPER_TRADE = True
+        mock_config.API_RATE_LIMIT_DELAY = 0.0
+        mock_config.MIN_PRICE = 8.0
+        mock_config.MAX_PRICE = 1000.0
+        mock_config.MIN_VOLUME = 0
+        mock_config.MAX_VOLUME = None
+        mock_config.MIN_DOLLAR_VOLUME = None
+        mock_config.MAX_MARGIN_REQUIREMENT = 30
+        mock_config.REQUIRE_OPTIONS = True
+        mock_config.EXCLUDE_LEVERAGED_ETFS = True
+
+        def asset(symbol, name, margin=30, attrs=('has_options',)):
+            return SimpleNamespace(
+                symbol=symbol, name=name, exchange='NASDAQ', tradable=True,
+                status='active', maintenance_margin_requirement=margin,
+                attributes=list(attrs))
+
+        assets = [
+            asset('AAPL', 'Apple Inc. Common Stock'),
+            asset('SPY', 'State Street SPDR S&P 500 ETF Trust'),
+            asset('TQQQ', 'ProShares UltraPro QQQ', margin=75),
+            asset('GME', 'GameStop Corp.', margin=100),
+            asset('TSLL', 'Direxion Daily TSLA Bull 2X Shares'),  # margin 30
+            asset('SH', 'ProShares Short S&P500'),
+            asset('NOOPT', 'No Options Corp.', attrs=()),
+            asset('BBW', 'Build-A-Bear Workshop, Inc.'),
+            asset('VGSH', 'Vanguard Short-Term Treasury ETF'),
+            asset('NOMARGIN', 'Missing Margin Inc.', margin=None),
+        ]
+        snapshot = {'latest_trade': {'price': 50.0},
+                    'previous_daily_bar': {'volume': 1_000_000}}
+
+        with patch('data_provider.StockHistoricalDataClient') as mock_hist_cls, \
+                patch('data_provider.TradingClient') as mock_trading_cls:
+            mock_historical = Mock()
+            mock_historical.get_stock_snapshot.return_value = {
+                a.symbol: snapshot for a in assets}
+            mock_hist_cls.return_value = mock_historical
+            mock_client = Mock()
+            mock_client.get_all_assets.return_value = assets
+            mock_trading_cls.return_value = mock_client
+
+            df = DataProvider().get_stock_universe()
+
+            self.assertEqual(sorted(df['symbol']), ['AAPL', 'BBW', 'SPY', 'VGSH'])
+
+    def test_is_leveraged_or_inverse_fund(self):
+        """Name heuristic flags leveraged/inverse funds but not operating
+        companies or plain short-duration bond funds."""
+        from data_provider import is_leveraged_or_inverse_fund
+        leveraged = [
+            'ProShares UltraPro QQQ',
+            'Direxion Daily Semiconductor Bull 3X ETF',
+            'GraniteShares ETF Trust GraniteShares 2x Long NVDA Daily ETF',
+            'ProShares Short S&P500',
+            'MicroSectors Travel -3x Inverse Leveraged ETN',
+            'ProShares Ultra S&P500',
+        ]
+        plain = [
+            'State Street SPDR S&P 500 ETF Trust',
+            'Invesco QQQ Trust, Series 1',
+            'Vanguard Short-Term Treasury ETF',
+            'Build-A-Bear Workshop, Inc.',
+            'Ultra Clean Holdings, Inc. Common Stock',
+            'Daily Journal Corp. (S.C.) Common Stock',
+            None,
+        ]
+        for name in leveraged:
+            self.assertTrue(is_leveraged_or_inverse_fund(name), name)
+        for name in plain:
+            self.assertFalse(is_leveraged_or_inverse_fund(name), name)
 
     @patch('data_provider.globalConfig')
     @patch('data_provider.time.sleep')
@@ -488,8 +557,6 @@ class TestDataProvider(unittest.TestCase):
         mock_config.MAX_PRICE = 350.0
         mock_config.MIN_VOLUME = 0
         mock_config.MAX_VOLUME = None
-        mock_config.MAX_MARKET_CAP = None
-        mock_config.MIN_MARKET_CAP = None
 
         raw_assets = [
             {'symbol': 'AAPL', 'name': 'Apple', 'exchange': 'NASDAQ',
@@ -540,12 +607,10 @@ class TestDataProvider(unittest.TestCase):
         mock_config.MAX_PRICE = 350.0
         mock_config.MIN_VOLUME = 0
         mock_config.MAX_VOLUME = None
-        mock_config.MAX_MARKET_CAP = None
-        mock_config.MIN_MARKET_CAP = None
 
         typed_asset = SimpleNamespace(
             symbol='AAPL', name='Apple', exchange='NASDAQ',
-            tradable=True, status='active', market_cap=None)
+            tradable=True, status='active')
 
         with patch('data_provider.StockHistoricalDataClient') as mock_hist_cls, \
                 patch('data_provider.TradingClient') as mock_trading_cls:
