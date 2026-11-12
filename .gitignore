@@ -21,3 +21,7 @@ logs/*
 .obsidian/
 *.canvas
 .DS_Store
+
+# Profiler output
+*.out
+*.prof
