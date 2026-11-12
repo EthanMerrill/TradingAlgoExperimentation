@@ -6,6 +6,7 @@ the ``Strategy`` interface; the legacy module path
 ``from strategies.rsi import RSIStrategy``.
 """
 import logging
+import math
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
@@ -155,13 +156,16 @@ class RSIStrategy(Strategy):
     # ------------------------------------------------------------------
 
     def backtest(self, data: pd.DataFrame, symbol: str, initial_cash: float = 10000,
-                 prepared: Any = None, **params: Any) -> BacktestResult:
+                 prepared: Any = None, close_open_at_end: bool = False,
+                 **params: Any) -> BacktestResult:
         """Run a vectorized RSI backtest.
 
         Backward-compatible with the legacy 3-arg call. When ``params`` are
         provided (optimizer grid search), a strategy is built from them and the
         backtest is delegated. ``prepared`` is an RSI cache keyed by period
         (see :meth:`prepare`), used to avoid recomputing RSI per grid combo.
+        ``close_open_at_end`` (opt-in, default False) force-closes a position
+        still open on the final bar at that bar's close (see ``_simulate_trades``).
         """
         if params:
             merged = {
@@ -176,14 +180,18 @@ class RSIStrategy(Strategy):
                 merged["rsi_period"], merged["rsi_lower"], merged["rsi_upper"],
                 max_hold_days=merged["max_hold_days"], direction=merged["direction"],
             )
-            return strat.backtest(data, symbol, initial_cash, prepared=prepared)
+            return strat.backtest(data, symbol, initial_cash, prepared=prepared,
+                                  close_open_at_end=close_open_at_end)
         if prepared is not None:
             rsi = prepared.get(self.rsi_period)
             if rsi is not None and len(rsi) == len(data):
-                return self.backtest_with_rsi(data, symbol, rsi, initial_cash)
-        return self._backtest_impl(data, symbol, initial_cash)
+                return self.backtest_with_rsi(data, symbol, rsi, initial_cash,
+                                              close_open_at_end=close_open_at_end)
+        return self._backtest_impl(data, symbol, initial_cash,
+                                   close_open_at_end=close_open_at_end)
 
-    def _backtest_impl(self, data: pd.DataFrame, symbol: str, initial_cash: float = 10000) -> BacktestResult:
+    def _backtest_impl(self, data: pd.DataFrame, symbol: str, initial_cash: float = 10000,
+                       close_open_at_end: bool = False) -> BacktestResult:
         """Core backtest entry point (legacy behavior, no params/prepared)."""
         try:
             if len(data) < self.rsi_period + 10:
@@ -208,13 +216,15 @@ class RSIStrategy(Strategy):
             rsi = TechnicalIndicators.calculate_rsi(
                 data, self.rsi_period, price_col)
 
-            return self._run_backtest_core(data, symbol, rsi, initial_cash)
+            return self._run_backtest_core(data, symbol, rsi, initial_cash,
+                                           close_open_at_end=close_open_at_end)
 
         except Exception as e:
             logger.error("Error in backtest: %s", e)
             return self._create_null_result("ERROR")
 
-    def backtest_with_rsi(self, data: pd.DataFrame, symbol: str, rsi: pd.Series, initial_cash: float = 10000) -> BacktestResult:
+    def backtest_with_rsi(self, data: pd.DataFrame, symbol: str, rsi: pd.Series, initial_cash: float = 10000,
+                          close_open_at_end: bool = False) -> BacktestResult:
         """
         Run backtest using a precomputed RSI series (avoids redundant recalculation).
 
@@ -223,6 +233,7 @@ class RSIStrategy(Strategy):
             symbol: Stock symbol (required — caller must provide it)
             rsi: Precomputed RSI series matching the strategy's rsi_period
             initial_cash: Starting cash amount
+            close_open_at_end: force-close a position open on the final bar at its close
 
         Returns:
             BacktestResult object with performance metrics
@@ -230,7 +241,8 @@ class RSIStrategy(Strategy):
         try:
             if len(data) < self.rsi_period + 10:
                 return self._create_null_result(symbol)
-            return self._run_backtest_core(data, symbol, rsi, initial_cash)
+            return self._run_backtest_core(data, symbol, rsi, initial_cash,
+                                           close_open_at_end=close_open_at_end)
         except Exception as e:
             logger.error("Error in backtest_with_rsi: %s", e)
             return self._create_null_result("ERROR")
@@ -547,32 +559,31 @@ class RSIStrategy(Strategy):
 
         return best_result
 
-    def _run_backtest_core(self, data: pd.DataFrame, symbol: str, rsi: pd.Series, initial_cash: float) -> BacktestResult:
-        """Core backtest logic shared by backtest() and backtest_with_rsi()."""
-        # Get current RSI (last value)
+    def _run_backtest_core(self, data: pd.DataFrame, symbol: str, rsi: pd.Series, initial_cash: float,
+                           close_open_at_end: bool = False) -> BacktestResult:
+        """Core backtest logic shared by backtest() and backtest_with_rsi().
+
+        One pass (``_simulate_trades``) produces the trade list and the equity
+        curve from the same fills, so every metric below is consistent.
+        """
         current_rsi = rsi.iloc[-1] if not rsi.empty else None
 
-        # Generate signals
-        signals = self._generate_signals(data, rsi)
+        trades, portfolio_values = self._simulate_trades(
+            data, rsi, initial_cash, close_open_at_end=close_open_at_end)
+        portfolio = pd.Series(portfolio_values, index=data.index)
+        daily_returns = portfolio.pct_change().fillna(0)
 
-        # Calculate returns
-        returns = self._calculate_returns(data, signals, initial_cash)
-        # Calculate buy and hold return
         price_col = self._get_price_column(data)
         buy_and_hold_return = (
             data[price_col].iloc[-1] / data[price_col].iloc[0]) - 1
 
-        # Calculate metrics
-        total_return = returns['portfolio_value'].iloc[-1] / \
-            initial_cash - 1
+        total_return = portfolio_values[-1] / initial_cash - 1
         alpha = total_return - buy_and_hold_return
 
-        trades_summary, trade_details = self._analyze_trades(signals, data)
-
-        # Precompute risk metrics once to avoid redundant calculations
-        sharpe = self._calculate_sharpe_ratio(returns['daily_returns'])
+        trades_summary = self._summarize_trades(trades)
+        sharpe = self._calculate_sharpe_ratio(daily_returns)
         calmar = PerformanceMetrics.calculate_calmar_ratio(
-            returns['daily_returns'], returns['portfolio_value'])
+            daily_returns, portfolio)
 
         return BacktestResult(
             symbol=symbol,
@@ -582,12 +593,11 @@ class RSIStrategy(Strategy):
             num_trades=trades_summary['num_trades'],
             win_rate=trades_summary['win_rate'],
             avg_trade_duration=trades_summary['avg_duration'],
-            max_drawdown=self._calculate_max_drawdown(
-                returns['portfolio_value']),
+            max_drawdown=self._calculate_max_drawdown(portfolio),
             sharpe_ratio=sharpe,
             calmar_ratio=calmar,
             profitable=total_return > 0,
-            trade_details=trade_details,
+            trade_details=trades,
             direction=self.direction,
             strategy_name=self.name,
             params={
@@ -600,265 +610,212 @@ class RSIStrategy(Strategy):
             }
         )
 
-    def _generate_signals(self, data: pd.DataFrame, rsi: pd.Series) -> pd.DataFrame:
-        """Generate buy/sell signals based on RSI.
+    @staticmethod
+    def _ohlc_arrays(data: pd.DataFrame, price_col: str):
+        """(open, high, low, close) as float lists; missing columns fall back to close."""
+        close = data[price_col].values.astype(np.float64)
 
-        Exit priority (highest to lowest): RSI cross > stop-loss > take-profit > max-hold-days.
-        This mirrors live bracket-order OCO logic where stop-loss and take-profit compete.
+        def col(*names):
+            for nm in names:
+                if nm in data.columns:
+                    return data[nm].values.astype(np.float64)
+            return close
+        return (col('open', 'o').tolist(), col('high', 'h').tolist(),
+                col('low', 'l').tolist(), close.tolist())
 
-        For short direction: entry = RSI cross-above rsi_upper, cover = price below
-        rsi-implied target (rsi_lower) or RSI cross-below rsi_lower or stop-loss or max hold.
-        Position values: 1 = long, -1 = short, 0 = flat.
+    def _simulate_trades(self, data: pd.DataFrame, rsi: pd.Series,
+                         initial_cash: float,
+                         close_open_at_end: bool = False) -> Tuple[List[Dict], np.ndarray]:
+        """Single O(n) pass producing the trade list and the equity curve.
+
+        Execution model (mirrors live trading):
+          * Entry: RSI cross on bar i close -> market fill at bar i+1 OPEN.
+          * Protective exits (stop = fill*(1-STOP_LOSS_PCT) long / (1+) short,
+            take-profit = RSI-implied price, else fill*(1+/-TAKE_PROFIT_PCT))
+            are evaluated intraday with bar high/low, including the entry bar
+            itself (protection is armed right after the open fill, so the
+            whole entry bar's range after the open counts):
+              long  stop: open<=stop -> fill open (gap); elif low<=stop -> fill stop
+              long  tp  : open>=tp   -> fill open (gap); elif high>=tp -> fill tp
+              short mirrored. If stop and TP are both touched in one bar and
+              neither gapped, the stop is assumed to fill first (conservative).
+          * RSI-cross and max-hold exits are decided on a bar close and fill
+            at the next bar's OPEN.
+          * Every fill is moved adversely by BACKTEST_SLIPPAGE_BPS; per-share
+            commission applies to each fill and the SEC fee to each sell.
+          * Returns are per unit of entry notional with 100% of equity per
+            trade, so equity compounds exactly the net trade returns. Equity
+            is marked on closes while in a position. By default a position still
+            open on the final bar is marked to market but not reported as a
+            trade. With ``close_open_at_end=True`` it is instead closed at the
+            final bar's CLOSE (same adverse slippage/costs, exit_reason
+            'window_end'), reported as a trade, and the final equity value
+            reflects the realised return.
         """
-        signals = pd.DataFrame(index=data.index)
-        signals['rsi'] = rsi
-        signals['position'] = 0
-        signals['buy_signal'] = False
-        signals['sell_signal'] = False
-        signals['sell_reason'] = None
-
-        if self.direction == "long":
-            # Buy when RSI crosses below lower threshold
-            signals['buy_signal'] = (rsi < self.rsi_lower) & (
-                rsi.shift(1) >= self.rsi_lower)
-            # Sell when RSI crosses above upper threshold
-            signals['sell_signal'] = (rsi > self.rsi_upper) & (
-                rsi.shift(1) <= self.rsi_upper)
-        else:  # short
-            # Short-sell when RSI crosses ABOVE upper threshold
-            signals['buy_signal'] = (rsi > self.rsi_upper) & (
-                rsi.shift(1) <= self.rsi_upper)
-            # Cover when RSI crosses BELOW lower threshold
-            signals['sell_signal'] = (rsi < self.rsi_lower) & (
-                rsi.shift(1) >= self.rsi_lower)
-
-        # Mark pre-computed RSI-cross sells with their reason
-        signals.loc[signals['sell_signal'], 'sell_reason'] = 'rsi_cross'
-
-        # Track position state
-        position = 0
-        entry_date = None
-        entry_price = None
-        target_exit_price = None  # RSI-implied take-profit / cover price
+        n = len(data)
         price_col = self._get_price_column(data)
+        opens, highs, lows, closes = self._ohlc_arrays(data, price_col)
 
-        for i in range(len(signals)):
-            if signals['buy_signal'].iloc[i] and position == 0:
-                position = 1 if self.direction == "long" else -1
-                entry_date = signals.index[i]
-                exec_i = min(i + 1, len(data) - 1)
-                entry_price = data[price_col].iloc[exec_i]
-                # Compute RSI-implied exit price using data available at entry.
-                if exec_i >= self.rsi_period:
-                    target_rsi_exit = self.rsi_upper if self.direction == "long" else self.rsi_lower
-                    target_exit_price = RSIStrategy.calculate_price_for_target_rsi(
-                        data.iloc[:exec_i +
-                                  1], target_rsi_exit, self.rsi_period
-                    )
+        r = rsi.values.astype(np.float64)
+        prev = np.concatenate(([np.nan], r[:-1]))
+        with np.errstate(invalid='ignore'):
+            if self.direction == "long":
+                buy = ((r < self.rsi_lower) & (prev >= self.rsi_lower)).tolist()
+                sell = ((r > self.rsi_upper) & (prev <= self.rsi_upper)).tolist()
+            else:
+                buy = ((r > self.rsi_upper) & (prev <= self.rsi_upper)).tolist()
+                sell = ((r < self.rsi_lower) & (prev >= self.rsi_lower)).tolist()
+
+        idx = data.index
+        if isinstance(idx, pd.DatetimeIndex):
+            days = ((idx - idx[0]) / pd.Timedelta(days=1)).tolist()
+        else:
+            days = list(range(n))
+
+        is_long = self.direction == "long"
+        stop_pct = globalConfig.STOP_LOSS_PCT
+        tp_pct = globalConfig.TAKE_PROFIT_PCT
+        max_hold = self.max_hold_days
+        slip = getattr(globalConfig, 'BACKTEST_SLIPPAGE_BPS', 5) / 1e4
+        comm = getattr(globalConfig, 'BACKTEST_COMMISSION_PER_SHARE', 0.0)
+        sec = getattr(globalConfig, 'BACKTEST_SEC_FEE_BPS', 0.0278) / 1e4
+        rsi_target = self.rsi_upper if is_long else self.rsi_lower
+        floor = math.floor
+
+        equity = [float(initial_cash)] * n
+        cash = float(initial_cash)
+        trades: List[Dict] = []
+
+        pos = False
+        pend_entry = -1          # bar index where a pending entry fills
+        pend_exit = None         # reason for an exit pending at next open
+        e_j = 0
+        e_px = stop = tp = 0.0   # entry fill (post-slip), protective levels
+        tp_reason = 'take_profit'
+        base = cash
+
+        def net_return(entry_px, exit_px):
+            if is_long:
+                return ((exit_px * (1 - sec) - comm) - (entry_px + comm)) / entry_px
+            return ((entry_px * (1 - sec) - comm) - (exit_px + comm)) / entry_px
+
+        def record(j, reason, exit_raw):
+            nonlocal cash, pos
+            x_px = exit_raw * (1 - slip) if is_long else exit_raw * (1 + slip)
+            ret = net_return(e_px, x_px)
+            cash = base * (1 + ret)
+            equity[j] = cash
+            if isinstance(idx, pd.DatetimeIndex):
+                duration = (idx[j] - idx[e_j]).days
+            else:
+                duration = j - e_j
+            trades.append({
+                'entry_date': idx[e_j],
+                'exit_date': idx[j],
+                'entry_price': e_px,
+                'exit_price': x_px,
+                'return': ret,
+                'return_pct': ret * 100.0,
+                'duration': duration,
+                'exit_reason': reason,
+                'direction': self.direction,
+                'side': self.direction,
+            })
+            pos = False
+
+        for j in range(n):
+            exited = False
+            exit_raw = 0.0
+            reason = None
+
+            if pend_exit is not None:
+                exit_raw, reason, pend_exit = opens[j], pend_exit, None
+                exited = True
+
+            if pend_entry == j and not pos:
+                pend_entry = -1
+                o = opens[j]
+                e_px = o * (1 + slip) if is_long else o * (1 - slip)
+                e_j = j
+                base = cash
+                pos = True
+                if is_long:
+                    stop = e_px * (1 - stop_pct)
                 else:
-                    target_exit_price = None
-            elif signals['sell_signal'].iloc[i] and position != 0:
-                position = 0
-                entry_date = None
-                entry_price = None
-                target_exit_price = None
-            elif position != 0 and entry_date is not None:
-                should_exit, reason = self._check_exit_conditions(
-                    data, signals, i, entry_price, target_exit_price, entry_date, price_col
-                )
-                if should_exit:
-                    signals.at[signals.index[i], 'sell_signal'] = True
-                    signals.at[signals.index[i], 'sell_reason'] = reason
-                    position = 0
-                    entry_date = None
-                    entry_price = None
-                    target_exit_price = None
-                    signals.at[signals.index[i], 'position'] = position
-                    continue
-
-            signals.at[signals.index[i], 'position'] = position
-
-        return signals
-
-    def _check_exit_conditions(self, data: pd.DataFrame, signals: pd.DataFrame, i: int,
-                               entry_price: Optional[float], target_exit_price: Optional[float],
-                               entry_date: pd.Timestamp, price_col: str) -> Tuple[bool, Optional[str]]:
-        """Check all exit conditions for an open position. Returns (should_exit, reason)."""
-        current_price = data[price_col].iloc[i]
-        stop_loss_pct = globalConfig.STOP_LOSS_PCT
-        days_held = (signals.index[i] - entry_date).days
-
-        if self.direction == "long":
-            # Stop-loss: price falls below entry * (1 - stop_loss_pct)
-            if entry_price is not None and current_price <= entry_price * (1 - stop_loss_pct):
-                return True, 'stop_loss'
-            # Take-profit: price rises above target
-            effective_target = target_exit_price
-            if effective_target is None:
-                effective_target = entry_price * \
-                    (1 + globalConfig.TAKE_PROFIT_PCT) if entry_price else None
-            if entry_price is not None and effective_target is not None and current_price >= effective_target:
-                reason = 'take_profit' if target_exit_price is not None else 'take_profit_fallback'
-                return True, reason
-        else:  # short
-            # Stop-loss: price rises above entry * (1 + stop_loss_pct)
-            if entry_price is not None and current_price >= entry_price * (1 + stop_loss_pct):
-                return True, 'stop_loss'
-            # Cover: price falls below RSI-implied target (rsi_lower)
-            effective_target = target_exit_price
-            if effective_target is None:
-                effective_target = entry_price * \
-                    (1 - globalConfig.TAKE_PROFIT_PCT) if entry_price else None
-            if entry_price is not None and effective_target is not None and current_price <= effective_target:
-                reason = 'take_profit' if target_exit_price is not None else 'take_profit_fallback'
-                return True, reason
-
-        # Max hold days (common to both directions)
-        if days_held >= self.max_hold_days:
-            return True, 'max_hold_days'
-
-        return False, None
-
-    def _calculate_returns(self, data: pd.DataFrame, signals: pd.DataFrame, initial_cash: float) -> pd.DataFrame:
-        """Calculate portfolio returns based on signals (vectorized per-bar).
-
-        Long positions compound daily (geometric) while short positions are tied
-        to entry price (linear).  We iterate once over bars using NumPy arrays —
-        the loop body is simple arithmetic without .at[] pandas overhead.
-        """
-        logger.debug(
-            f"Calculating returns with initial cash: {initial_cash}, RSI({self.rsi_period}, {self.rsi_lower}, {self.rsi_upper})")
-        returns = pd.DataFrame(index=data.index)
-        price_col = self._get_price_column(data)
-        prices = data[price_col].values.astype(np.float64)
-        returns['price'] = prices
-        # Shift position by 1 bar so execution happens at the bar *after* the signal,
-        # eliminating look-ahead bias (signal uses bar-i close; trade fills at bar-i+1).
-        position = signals['position'].shift(
-            1).fillna(0).values.astype(np.int8)
-        returns['position'] = position
-
-        n = len(prices)
-        portfolio_values = np.empty(n, dtype=np.float64)
-        portfolio_values[0] = np.float64(initial_cash)
-
-        # Track entry state for short positions (tied to entry price)
-        entry_value = np.float64(initial_cash)
-        entry_price = prices[0]
-
-        trade_count = 0
-
-        for i in range(1, n):
-            prev_pos = int(position[i - 1])
-            curr_pos = int(position[i])
-            prev_val = portfolio_values[i - 1]
-
-            if curr_pos == 1:
-                # Long: portfolio compounds with daily price returns
-                portfolio_values[i] = prev_val * (prices[i] / prices[i - 1])
-                if prev_pos == 0:
-                    trade_count += 1  # entry
-            elif curr_pos == -1:
-                # Short: liability tied to entry price (not compounded daily)
-                if prev_pos == 0:
-                    entry_price_at_trade = prices[i]
-                    entry_value = prev_val
-                    trade_count += 1  # entry
-                portfolio_values[i] = entry_value * \
-                    (2.0 - prices[i] / entry_price_at_trade)
-            else:  # curr_pos == 0
-                if prev_pos == 1:
-                    # Exit long: final bar compounds
-                    portfolio_values[i] = prev_val * \
-                        (prices[i] / prices[i - 1])
-                elif prev_pos == -1:
-                    # Exit short: final bar uses entry-price formula
-                    portfolio_values[i] = entry_value * \
-                        (2.0 - prices[i] / entry_price_at_trade)
+                    stop = e_px * (1 + stop_pct)
+                tp = self._target_price(data, signal_i=j - 1, target_rsi=rsi_target)
+                if tp is None:
+                    tp = e_px * (1 + tp_pct) if is_long else e_px * (1 - tp_pct)
+                    tp_reason = 'take_profit_fallback'
                 else:
-                    # Stay flat
-                    portfolio_values[i] = prev_val
+                    tp_reason = 'take_profit'
 
-        returns['portfolio_value'] = portfolio_values
+            if pos and not exited:
+                o, h, l = opens[j], highs[j], lows[j]
+                if is_long:
+                    if o <= stop:
+                        exit_raw, reason = o, 'stop_loss'
+                    elif o >= tp:
+                        exit_raw, reason = o, tp_reason
+                    elif l <= stop:
+                        exit_raw, reason = stop, 'stop_loss'
+                    elif h >= tp:
+                        exit_raw, reason = tp, tp_reason
+                else:
+                    if o >= stop:
+                        exit_raw, reason = o, 'stop_loss'
+                    elif o <= tp:
+                        exit_raw, reason = o, tp_reason
+                    elif h >= stop:
+                        exit_raw, reason = stop, 'stop_loss'
+                    elif l <= tp:
+                        exit_raw, reason = tp, tp_reason
+                exited = reason is not None
 
-        # Daily returns
-        returns['daily_returns'] = returns['portfolio_value'].pct_change().fillna(0)
+            if exited:
+                record(j, reason, exit_raw)
+            elif pos:
+                c = closes[j]
+                if is_long:
+                    mtm = (c - e_px - comm) / e_px
+                else:
+                    mtm = (e_px * (1 - sec) - comm - c) / e_px
+                equity[j] = base * (1 + mtm)
+                # Decisions on this close; fills happen at the next open.
+                if sell[j]:
+                    pend_exit = 'rsi_cross'
+                elif floor(days[j] - days[e_j]) >= max_hold:
+                    pend_exit = 'max_hold_days'
+            else:
+                equity[j] = cash
 
-        final_portfolio_value = portfolio_values[-1]
-        total_return_pct = (final_portfolio_value / initial_cash - 1) * 100
+            if not pos and pend_exit is None and buy[j] and j + 1 < n:
+                pend_entry = j + 1
 
-        logger.debug(f"Return calculation complete - trades: {trade_count}, "
-                     f"final value: {final_portfolio_value:.2f}, "
-                     f"return: {total_return_pct:.2f}%")
+        if close_open_at_end and pos and n:
+            record(n - 1, 'window_end', closes[n - 1])
 
-        return returns
+        return trades, np.asarray(equity, dtype=np.float64)
 
-    def _analyze_trades(self, signals: pd.DataFrame, data: pd.DataFrame) -> Tuple[Dict, List[Dict]]:
-        """Analyze individual trades and return both summary stats and detailed trade list."""
-        trades = []
-        entry_price = None
-        entry_date = None
-        price_col = self._get_price_column(data)
+    def _target_price(self, data: pd.DataFrame, signal_i: int,
+                      target_rsi: float) -> Optional[float]:
+        """RSI-implied take-profit price using only data up to the signal bar."""
+        if signal_i < self.rsi_period:
+            return None
+        return RSIStrategy.calculate_price_for_target_rsi(
+            data.iloc[:signal_i + 1], target_rsi, self.rsi_period)
 
-        # Track open-position state so duplicate crosses (while already in position)
-        # don't overwrite entry_price and corrupt win_rate / num_trades.
-        # Prices use the bar *after* the signal to match _calculate_returns execution.
-        in_position = False
-        for i in range(len(signals)):
-            if signals['buy_signal'].iloc[i] and not in_position:
-                exec_i = min(i + 1, len(data) - 1)
-                entry_price = data[price_col].iloc[exec_i]
-                entry_date = data.index[exec_i]
-                in_position = True
-            elif signals['sell_signal'].iloc[i] and in_position:
-                exec_i = min(i + 1, len(data) - 1)
-                exit_price = data[price_col].iloc[exec_i]
-                exit_date = data.index[exec_i]
-
-                # Read exit reason from signals (set during _generate_signals)
-                exit_reason = signals['sell_reason'].iloc[i]
-                if exit_reason is None or (hasattr(exit_reason, '__len__') and len(exit_reason) == 0):
-                    exit_reason = 'unknown'
-
-                # Return calculation depends on direction
-                if self.direction == "long":
-                    trade_return = (exit_price / entry_price) - 1
-                else:  # short: profit when price drops
-                    trade_return = (entry_price / exit_price) - 1
-
-                duration = (exit_date - entry_date).days
-
-                trades.append({
-                    'entry_date': entry_date,
-                    'exit_date': exit_date,
-                    'entry_price': entry_price,
-                    'exit_price': exit_price,
-                    'return': trade_return,
-                    'duration': duration,
-                    'exit_reason': exit_reason,
-                    'direction': self.direction
-                })
-
-                entry_price = None
-                entry_date = None
-                in_position = False
-
+    @staticmethod
+    def _summarize_trades(trades: List[Dict]) -> Dict:
         if not trades:
-            return {'num_trades': 0, 'win_rate': 0, 'avg_duration': 0}, []
-
-        num_trades = len(trades)
-        winning_trades = sum(1 for trade in trades if trade['return'] > 0)
-        win_rate = winning_trades / num_trades if num_trades > 0 else 0
-        avg_duration = np.mean([trade['duration']
-                               for trade in trades]) if trades else 0
-
-        summary = {
-            'num_trades': num_trades,
-            'win_rate': win_rate,
-            'avg_duration': avg_duration
+            return {'num_trades': 0, 'win_rate': 0, 'avg_duration': 0}
+        num = len(trades)
+        wins = sum(1 for t in trades if t['return'] > 0)
+        return {
+            'num_trades': num,
+            'win_rate': wins / num,
+            'avg_duration': float(np.mean([t['duration'] for t in trades])),
         }
-
-        return summary, trades
 
     def _calculate_max_drawdown(self, portfolio_values: pd.Series) -> float:
         """Calculate maximum drawdown."""

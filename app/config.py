@@ -148,6 +148,11 @@ class Config:
             self.BACKTEST_INIT_CASH = backtesting.get('init_cash', 10000)
             self.BACKTEST_MONTHS = backtesting.get('months', 6)
             self.N_JOBS = backtesting.get('n_jobs', -1)
+            # Execution-cost model for backtests (applied adversely per fill)
+            self.BACKTEST_SLIPPAGE_BPS = backtesting.get('slippage_bps', 5)
+            self.BACKTEST_COMMISSION_PER_SHARE = backtesting.get(
+                'commission_per_share', 0.0)
+            self.BACKTEST_SEC_FEE_BPS = backtesting.get('sec_fee_bps', 0.0278)
             self.BACKTEST_START_DATE = datetime.now() - timedelta(days=self.BACKTEST_MONTHS * 30)
 
             # RSI optimization ranges
@@ -300,6 +305,9 @@ class Config:
         self.BACKTEST_INIT_CASH = 10000
         self.BACKTEST_MONTHS = 6
         self.N_JOBS = -1  # -1 = use all available cores
+        self.BACKTEST_SLIPPAGE_BPS = 5
+        self.BACKTEST_COMMISSION_PER_SHARE = 0.0
+        self.BACKTEST_SEC_FEE_BPS = 0.0278
         self.BACKTEST_START_DATE = datetime.now() - timedelta(days=self.BACKTEST_MONTHS * 30)
 
         # RSI optimization ranges

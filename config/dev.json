@@ -20,7 +20,10 @@
 	},
 	"backtesting": {
 		"init_cash": 10000,
-		"months": 12
+		"months": 12,
+		"slippage_bps": 5,
+		"commission_per_share": 0.0,
+		"sec_fee_bps": 0.0278
 	},
 	"rsi_optimization": {
 		"fine_tuning_enabled": false,

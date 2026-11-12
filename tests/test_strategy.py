@@ -105,53 +105,78 @@ class TestRSIStrategy(unittest.TestCase):
         valid_rsi = rsi.dropna()
         self.assertTrue(all(0 <= val <= 100 for val in valid_rsi))
 
-    def test_generate_signals(self):
-        """Test signal generation."""
-        # Create sample RSI data with proper datetime index
+    def test_simulate_trades_long(self):
+        """Long: RSI-cross entry at next open, trade list + equity are consistent."""
         dates = pd.date_range('2024-01-01', periods=13, freq='D')
         rsi_data = pd.Series(
             [70, 75, 80, 60, 25, 20, 35, 45, 75, 80, 25, 15, 40], index=dates)
         prices = pd.Series([100, 105, 110, 108, 95, 90,
                            98, 102, 110, 115, 95, 85, 95], index=dates)
+        df = pd.DataFrame({'close': prices})
 
-        df = pd.DataFrame({'close': prices, 'rsi': rsi_data})
+        trades, equity = self.strategy._simulate_trades(df, rsi_data, 10000.0)
 
-        signals = self.strategy._generate_signals(df, rsi_data)
+        self.assertGreater(len(trades), 0)
+        self.assertEqual(len(equity), len(df))
+        for t in trades:
+            self.assertIsNotNone(t['exit_reason'])
+            for key in ('entry_price', 'exit_price', 'entry_date', 'exit_date',
+                        'return', 'return_pct', 'side', 'duration', 'direction'):
+                self.assertIn(key, t)
+        # First entry: signal on bar 4 close (RSI 70->... cross below 30 at idx 4)
+        self.assertEqual(trades[0]['entry_date'], dates[5])
 
-        self.assertIn('buy_signal', signals.columns)
-        self.assertIn('sell_signal', signals.columns)
-        self.assertIn('sell_reason', signals.columns)
+    def test_short_simulate_trades_cross_above_entry(self):
+        """Short signals: RSI cross-above rsi_upper fires entry, filled next bar."""
+        strategy = RSIStrategy(
+            rsi_period=14, rsi_lower=30, rsi_upper=70, direction="short")
 
-        # Check that we get buy signals when RSI is low
-        buy_signals = signals[signals['buy_signal']]
-        self.assertTrue(len(buy_signals) > 0)
+        dates = pd.date_range('2024-01-01', periods=12, freq='D')
+        # RSI crosses above 70 at index 4 (prev=68, curr=75)
+        rsi_data = pd.Series(
+            [50, 55, 60, 68, 75, 80, 78, 72, 65, 55, 45, 35], index=dates)
+        prices = pd.Series(
+            [100, 102, 104, 106, 108, 110, 109, 107, 105, 103, 101, 99], index=dates)
 
-        # Check that sell_reason is set for any sell signals
-        sell_signals = signals[signals['sell_signal']]
-        for idx in sell_signals.index:
-            reason = signals.loc[idx, 'sell_reason']
-            self.assertIsNotNone(reason, f"Sell at {idx} has no reason")
+        df = pd.DataFrame({'close': prices})
+        trades, equity = strategy._simulate_trades(df, rsi_data, 10000.0)
 
-    def test_calculate_returns(self):
-        """Test returns calculation."""
-        # Create sample data with signals and proper datetime index
-        dates = pd.date_range('2024-01-01', periods=10, freq='D')
-        data = {
-            'close': [100, 105, 110, 108, 95, 90, 98, 102, 110, 115],
-            'buy_signal': [False, False, False, False, True, False, False, False, False, False],
-            'sell_signal': [False, False, False, False, False, False, False, True, False, False],
-            'position': [0, 0, 0, 0, 1, 1, 1, 0, 0, 0]
-        }
-        df = pd.DataFrame(data, index=dates)
+        # Cover on RSI cross-below 30 never happens; position is open at the
+        # end (marked to market, not reported), so verify via equity: the
+        # short entered at bar 5 and the price then falls -> equity rises.
+        self.assertGreater(equity[-1], 10000.0)
+        self.assertEqual(equity[4], 10000.0)  # flat through signal bar
 
-        returns = self.strategy._calculate_returns(df, pd.DataFrame({
-            'buy_signal': data['buy_signal'],
-            'sell_signal': data['sell_signal'],
-            'position': data['position']
-        }, index=dates), 10000.0)
+    def test_short_returns_profitable_on_price_drop(self):
+        """A price drop after a short entry yields a positive trade and equity."""
+        strategy = RSIStrategy(
+            rsi_period=14, rsi_lower=30, rsi_upper=70, direction="short")
 
-        self.assertIn('portfolio_value', returns.columns)
-        self.assertIn('daily_returns', returns.columns)
+        dates = pd.date_range('2024-01-01', periods=20, freq='D')
+        prices = [100] * 20
+        rsi_vals = [50] * 20
+
+        # RSI cross-above 70 at index 5 -> short entry (fills bar 6 open)
+        rsi_vals[4] = 68
+        rsi_vals[5] = 75
+        prices[6] = 95
+        prices[7] = 90
+        prices[8] = 90
+        # RSI cross-below 30 at index 9 -> cover (fills bar 10 open)
+        rsi_vals[8] = 35
+        rsi_vals[9] = 25
+        prices[9] = 85
+        prices[10] = 85
+
+        df = pd.DataFrame({'close': pd.Series(prices, index=dates)})
+        rsi = pd.Series(rsi_vals, index=dates)
+
+        trades, equity = strategy._simulate_trades(df, rsi, 10000.0)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]['exit_reason'], 'rsi_cross')
+        self.assertGreater(trades[0]['return'], 0)
+        self.assertGreater(equity[-1], 10000.0,
+                           f"Short should profit on price drop; final={equity[-1]:.2f}")
 
     def test_backtest_with_insufficient_data(self):
         """Test backtest with insufficient data returns a null result, not None."""
@@ -180,69 +205,6 @@ class TestRSIStrategy(unittest.TestCase):
         self.assertEqual(result.params.get("rsi_period"), 14)
         self.assertEqual(result.params.get("rsi_lower"), 30)
         self.assertEqual(result.params.get("rsi_upper"), 70)
-
-    def test_short_generate_signals_cross_above_entry(self):
-        """Test short signals: RSI cross-above rsi_upper fires entry."""
-        strategy = RSIStrategy(
-            rsi_period=14, rsi_lower=30, rsi_upper=70, direction="short")
-
-        dates = pd.date_range('2024-01-01', periods=12, freq='D')
-        # RSI crosses above 70 at index 4 (prev=68, curr=75)
-        rsi_data = pd.Series(
-            [50, 55, 60, 68, 75, 80, 78, 72, 65, 55, 45, 35], index=dates)
-        prices = pd.Series(
-            [100, 102, 104, 106, 108, 110, 109, 107, 105, 103, 101, 99], index=dates)
-
-        df = pd.DataFrame({'close': prices})
-        signals = strategy._generate_signals(df, rsi_data)
-
-        buy_signal_indices = signals[signals['buy_signal']].index
-        self.assertGreater(len(buy_signal_indices), 0,
-                           "Short entry signal should fire on RSI cross-above rsi_upper")
-
-        # Position should go to -1 (short) after entry
-        entry_idx = signals.index.get_loc(buy_signal_indices[0])
-        position_after = signals['position'].iloc[entry_idx +
-                                                  1] if entry_idx + 1 < len(signals) else 0
-        self.assertEqual(position_after, -1,
-                         "Position should be -1 (short) after entry")
-
-    def test_short_returns_profitable_on_price_drop(self):
-        """Test that a price drop after a short entry yields positive return."""
-        strategy = RSIStrategy(
-            rsi_period=14, rsi_lower=30, rsi_upper=70, direction="short")
-
-        # Build a scenario: short entry, then price drops, then cover at lower price
-        dates = pd.date_range('2024-01-01', periods=20, freq='D')
-        prices = [100] * 20
-        rsi_vals = [50] * 20
-
-        # RSI cross-above 70 at index 5 → short entry
-        rsi_vals[4] = 68
-        rsi_vals[5] = 75
-        # Price then drops from 100 → 90
-        prices[6] = 95
-        prices[7] = 90
-        # RSI cross-below 30 at index 9 → cover
-        rsi_vals[8] = 35
-        rsi_vals[9] = 25
-        prices[9] = 85
-
-        df = pd.DataFrame({'close': pd.Series(prices, index=dates)})
-        rsi = pd.Series(rsi_vals, index=dates)
-
-        signals = strategy._generate_signals(df, rsi)
-        # Should have at least 1 buy (short entry) and 1 sell (cover)
-        self.assertGreater(signals['buy_signal'].sum(),
-                           0, "Should have short entry")
-        self.assertGreater(signals['sell_signal'].sum(),
-                           0, "Should have cover signal")
-
-        returns = strategy._calculate_returns(df, signals, 10000.0)
-        final_value = returns['portfolio_value'].iloc[-1]
-        # Short profit: portfolio should be > initial cash
-        self.assertGreater(final_value, 10000.0,
-                           f"Short should profit on price drop; final={final_value:.2f}")
 
     def test_strategy_direction_defaults_to_long(self):
         """Test that strategy direction defaults to 'long'."""
