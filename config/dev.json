@@ -46,7 +46,7 @@
 	},
 	"data_filtering": {
 		"min_volume": 100000,
-		"min_dollar_volume": 20000000,
+		"min_dollar_volume": 5000000,
 		"min_price": 15.0,
 		"max_price": 1000.0,
 		"max_margin_requirement": 30,
