@@ -1,1550 +1,749 @@
 #!/usr/bin/env python3
-"""Unit tests for positions module (current API)."""
+"""Unit tests for the broker-authoritative PositionsManager.
+
+Model under test: the broker decides what is OPEN (symbol, signed qty, entry
+price, current price); ``position_metadata`` only decorates; ``closed_trades``
+is written once per round trip.
+"""
 import os
 import sys
 import unittest
-from datetime import datetime, timedelta
-from unittest.mock import Mock, patch
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pandas as pd
-import numpy as np
 
-# Add app path before imports.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'app'))
 
-from positions import Position, PositionsManager  # noqa: E402
-from positions import _as_utc_timestamp, _ensure_utc_datetime_column  # noqa: E402
-from strategies.base import BacktestResult  # noqa: E402
+from positions import (  # noqa: E402
+    UNATTRIBUTED, Position, PositionsFetchError, PositionsManager)
+from storage.backend import closed_trade_key  # noqa: E402
 
 
-class TestUtcTimestampHelpers(unittest.TestCase):
-    """Regression: assigning a *naive* datetime into a tz-aware cloud column
-    (or an aware value into a naive one) raised
-    "Invalid value '...' for dtype 'datetime64[s, UTC]'"."""
+class FakeStorage:
+    """In-memory stand-in for the metadata / closed_trades / snapshot API."""
 
-    def test_as_utc_timestamp_localizes_naive(self):
-        ts = _as_utc_timestamp(datetime(2026, 9, 18, 9, 46, 1))
-        self.assertIsNotNone(ts.tzinfo)
-        self.assertEqual(ts, pd.Timestamp('2026-09-18 09:46:01+00:00'))
+    def __init__(self):
+        self.metadata = {}
+        self.closed = []
+        self.snapshots = []
+        self.metadata_readable = True
+        self.closed_readable = True
+        self.fail_closed_save = False
 
-    def test_as_utc_timestamp_preserves_aware(self):
-        from datetime import timezone
-        aware = datetime(2026, 9, 18, 9, 46, 1, tzinfo=timezone.utc)
-        self.assertEqual(_as_utc_timestamp(aware),
-                         pd.Timestamp('2026-09-18 09:46:01+00:00'))
+    def load_position_metadata(self):
+        return [dict(v) for v in self.metadata.values()] \
+            if self.metadata_readable else None
 
-    def test_as_utc_timestamp_defaults_to_now(self):
-        ts = _as_utc_timestamp()
-        self.assertIsNotNone(ts.tzinfo)
+    def save_position_metadata(self, rows):
+        for r in rows:
+            self.metadata[r["symbol"]] = dict(r)
+        return True
 
-    def test_ensure_utc_converts_naive_column(self):
-        df = pd.DataFrame({'exit_date': [datetime(2026, 9, 1)]})
-        _ensure_utc_datetime_column(df, 'exit_date')
-        # The whole point: an aware value can now be assigned without raising.
-        df.loc[df.index[0], 'exit_date'] = _as_utc_timestamp()
-        self.assertIsNotNone(df.loc[df.index[0], 'exit_date'].tzinfo)
+    def delete_position_metadata(self, symbols):
+        for s in symbols:
+            self.metadata.pop(s, None)
+        return True
 
-    def test_ensure_utc_creates_aware_column_when_missing(self):
-        df = pd.DataFrame({'symbol': ['AAPL']})
-        _ensure_utc_datetime_column(df, 'exit_date')
-        self.assertIn('exit_date', df.columns)
-        # Must accept an aware assignment (a naive pd.NaT column would not).
-        df.loc[df.index[0], 'exit_date'] = _as_utc_timestamp()
-        self.assertIsNotNone(df.loc[df.index[0], 'exit_date'].tzinfo)
+    def save_closed_trade(self, trade):
+        if self.fail_closed_save:
+            return False
+        key = closed_trade_key(trade)
+        if all(closed_trade_key(t) != key for t in self.closed):
+            self.closed.append(dict(trade))
+        return True
 
-    def test_ensure_utc_keeps_already_aware_column(self):
-        df = pd.DataFrame({'exit_date': pd.to_datetime(
-            ['2026-09-01'], utc=True)})
-        _ensure_utc_datetime_column(df, 'exit_date')
-        df.loc[df.index[0], 'exit_date'] = _as_utc_timestamp()
-        self.assertIsNotNone(df.loc[df.index[0], 'exit_date'].tzinfo)
+    def load_closed_trades(self, limit=500):
+        if not self.closed_readable:
+            return None
+        return list(reversed(self.closed))[:limit]
+
+    def save_positions(self, positions, timestamp=None):
+        self.snapshots.append((timestamp, list(positions)))
+        return True
+
+
+def _broker(*rows):
+    """rows: (symbol, qty, avg_entry, current)"""
+    return pd.DataFrame([
+        {"symbol": s, "qty": q, "avg_entry_price": e, "current_price": c,
+         "market_value": q * c} for s, q, e, c in rows])
+
+
+def _meta(symbol="AAPL", **kw):
+    base = {
+        "symbol": symbol, "strategy_name": "rsi_mean_reversion",
+        "rsi_period": 10, "rsi_lower": 25, "rsi_upper": 65, "alpha": 0.07,
+        "composite_score": 1.5, "stop_loss_price": 140.0,
+        "take_profit_price": 165.0, "intraday": False,
+        "entry_client_order_id": "AAPL-BUY-1", "entry_order_id": "o1",
+        "entry_date": datetime(2025, 6, 1, tzinfo=timezone.utc),
+        "current_rsi": 40.0, "side": "long", "quantity": 10.0,
+        "entry_price": 150.0}
+    base.update(kw)
+    return base
+
+
+def _order(side, price, cid, when, oid, symbol="AAPL"):
+    return {"symbol": symbol, "side": side, "filled_qty": 10.0,
+            "filled_avg_price": price, "client_order_id": cid,
+            "order_id": oid, "submitted_at": when, "filled_at": when}
+
+
+def _pos(side="long", cid="AAPL-BUY-1", symbol="AAPL"):
+    return Position(
+        symbol=symbol, quantity=-10.0 if side == "short" else 10.0,
+        entry_price=150.0, current_price=151.0, current_rsi=45.0,
+        entry_date=datetime(2025, 6, 1, tzinfo=timezone.utc), alpha=0.05,
+        rsi_period=14, rsi_lower=30, rsi_upper=70,
+        stop_loss_price=140.0, take_profit_price=160.0, client_order_id=cid)
+
+
+class _Base(unittest.TestCase):
+    def setUp(self):
+        self.store = FakeStorage()
+        self.data = Mock()
+        self.data.get_current_positions_df.return_value = _broker()
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame()
+        self.data.get_entry_order_for_symbol.return_value = None
+        self.data.get_open_orders.return_value = pd.DataFrame()
+        self.data.get_active_orders.return_value = pd.DataFrame()
+        self.data.get_current_snapshot.return_value = None
+        self.manager = PositionsManager(self.store, self.data)
+
+    def broker(self, *rows):
+        self.data.get_current_positions_df.return_value = _broker(*rows)
 
 
 class TestPosition(unittest.TestCase):
-    def test_position_creation(self):
-        position = Position(
-            symbol="AAPL",
-            quantity=100.0,
-            entry_price=150.0,
-            current_price=155.0,
-            current_rsi=45.0,
-            entry_date=datetime(2025, 6, 14),
-            alpha=0.1,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-            stop_loss_price=140.0,
-            take_profit_price=165.0,
-        )
+    def test_short_side_derived_from_quantity(self):
+        self.assertEqual(_pos("short").side, "short")
+        self.assertEqual(_pos("long").side, "long")
 
-        self.assertEqual(position.symbol, "AAPL")
-        self.assertEqual(position.quantity, 100.0)
-        self.assertEqual(position.rsi_period, 14)
-
-    def test_position_optional_fields(self):
-        position = Position(
-            symbol="TSLA",
-            quantity=50.0,
-            entry_price=800.0,
-            current_price=850.0,
-            current_rsi=40.0,
-            entry_date=datetime(2025, 6, 14),
-            alpha=0.2,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-        )
-
-        self.assertIsNone(position.stop_loss_price)
-        self.assertIsNone(position.take_profit_price)
-        self.assertIsNone(position.exit_reason)
+    def test_optional_fields_default(self):
+        p = _pos()
+        self.assertFalse(p.exit_price_estimated)
+        self.assertIsNone(p.exit_reason)
 
 
-class TestPositionsManager(unittest.TestCase):
-    def setUp(self):
-        self.cloud = Mock()
-        self.data = Mock()
-        self.manager = PositionsManager(self.cloud, self.data)
-        # Default: no order history (empty DataFrame) — individual tests
-        # that need fills can override this.
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame()
+class TestOpenPositionsFromBroker(_Base):
+    def test_empty_broker_returns_empty_list(self):
+        self.assertEqual(self.manager.get_and_reconcile_positions(), [])
 
-    def _empty_positions_df(self):
-        return pd.DataFrame(columns=['symbol', 'qty', 'avg_entry_price', 'current_price', 'market_value'])
-
-    def _empty_cloud_df(self):
-        return pd.DataFrame(columns=['symbol'])
-
-    def test_open_position_and_duplicate_guard(self):
-        p = Position(
-            symbol="AAPL",
-            quantity=10.0,
-            entry_price=100.0,
-            current_price=101.0,
-            current_rsi=45.0,
-            entry_date=datetime.now(),
-            alpha=0.1,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-            closed=False,
-        )
-
-        self.manager.open_position(p)
-        self.manager.open_position(p)
-
-        self.assertEqual(len(self.manager.positions), 1)
-
-    def test_broker_sl_tp_by_symbol_maps_legs(self):
-        """Stop-loss / take-profit legs are mapped to their symbol's levels."""
+    def test_broker_only_position_adopted_as_unattributed(self):
+        self.broker(("NVOC", 20.0, 10.0, 10.5))
         self.data.get_open_orders.return_value = pd.DataFrame([
-            {'symbol': 'NVOC', 'leg_type': 'stop_loss',
-             'stop_price': 13.72, 'limit_price': 13.65},
-            {'symbol': 'NVOC', 'leg_type': 'take_profit',
-             'stop_price': None, 'limit_price': 14.67},
-        ])
-
-        levels = self.manager._broker_sl_tp_by_symbol()
-
-        self.assertEqual(levels['NVOC'], (13.72, 14.67))
-
-    def test_broker_sl_tp_by_symbol_is_best_effort(self):
-        """No provider method / no open orders => empty map, never an error."""
-        other = PositionsManager(Mock(), Mock(spec=[]))
-        self.assertEqual(other._broker_sl_tp_by_symbol(), {})
-
-        self.data.get_open_orders.return_value = pd.DataFrame()
-        self.assertEqual(self.manager._broker_sl_tp_by_symbol(), {})
-
-    def test_close_position_handles_tz_aware_cloud_column(self):
-        """Regression: Postgres-loaded frames have tz-aware datetime columns.
-
-        ``close_position`` used to assign a *naive* ``datetime.now()`` into the
-        ``datetime64[*, UTC]`` ``exit_date`` column, raising
-        "Invalid value '...' for dtype 'datetime64[s, UTC]'" and aborting the
-        session with an error after the close order had already been placed.
-        """
-        p = Position(
-            symbol="AAPL", quantity=10.0, entry_price=100.0,
-            current_price=101.0, current_rsi=45.0,
-            entry_date=datetime(2025, 6, 14), alpha=0.1,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-            stop_loss_price=95.0, take_profit_price=110.0, closed=False,
-        )
-        self.manager.positions = [p]
-        # Mirror what PostgresStorage.load_position_entries produces.
-        cloud_df = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'entry_price': [100.0],
-            'current_price': [101.0],
-            'stop_loss_price': [95.0],
-            'take_profit_price': [110.0],
-            'closed': [False],
-            'exit_date': pd.to_datetime([None], utc=True),
-        })
-        self.cloud.get_latest_positions_df.return_value = cloud_df
-
-        self.manager.close_position("AAPL")  # must not raise
-
-        self.assertTrue(self.manager.positions[0].closed)
-        self.assertIsNotNone(self.manager.positions[0].exit_date)
-        self.assertIsNotNone(self.manager.positions[0].exit_date.tzinfo)
-        # The write actually reached storage (persist path completed).
-        self.cloud.save_positions.assert_called()
-
-    def test_close_position_creates_exit_date_when_absent(self):
-        """A cloud frame without an exit_date column must still be closeable.
-
-        The column is created tz-aware, otherwise the aware assignment used
-        below would be rejected by a naive datetime64 column.
-        """
-        p = Position(
-            symbol="AAPL", quantity=10.0, entry_price=100.0,
-            current_price=101.0, current_rsi=45.0,
-            entry_date=datetime(2025, 6, 14), alpha=0.1,
-            rsi_period=14, rsi_lower=30, rsi_upper=70, closed=False,
-        )
-        self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'entry_price': [100.0],
-            'current_price': [101.0],
-            'closed': [False],
-        })
-
-        self.manager.close_position("AAPL")  # must not raise
-
-        self.assertTrue(self.manager.positions[0].closed)
-        self.cloud.save_positions.assert_called()
-
-    def test_close_position_marks_closed_in_place(self):
-        p = Position(
-            symbol="AAPL",
-            quantity=10.0,
-            entry_price=100.0,
-            current_price=101.0,
-            current_rsi=45.0,
-            entry_date=datetime.now(),
-            alpha=0.1,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-            stop_loss_price=95.0,
-            take_profit_price=110.0,
-            closed=False,
-        )
-        self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'entry_price': [100.0],
-            'current_price': [101.0],
-            'stop_loss_price': [95.0],
-            'take_profit_price': [110.0],
-            'closed': [False],
-        })
-
-        self.manager.close_position("AAPL")
-
-        # Position stays in list but is now closed
-        self.assertEqual(len(self.manager.positions), 1)
-        self.assertTrue(self.manager.positions[0].closed)
-        self.assertIsNotNone(self.manager.positions[0].exit_price)
-        self.assertIsNotNone(self.manager.positions[0].realized_return)
-
-    def test_close_short_position_correct_realized_return(self):
-        """Short that lost money: entry=100, covered at 105 → -5% return."""
-        p = Position(
-            symbol="PDD",
-            quantity=-10.0,  # negative = short
-            entry_price=100.0,
-            current_price=110.0,
-            current_rsi=70.0,
-            entry_date=datetime.now(),
-            alpha=0.1,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-            stop_loss_price=105.0,
-            take_profit_price=90.0,
-            closed=False,
-        )
-        self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame({
-            'symbol': ['PDD'],
-            'entry_price': [100.0],
-            'current_price': [110.0],
-            'shares': [-10.0],
-            'stop_loss_price': [105.0],
-            'take_profit_price': [90.0],
-            'closed': [False],
-        })
-
-        self.manager.close_position("PDD")
-
-        self.assertEqual(len(self.manager.positions), 1)
-        self.assertTrue(self.manager.positions[0].closed)
-        # OCO fallback: 110 is closer to 105 (stop) than 90 (take), so exit=105
-        self.assertEqual(self.manager.positions[0].exit_price, 105.0)
-        # Short: (100 - 105) / 100 = -0.05
-        self.assertAlmostEqual(
-            self.manager.positions[0].realized_return, -0.05, places=4)
-
-    def test_get_and_reconcile_positions_initializes_from_alpaca_when_cloud_empty(self):
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [100.0],
-            'current_price': [101.0],
-            'market_value': [1010.0],
-        })
-
-        def cloud_side_effect(is_open):
-            return self._empty_cloud_df() if is_open else self._empty_cloud_df()
-
-        self.cloud.get_latest_positions_df.side_effect = cloud_side_effect
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        self.assertEqual(len(open_positions), 1)
-        self.assertEqual(open_positions[0].symbol, 'AAPL')
-        self.assertFalse(open_positions[0].closed)
-
-    def test_get_and_reconcile_positions_marks_cloud_only_positions_closed(self):
-        self.data.get_current_positions_df.return_value = self._empty_positions_df()
-
-        open_cloud_df = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'shares': [10.0],
-            'entry_price': [100.0],
-            'current_price': [90.0],
-            'position_value': [900.0],
-            'current_rsi': [40.0],
-            'entry_date': [datetime.now()],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.1],
-            'stop_loss_price': [95.0],
-            'take_profit_price': [110.0],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'closed': [False],
-        })
-
-        def cloud_side_effect(is_open):
-            if is_open:
-                return open_cloud_df.copy()
-            return self._empty_cloud_df()
-
-        self.cloud.get_latest_positions_df.side_effect = cloud_side_effect
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        self.assertEqual(len(open_positions), 0)
-        self.assertTrue(any(p.closed for p in self.manager.positions))
-        closed = [p for p in self.manager.positions if p.closed]
-        self.assertTrue(any(p.exit_reason == 'broker_closed' for p in closed))
-
-    @patch('positions.globalConfig')
-    def test_reconcile_alpaca_only_with_order_history(self, mock_config):
-        """Test reconciliation uses order history for entry date and constrained backtest."""
-        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
-        mock_config.STOP_LOSS_PCT = 0.05
-        mock_config.TAKE_PROFIT_PCT = 0.15
-
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [150.0],
-            'current_price': [155.0],
-            'market_value': [1550.0],
-        })
-
-        # Return a cloud DF with a DIFFERENT symbol so AAPL triggers the
-        # alpaca-only path (empty cloud would cause initialization from Alpaca).
-        # Use object-dtype for date columns to avoid datetime64 precision mismatches.
-        cloud_df = pd.DataFrame({
-            'symbol': ['MSFT'],
-            'shares': [5.0],
-            'entry_price': [300.0],
-            'current_price': [305.0],
-            'position_value': [1525.0],
-            'current_rsi': [50.0],
-            'entry_date': [datetime(2026, 5, 10)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.0],
-            'stop_loss_price': [np.nan],
-            'take_profit_price': [np.nan],
-            'exit_date': [None],
-            'exit_price': [np.nan],
-            'realized_return': [np.nan],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_df_side_effect(is_open):
-            if is_open:
-                return cloud_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_df_side_effect
-
-        # Mock order history: submitted_at = 2026-05-25
-        entry_submitted = datetime(2026, 5, 25, 9, 30, 0)
-        self.data.get_entry_order_for_symbol.return_value = (
-            entry_submitted, 150.25
-        )
-
-        # Mock StrategyOptimizer to return a known backtest result
-        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
-            mock_opt = Mock()
-            mock_opt_class.return_value = mock_opt
-
-            backtest_result = BacktestResult(
-                symbol='AAPL',
-                params={"rsi_period": 14, "rsi_lower": 25,
-                        "rsi_upper": 75, "current_rsi": 35.0},
-                total_return=0.05,
-                buy_and_hold_return=0.03,
-                alpha=0.02,
-                num_trades=5,
-                win_rate=0.6,
-                avg_trade_duration=10,
-                max_drawdown=0.02,
-                sharpe_ratio=1.2,
-                calmar_ratio=0.8,
-                profitable=True,
-                composite_score=1.5,
-                direction='long',
-            )
-            mock_opt.optimize_symbol.return_value = backtest_result
-
-            open_positions = self.manager.get_and_reconcile_positions()
-
-        # Only AAPL should be open; MSFT is cloud-only (not in Alpaca)
-        # and should have been marked broker_closed.
-        self.assertEqual(len(open_positions), 1)
-        aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
-        self.assertEqual(aapl_pos.symbol, 'AAPL')
-
-        # MSFT should be in self.manager.positions as closed (broker_closed)
-        msft_positions = [
-            p for p in self.manager.positions if p.symbol == 'MSFT']
-        self.assertEqual(len(msft_positions), 1)
-        self.assertTrue(msft_positions[0].closed)
-        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
-
-        # entry_date should come from order history, not datetime.now()
-        self.assertEqual(aapl_pos.entry_date, entry_submitted)
-
-        # entry_price should come from Alpaca (source of truth)
-        self.assertEqual(aapl_pos.entry_price, 150.0)
-
-        # RSI params should come from the backtest
-        self.assertEqual(aapl_pos.rsi_period, 14)
-        self.assertEqual(aapl_pos.rsi_lower, 25)
-        self.assertEqual(aapl_pos.rsi_upper, 75)
-        self.assertEqual(aapl_pos.alpha, 0.02)
-
-        # Verify backtest was called with constrained window ending day before submission
-        mock_opt.optimize_symbol.assert_called_once()
-        call_args, call_kwargs = mock_opt.optimize_symbol.call_args
-        # positional args: (symbol, start_date, end_date)
-        self.assertEqual(call_args[0], 'AAPL')
-        self.assertEqual(call_args[1], mock_config.BACKTEST_START_DATE)
-        self.assertEqual(call_args[2], entry_submitted - timedelta(days=1))
-        self.assertEqual(call_kwargs['direction'], 'long')
-
-    @patch('positions.globalConfig')
-    def test_reconcile_alpaca_only_order_history_fallback(self, mock_config):
-        """Test reconciliation falls back to default behavior when no order history."""
-        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
-        mock_config.STOP_LOSS_PCT = 0.05
-        mock_config.TAKE_PROFIT_PCT = 0.15
-
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [150.0],
-            'current_price': [155.0],
-            'market_value': [1550.0],
-        })
-
-        # Return a cloud DF with a DIFFERENT symbol
-        fallback_cloud_df = pd.DataFrame({
-            'symbol': ['MSFT'],
-            'shares': [5.0],
-            'entry_price': [300.0],
-            'current_price': [305.0],
-            'position_value': [1525.0],
-            'current_rsi': [50.0],
-            'entry_date': [datetime(2026, 5, 10)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.0],
-            'stop_loss_price': [np.nan],
-            'take_profit_price': [np.nan],
-            'exit_date': [pd.NaT],
-            'exit_price': [np.nan],
-            'realized_return': [np.nan],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _fallback_cloud_df_side_effect(is_open):
-            if is_open:
-                return fallback_cloud_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _fallback_cloud_df_side_effect
-
-        # Mock order history returns None (no orders found)
-        self.data.get_entry_order_for_symbol.return_value = None
-
-        # Mock StrategyOptimizer
-        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
-            mock_opt = Mock()
-            mock_opt_class.return_value = mock_opt
-
-            backtest_result = BacktestResult(
-                symbol='AAPL',
-                params={"rsi_period": 7, "rsi_lower": 20,
-                        "rsi_upper": 80, "current_rsi": 42.0},
-                total_return=0.10,
-                buy_and_hold_return=0.02,
-                alpha=0.08,
-                num_trades=8,
-                win_rate=0.75,
-                avg_trade_duration=8,
-                max_drawdown=0.03,
-                sharpe_ratio=1.5,
-                profitable=True,
-                direction='long',
-            )
-            mock_opt.optimize_symbol.return_value = backtest_result
-
-            open_positions = self.manager.get_and_reconcile_positions()
-
-        # Only AAPL should be open; MSFT is cloud-only (not in Alpaca)
-        # and should have been marked broker_closed.
-        self.assertEqual(len(open_positions), 1)
-        aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
-        self.assertEqual(aapl_pos.symbol, 'AAPL')
-        self.assertEqual(aapl_pos.rsi_period, 7)
-        self.assertEqual(aapl_pos.rsi_lower, 20)
-        self.assertEqual(aapl_pos.rsi_upper, 80)
-
-        # MSFT should be in self.manager.positions as closed (broker_closed)
-        msft_positions = [
-            p for p in self.manager.positions if p.symbol == 'MSFT']
-        self.assertEqual(len(msft_positions), 1)
-        self.assertTrue(msft_positions[0].closed)
-        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
-
-        # Verify backtest was called with the full range (default behavior)
-        mock_opt.optimize_symbol.assert_called_once()
-        call_args, call_kwargs = mock_opt.optimize_symbol.call_args
-        self.assertEqual(call_args[0], 'AAPL')
-        self.assertEqual(call_args[1], mock_config.BACKTEST_START_DATE)
-        # end_date should be near now (datetime.now() - 20 min), not constrained
-        self.assertIsNotNone(call_args[2])
-
-    @patch('positions.globalConfig')
-    def test_reconcile_alpaca_only_backtest_skipped_if_entry_too_old(self, mock_config):
-        """Test backtest is skipped when entry date makes backtest window empty."""
-        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 20)
-        mock_config.STOP_LOSS_PCT = 0.05
-        mock_config.TAKE_PROFIT_PCT = 0.15
-
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [150.0],
-            'current_price': [155.0],
-            'market_value': [1550.0],
-        })
-
-        # Return a cloud DF with a DIFFERENT symbol
-        stale_cloud_df = pd.DataFrame({
-            'symbol': ['MSFT'],
-            'shares': [5.0],
-            'entry_price': [300.0],
-            'current_price': [305.0],
-            'position_value': [1525.0],
-            'current_rsi': [50.0],
-            'entry_date': [datetime(2026, 5, 10)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.0],
-            'stop_loss_price': [np.nan],
-            'take_profit_price': [np.nan],
-            'exit_date': [pd.NaT],
-            'exit_price': [np.nan],
-            'realized_return': [np.nan],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _stale_cloud_df_side_effect(is_open):
-            if is_open:
-                return stale_cloud_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _stale_cloud_df_side_effect
-
-        # Entry submitted_at BEFORE BACKTEST_START_DATE
-        # end_date = submitted_at - 1 day, which is before start
-        early_date = datetime(2026, 5, 10)
-        self.data.get_entry_order_for_symbol.return_value = (early_date, 145.0)
-
-        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
-            mock_opt = Mock()
-            mock_opt_class.return_value = mock_opt
-
-            open_positions = self.manager.get_and_reconcile_positions()
-
-        # Only AAPL should be open; MSFT is cloud-only (not in Alpaca)
-        # and should have been marked broker_closed.
-        self.assertEqual(len(open_positions), 1)
-        aapl_pos = [p for p in open_positions if p.symbol == 'AAPL'][0]
-        self.assertEqual(aapl_pos.symbol, 'AAPL')
-
-        # MSFT should be in self.manager.positions as closed (broker_closed)
-        msft_positions = [
-            p for p in self.manager.positions if p.symbol == 'MSFT']
-        self.assertEqual(len(msft_positions), 1)
-        self.assertTrue(msft_positions[0].closed)
-        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
-
-        # Should use default RSI parameters since backtest was skipped
-        self.assertEqual(aapl_pos.rsi_period, 14)
-        self.assertEqual(aapl_pos.rsi_lower, 30)
-        self.assertEqual(aapl_pos.rsi_upper, 70)
-        self.assertEqual(aapl_pos.alpha, 0.0)
-
-        # entry_date should still come from order history
-        self.assertEqual(aapl_pos.entry_date, early_date)
-
-        # entry_price should come from Alpaca (source of truth), not order history
-        self.assertEqual(aapl_pos.entry_price, 150.0)
-
-        # Backtest should NOT have been called
-        mock_opt.optimize_symbol.assert_not_called()
-
-    @patch('positions.globalConfig')
-    def test_reconcile_alpaca_only_short_position(self, mock_config):
-        """Alpaca-only SHORT: side derived from negative qty, backtest direction='short', inverted OCO."""
-        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
-        mock_config.STOP_LOSS_PCT = 0.05
-        mock_config.TAKE_PROFIT_PCT = 0.15
-
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['SQQQ'],
-            'qty': [-50.0],  # negative = short
-            'avg_entry_price': [30.0],
-            'current_price': [28.0],
-            'market_value': [1400.0],
-        })
-
-        # Cloud has a different symbol so SQQQ triggers Alpaca-only path
-        short_cloud_df = pd.DataFrame({
-            'symbol': ['MSFT'],
-            'shares': [5.0],
-            'entry_price': [300.0],
-            'current_price': [305.0],
-            'position_value': [1525.0],
-            'current_rsi': [50.0],
-            'entry_date': [datetime(2026, 5, 10)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.0],
-            'stop_loss_price': [np.nan],
-            'take_profit_price': [np.nan],
-            'exit_date': [None],
-            'exit_price': [np.nan],
-            'realized_return': [np.nan],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _short_cloud_side_effect(is_open):
-            if is_open:
-                return short_cloud_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _short_cloud_side_effect
-
-        # Mock order history for the short
-        entry_submitted = datetime(2026, 5, 20, 9, 30, 0)
-        self.data.get_entry_order_for_symbol.return_value = (
-            entry_submitted, 30.50
-        )
-
-        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
-            mock_opt = Mock()
-            mock_opt_class.return_value = mock_opt
-
-            backtest_result = BacktestResult(
-                symbol='SQQQ',
-                params={"rsi_period": 10, "rsi_lower": 40,
-                        "rsi_upper": 60, "current_rsi": 65.0},
-                total_return=0.08,
-                buy_and_hold_return=-0.02,
-                alpha=0.10,
-                num_trades=3,
-                win_rate=0.67,
-                avg_trade_duration=5,
-                max_drawdown=0.01,
-                sharpe_ratio=2.0,
-                profitable=True,
-                composite_score=1.8,
-                direction='short',
-            )
-            mock_opt.optimize_symbol.return_value = backtest_result
-
-            open_positions = self.manager.get_and_reconcile_positions()
-
-        # Only SQQQ should be open; MSFT marked broker_closed
-        self.assertEqual(len(open_positions), 1)
-        sqqq_pos = [p for p in open_positions if p.symbol == 'SQQQ'][0]
-        self.assertEqual(sqqq_pos.symbol, 'SQQQ')
-        self.assertEqual(sqqq_pos.side, 'short')
-        self.assertEqual(sqqq_pos.quantity, -50.0)
-
-        # entry_date/price from order history (date) and Alpaca (price as source of truth)
-        self.assertEqual(sqqq_pos.entry_date, entry_submitted)
-        self.assertEqual(sqqq_pos.entry_price, 30.0)
-
-        # RSI params from backtest
-        self.assertEqual(sqqq_pos.rsi_period, 10)
-        self.assertEqual(sqqq_pos.rsi_lower, 40)
-        self.assertEqual(sqqq_pos.rsi_upper, 60)
-
-        # Short OCO: stop_loss ABOVE entry (30.50 * 1.05 = 32.025)
-        # take_profit BELOW entry (30.50 * 0.85 = 25.925)
-        self.assertAlmostEqual(sqqq_pos.stop_loss_price, 32.025, places=4)
-        self.assertAlmostEqual(sqqq_pos.take_profit_price, 25.925, places=4)
-
-        # Backtest called with direction='short'
-        mock_opt.optimize_symbol.assert_called_once()
-        call_args, call_kwargs = mock_opt.optimize_symbol.call_args
-        self.assertEqual(call_args[0], 'SQQQ')
-        self.assertEqual(call_kwargs['direction'], 'short')
-
-        # MSFT marked broker_closed
-        msft_positions = [
-            p for p in self.manager.positions if p.symbol == 'MSFT']
-        self.assertEqual(len(msft_positions), 1)
-        self.assertTrue(msft_positions[0].closed)
-        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
-
-    def test_reconcile_cloud_only_short_broker_closed(self):
-        """Cloud-only SHORT marked broker_closed with correct realized_return formula."""
-        self.data.get_current_positions_df.return_value = self._empty_positions_df()
-
-        # Short position: shares=-20, entry=50, current=48
-        short_open_df = pd.DataFrame({
-            'symbol': ['XYZ'],
-            'shares': [-20.0],
-            'entry_price': [50.0],
-            'current_price': [48.0],
-            'position_value': [960.0],
-            'current_rsi': [55.0],
-            'entry_date': [datetime(2026, 6, 1)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.05],
-            'stop_loss_price': [52.0],
-            'take_profit_price': [45.0],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _short_cloud_side_effect(is_open):
-            if is_open:
-                return short_open_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _short_cloud_side_effect
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        # No open positions — XYZ is cloud-only, marked broker_closed
-        self.assertEqual(len(open_positions), 0)
-        closed = [p for p in self.manager.positions if p.closed]
-        self.assertEqual(len(closed), 1)
-        xyz = closed[0]
-        self.assertEqual(xyz.symbol, 'XYZ')
-        self.assertEqual(xyz.side, 'short')
-        self.assertEqual(xyz.exit_reason, 'broker_closed')
-
-        # OCO fallback: current=48, stop=52, take=45 → |48-52|=4 < |48-45|=3? No, 3 < 4
-        # take_profit is closer → exit=45
-        self.assertEqual(xyz.exit_price, 45.0)
-
-        # Short realized return: (entry - exit) / entry = (50 - 45) / 50 = 0.10
-        self.assertAlmostEqual(xyz.realized_return, 0.10, places=4)
-
-    @patch('positions.globalConfig')
-    def test_reconcile_initialized_from_alpaca_enrichment(self, mock_config):
-        """When cloud is completely empty, Alpaca positions initialize cloud and run enrichment."""
-        mock_config.BACKTEST_START_DATE = datetime(2026, 5, 1)
-        mock_config.STOP_LOSS_PCT = 0.05
-        mock_config.TAKE_PROFIT_PCT = 0.15
-
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [150.0],
-            'current_price': [155.0],
-            'market_value': [1550.0],
-        })
-
-        # Cloud is completely empty — triggers initialized_from_alpaca path
-        def _empty_cloud_side_effect(is_open):
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _empty_cloud_side_effect
-
-        # Mock order history for enrichment
-        entry_submitted = datetime(2026, 5, 25, 9, 30, 0)
-        self.data.get_entry_order_for_symbol.return_value = (
-            entry_submitted, 150.25
-        )
-
-        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
-            mock_opt = Mock()
-            mock_opt_class.return_value = mock_opt
-
-            enrich_result = BacktestResult(
-                symbol='AAPL',
-                params={"rsi_period": 14, "rsi_lower": 25,
-                        "rsi_upper": 75, "current_rsi": 35.0},
-                total_return=0.05,
-                buy_and_hold_return=0.03,
-                alpha=0.02,
-                num_trades=5,
-                win_rate=0.6,
-                avg_trade_duration=10,
-                max_drawdown=0.02,
-                sharpe_ratio=1.2,
-                profitable=True,
-                composite_score=1.5,
-                direction='long',
-            )
-            mock_opt.optimize_symbol.return_value = enrich_result
-
-            open_positions = self.manager.get_and_reconcile_positions()
-
-        self.assertEqual(len(open_positions), 1)
-        aapl = open_positions[0]
-        self.assertEqual(aapl.symbol, 'AAPL')
-        self.assertFalse(aapl.closed)
-
-        # entry_date from order history
-        self.assertEqual(aapl.entry_date, entry_submitted)
-        # entry_price from Alpaca (source of truth)
-        self.assertEqual(aapl.entry_price, 150.0)
-        # RSI from backtest
-        self.assertEqual(aapl.rsi_period, 14)
-        self.assertEqual(aapl.rsi_lower, 25)
-        self.assertEqual(aapl.rsi_upper, 75)
-
-        # Backtest called with constrained window
-        mock_opt.optimize_symbol.assert_called_once()
-        call_args, _ = mock_opt.optimize_symbol.call_args
-        self.assertEqual(call_args[2], entry_submitted - timedelta(days=1))
-
-    def test_reconcile_cloud_only_missing_shares_column(self):
-        """Cloud-only position without 'shares' column still marked broker_closed (no crash)."""
-        self.data.get_current_positions_df.return_value = self._empty_positions_df()
-
-        # Position missing the 'shares' column entirely
-        no_shares_df = pd.DataFrame({
-            'symbol': ['MISSING'],
-            'entry_price': [100.0],
-            'current_price': [90.0],
-            'position_value': [900.0],
-            'current_rsi': [40.0],
-            'entry_date': [datetime.now()],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.1],
-            'stop_loss_price': [95.0],
-            'take_profit_price': [110.0],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'closed': [False],
-        })
-
-        def _no_shares_side_effect(is_open):
-            if is_open:
-                return no_shares_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _no_shares_side_effect
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        # Should not crash; position should be marked broker_closed
-        self.assertEqual(len(open_positions), 0)
-        closed = [p for p in self.manager.positions if p.closed]
-        self.assertEqual(len(closed), 1)
-        self.assertEqual(closed[0].symbol, 'MISSING')
-        self.assertEqual(closed[0].exit_reason, 'broker_closed')
-        # Without shares, defaults to 0, side defaults to 'long'
-        self.assertEqual(closed[0].quantity, 0.0)
-        self.assertEqual(closed[0].side, 'long')
-
-    def test_reconcile_stale_cloud_mixed_open_closed(self):
-        """Cloud has AAPL+MSFT both open; Alpaca only has AAPL. AAPL stays open, MSFT closed."""
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [15.0],
-            'avg_entry_price': [155.0],
-            'current_price': [160.0],
-            'market_value': [2400.0],
-        })
-
-        mixed_cloud_df = pd.DataFrame({
-            'symbol': ['AAPL', 'MSFT'],
-            'shares': [10.0, 5.0],
-            'entry_price': [150.0, 300.0],
-            'current_price': [155.0, 305.0],
-            'position_value': [1550.0, 1525.0],
-            'current_rsi': [45.0, 55.0],
-            'entry_date': [datetime(2026, 5, 10), datetime(2026, 5, 10)],
-            'rsi_period': [14, 14],
-            'rsi_lower': [30, 30],
-            'rsi_upper': [70, 70],
-            'alpha': [0.1, 0.2],
-            'stop_loss_price': [142.5, 285.0],
-            'take_profit_price': [165.0, 330.0],
-            'exit_date': [None, None],
-            'exit_price': [pd.NA, pd.NA],
-            'realized_return': [pd.NA, pd.NA],
-            'exit_reason': [None, None],
-            'closed': [False, False],
-        })
-
-        def _mixed_cloud_side_effect(is_open):
-            if is_open:
-                return mixed_cloud_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _mixed_cloud_side_effect
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        # Only AAPL should be open
-        self.assertEqual(len(open_positions), 1)
-        aapl = open_positions[0]
-        self.assertEqual(aapl.symbol, 'AAPL')
-        self.assertFalse(aapl.closed)
-
-        # AAPL updated with live Alpaca values
-        self.assertEqual(aapl.quantity, 15.0)
-        self.assertEqual(aapl.current_price, 160.0)
-        # entry_price overwritten from Alpaca because AAPL was in original cloud
-        self.assertEqual(aapl.entry_price, 155.0)
-
-        # MSFT marked broker_closed
-        msft_positions = [
-            p for p in self.manager.positions if p.symbol == 'MSFT']
-        self.assertEqual(len(msft_positions), 1)
-        self.assertTrue(msft_positions[0].closed)
-        self.assertEqual(msft_positions[0].exit_reason, 'broker_closed')
-        # OCO fallback: current=305, stop=285, take=330 → stop closer → exit=285
-        self.assertEqual(msft_positions[0].exit_price, 285.0)
-        # Long realized return: (285 - 300) / 300 = -0.05
-        self.assertAlmostEqual(
-            msft_positions[0].realized_return, -0.05, places=4)
-
-    def test_reconcile_zero_quantity_alpaca_position(self):
-        """Zero-quantity Alpaca position should not crash but is added as phantom (edge case)."""
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['PHANTOM'],
-            'qty': [0.0],
-            'avg_entry_price': [50.0],
-            'current_price': [50.0],
-            'market_value': [0.0],
-        })
-
-        phantom_cloud_df = pd.DataFrame({
-            'symbol': ['MSFT'],
-            'shares': [5.0],
-            'entry_price': [300.0],
-            'current_price': [305.0],
-            'position_value': [1525.0],
-            'current_rsi': [50.0],
-            'entry_date': [datetime(2026, 5, 10)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.0],
-            'stop_loss_price': [np.nan],
-            'take_profit_price': [np.nan],
-            'exit_date': [None],
-            'exit_price': [np.nan],
-            'realized_return': [np.nan],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _phantom_cloud_side_effect(is_open):
-            if is_open:
-                return phantom_cloud_df.copy()
-            return self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _phantom_cloud_side_effect
-        self.data.get_entry_order_for_symbol.return_value = None
-
-        with patch('optimizer.StrategyOptimizer') as mock_opt_class:
-            mock_opt = Mock()
-            mock_opt_class.return_value = mock_opt
-
-            backtest_result = BacktestResult(
-                symbol='PHANTOM',
-                params={"rsi_period": 14, "rsi_lower": 30,
-                        "rsi_upper": 70, "current_rsi": 50.0},
-                total_return=0.0,
-                buy_and_hold_return=0.0,
-                alpha=0.0,
-                num_trades=0,
-                win_rate=0.0,
-                avg_trade_duration=0,
-                max_drawdown=0.0,
-                sharpe_ratio=0.0,
-                profitable=False,
-                composite_score=0.0,
-                direction='long',
-            )
-            mock_opt.optimize_symbol.return_value = backtest_result
-
-            open_positions = self.manager.get_and_reconcile_positions()
-
-        # PHANTOM appears as open with 0 shares (known limitation — does not crash)
-        # MSFT is cloud-only → broker_closed
-        phantom_positions = [
-            p for p in open_positions if p.symbol == 'PHANTOM']
-        self.assertEqual(len(phantom_positions), 1)
-        self.assertEqual(phantom_positions[0].quantity, 0.0)
-        self.assertEqual(phantom_positions[0].side, 'long')
-
-    # ------------------------------------------------------------------
-    # Smart cloud-only exit detection tests (Fix 3)
-    # ------------------------------------------------------------------
-
-    def test_cloud_only_long_detects_oco_take_profit_from_order_history(self):
-        """Cloud-only LONG: filled SELL order found → exit_reason=oco_take_profit."""
-        self.data.get_current_positions_df.return_value = self._empty_positions_df()
-
-        cloud_df = pd.DataFrame({
-            'symbol': ['RFG'],
-            'shares': [15.0],
-            'entry_price': [62.30],
-            'current_price': [60.79],
-            'position_value': [911.85],
-            'current_rsi': [55.0],
-            'entry_date': [datetime(2026, 7, 9)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.05],
-            'stop_loss_price': [59.18],
-            'take_profit_price': [60.82],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_side_effect(is_open):
-            return cloud_df.copy() if is_open else self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
-
-        # Mock a filled SELL at $60.82 (matching take_profit)
-        fill_time = datetime(2026, 7, 14, 17, 37, 11)
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame({
-            'symbol': ['RFG', 'RFG'],
-            'side': ['sell', 'buy'],  # sell = close, buy = entry
-            'filled_qty': [15.0, 15.0],
-            'filled_avg_price': [60.82, 62.30],
-            'submitted_at': [fill_time, datetime(2026, 7, 9, 9, 10, 0)],
-            'order_type': ['limit', 'market'],
-            'status': ['filled', 'filled'],
-        })
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        self.assertEqual(len(open_positions), 0)
-        closed = [
-            p for p in self.manager.positions if p.closed and p.symbol == 'RFG']
-        self.assertEqual(len(closed), 1)
-        rfg = closed[0]
-        self.assertEqual(rfg.exit_reason, 'oco_take_profit')
-        self.assertEqual(rfg.exit_price, 60.82)
-        # exit_date should come from the fill, not datetime.now().
-        # It is stored tz-aware (UTC) so it can be assigned into the cloud
-        # DataFrame's datetime64[*, UTC] column.
-        self.assertEqual(rfg.exit_date, pd.Timestamp(fill_time, tz='UTC'))
-        # Long: (60.82 - 62.30) / 62.30 = -0.0238
-        self.assertAlmostEqual(rfg.realized_return, -0.0238, places=3)
-
-    def test_cloud_only_short_detects_oco_stop_loss_from_order_history(self):
-        """Cloud-only SHORT: filled BUY (cover) at stop_loss → exit_reason=oco_stop_loss."""
-        self.data.get_current_positions_df.return_value = self._empty_positions_df()
-
-        cloud_df = pd.DataFrame({
-            'symbol': ['SHORTY'],
-            'shares': [-50.0],
-            'entry_price': [45.00],
-            'current_price': [48.50],
-            'position_value': [-2425.0],
-            'current_rsi': [75.0],
-            'entry_date': [datetime(2026, 7, 10)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.03],
-            'stop_loss_price': [47.25],   # 5% above entry
-            'take_profit_price': [38.25],  # 15% below entry
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_side_effect(is_open):
-            return cloud_df.copy() if is_open else self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
-
-        # Mock a filled BUY (cover) at $47.25 — closer to stop_loss than take_profit
-        fill_time = datetime(2026, 7, 14, 18, 15, 0)
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame({
-            'symbol': ['SHORTY', 'SHORTY'],
-            'side': ['buy', 'sell'],  # buy = cover, sell = entry (short)
-            'filled_qty': [50.0, 50.0],
-            'filled_avg_price': [47.25, 45.00],
-            'submitted_at': [fill_time, datetime(2026, 7, 10, 14, 30, 0)],
-            'order_type': ['stop_limit', 'market'],
-            'status': ['filled', 'filled'],
-        })
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        self.assertEqual(len(open_positions), 0)
-        closed = [
-            p for p in self.manager.positions if p.closed and p.symbol == 'SHORTY']
-        self.assertEqual(len(closed), 1)
-        shorty = closed[0]
-        self.assertEqual(shorty.side, 'short')
-        self.assertEqual(shorty.exit_reason, 'oco_stop_loss')
-        self.assertEqual(shorty.exit_price, 47.25)
-        self.assertEqual(shorty.exit_date, pd.Timestamp(fill_time, tz='UTC'))
-        # Short: (45 - 47.25) / 45 = -0.05
-        self.assertAlmostEqual(shorty.realized_return, -0.05, places=4)
-
-    def test_cloud_only_failed_to_open_no_entry_fill(self):
-        """Cloud-only position with order history but NO entry fill → failed_to_open."""
-        self.data.get_current_positions_df.return_value = self._empty_positions_df()
-
-        cloud_df = pd.DataFrame({
-            'symbol': ['GHOST'],
-            'shares': [10.0],
-            'entry_price': [100.0],
-            'current_price': [100.0],
-            'position_value': [1000.0],
-            'current_rsi': [50.0],
-            'entry_date': [datetime(2026, 7, 14)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.0],
-            'stop_loss_price': [95.0],
-            'take_profit_price': [110.0],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_side_effect(is_open):
-            return cloud_df.copy() if is_open else self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
-
-        # Order history exists but only has CANCELED orders — no fills
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame({
-            'symbol': ['GHOST', 'GHOST'],
-            'side': ['buy', 'sell'],
-            'filled_qty': [0.0, 0.0],
-            'filled_avg_price': [0.0, 0.0],
-            'submitted_at': [datetime(2026, 7, 14, 10, 0), datetime(2026, 7, 14, 10, 1)],
-            'order_type': ['market', 'market'],
-            'status': ['canceled', 'canceled'],
-        })
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        self.assertEqual(len(open_positions), 0)
-        closed = [
-            p for p in self.manager.positions if p.closed and p.symbol == 'GHOST']
-        self.assertEqual(len(closed), 1)
-        ghost = closed[0]
-        self.assertEqual(ghost.exit_reason, 'failed_to_open')
-        self.assertEqual(ghost.exit_price, 0.0)
-
-    def test_cloud_only_no_order_history_falls_back_to_broker_closed(self):
-        """Cloud-only with no order history at all → broker_closed (unchanged)."""
-        self.data.get_current_positions_df.return_value = self._empty_positions_df()
-
-        cloud_df = pd.DataFrame({
-            'symbol': ['MYSTERY'],
-            'shares': [25.0],
-            'entry_price': [80.0],
-            'current_price': [82.0],
-            'position_value': [2050.0],
-            'current_rsi': [45.0],
-            'entry_date': [datetime(2026, 7, 8)],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.04],
-            'stop_loss_price': [np.nan],
-            'take_profit_price': [np.nan],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_side_effect(is_open):
-            return cloud_df.copy() if is_open else self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
-
-        # Empty order history
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame()
-
-        open_positions = self.manager.get_and_reconcile_positions()
-
-        self.assertEqual(len(open_positions), 0)
-        closed = [
-            p for p in self.manager.positions if p.closed and p.symbol == 'MYSTERY']
-        self.assertEqual(len(closed), 1)
-        mystery = closed[0]
-        self.assertEqual(mystery.exit_reason, 'broker_closed')
-        # Fallback exit price: no OCO targets → uses current_price
-        self.assertEqual(mystery.exit_price, 82.0)
-
-    # ------------------------------------------------------------------
-    # Reconciliation cache tests (performance refinement)
-    # ------------------------------------------------------------------
-
-    def test_reconciliation_cache_returns_cached_result_on_second_call(self):
-        """Second reconcile within TTL returns cached result without API calls."""
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [100.0],
-            'current_price': [101.0],
-            'market_value': [1010.0],
-        })
-
-        cloud_df = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'shares': [10.0],
-            'entry_price': [100.0],
-            'current_price': [101.0],
-            'position_value': [1010.0],
-            'current_rsi': [45.0],
-            'entry_date': [datetime.now()],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.1],
-            'stop_loss_price': [95.0],
-            'take_profit_price': [110.0],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_side_effect(is_open):
-            return cloud_df.copy() if is_open else self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
-
-        # First call: should hit Alpaca API + cloud storage
+            {"symbol": "NVOC", "leg_type": "stop_loss", "stop_price": 9.0},
+            {"symbol": "NVOC", "leg_type": "take_profit", "limit_price": 12.0}])
+        when = datetime(2025, 6, 2, 14, 30)
+        self.data.get_entry_order_for_symbol.return_value = (when, 9.99)
+
+        (pos,) = self.manager.get_and_reconcile_positions()
+
+        self.assertEqual(pos.strategy_name, UNATTRIBUTED)
+        self.assertEqual((pos.rsi_period, pos.rsi_lower, pos.rsi_upper),
+                         (14, 30, 70))
+        self.assertEqual(pos.quantity, 20.0)
+        # entry price is the BROKER's, never the order-history price
+        self.assertEqual(pos.entry_price, 10.0)
+        self.assertEqual((pos.stop_loss_price, pos.take_profit_price),
+                         (9.0, 12.0))
+        self.assertEqual(pos.entry_date.replace(tzinfo=None), when)
+        # adoption is persisted so it is not re-derived next cycle
+        self.assertEqual(self.store.metadata["NVOC"]["strategy_name"],
+                         UNATTRIBUTED)
+
+    def test_adopted_without_broker_levels_uses_entry_anchored_defaults(self):
+        self.broker(("NVOC", 20.0, 10.0, 10.5))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertAlmostEqual(pos.stop_loss_price, 10.0 * 0.95)
+        self.assertAlmostEqual(pos.take_profit_price, 10.0 * 1.15)
+
+    def test_adopted_short_is_negative_with_inverted_defaults(self):
+        self.broker(("TSLA", -5.0, 200.0, 195.0))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.side, "short")
+        self.assertLess(pos.quantity, 0)
+        self.assertGreater(pos.stop_loss_price, 200.0)
+        self.assertLess(pos.take_profit_price, 200.0)
+
+    def test_no_optimizer_enrichment_on_adoption(self):
+        import positions
+        self.assertFalse(hasattr(positions, "StrategyOptimizer"))
+        self.broker(("NVOC", 20.0, 10.0, 10.5))
+        self.manager.get_and_reconcile_positions()
+        self.data.get_filled_orders_for_symbol.assert_not_called()
+
+    def test_metadata_joined_by_symbol(self):
+        self.store.metadata["AAPL"] = _meta()
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.strategy_name, "rsi_mean_reversion")
+        self.assertEqual((pos.rsi_period, pos.rsi_lower, pos.rsi_upper),
+                         (10, 25, 65))
+        self.assertEqual((pos.stop_loss_price, pos.take_profit_price),
+                         (140.0, 165.0))
+        self.assertEqual(pos.client_order_id, "AAPL-BUY-1")
+        self.assertEqual(pos.composite_score, 1.5)
+
+    def test_broker_quantity_and_prices_always_win(self):
+        self.store.metadata["AAPL"] = _meta(
+            quantity=3.0, entry_price=99.0)
+        self.broker(("AAPL", 8.0, 151.25, 155.0))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.quantity, 8.0)
+        self.assertEqual(pos.entry_price, 151.25)
+        self.assertEqual(pos.current_price, 155.0)
+        # informational copy refreshed from the broker
+        self.assertEqual(self.store.metadata["AAPL"]["quantity"], 8.0)
+        self.assertEqual(self.store.metadata["AAPL"]["entry_price"], 151.25)
+
+    def test_metadata_never_adds_an_open_position(self):
+        self.store.metadata["GHOST"] = _meta("GHOST")
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
+        syms = {p.symbol for p in self.manager.get_and_reconcile_positions()}
+        self.assertEqual(syms, {"AAPL"})
+
+    def test_zero_quantity_broker_row_ignored(self):
+        self.broker(("AAPL", 0.0, 150.0, 152.0))
+        self.assertEqual(self.manager.get_and_reconcile_positions(), [])
+
+    def test_cache_returns_same_result_without_second_fetch(self):
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
         first = self.manager.get_and_reconcile_positions()
-        self.assertEqual(len(first), 1)
-
-        api_calls_before = self.data.get_current_positions_df.call_count
-
-        # Second call within TTL: should return cached result, NO new API calls
         second = self.manager.get_and_reconcile_positions()
-        self.assertEqual(len(second), 1)
-        self.assertEqual(
-            self.data.get_current_positions_df.call_count, api_calls_before,
-            "Second reconcile should NOT call Alpaca API (should use cache)"
-        )
+        self.assertIs(first, second)
+        self.assertEqual(self.data.get_current_positions_df.call_count, 1)
 
-    def test_open_position_invalidates_reconciliation_cache(self):
-        """open_position() clears the cache, forcing next reconcile to call API."""
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [100.0],
-            'current_price': [101.0],
-            'market_value': [1010.0],
-        })
-
-        cloud_df = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'shares': [10.0],
-            'entry_price': [100.0],
-            'current_price': [101.0],
-            'position_value': [1010.0],
-            'current_rsi': [45.0],
-            'entry_date': [datetime.now()],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.1],
-            'stop_loss_price': [95.0],
-            'take_profit_price': [110.0],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_side_effect(is_open):
-            return cloud_df.copy() if is_open else self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
-
-        # Populate the cache
+    def test_invalidate_forces_refetch(self):
         self.manager.get_and_reconcile_positions()
-        api_calls_after_first = self.data.get_current_positions_df.call_count
-
-        # Open a new position — this should invalidate the cache
-        new_pos = Position(
-            symbol="MSFT", quantity=5.0, entry_price=300.0,
-            current_price=305.0, current_rsi=50.0,
-            entry_date=datetime.now(), alpha=0.02,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-            closed=False,
-        )
-        self.manager.open_position(new_pos)
-
-        # Next reconcile should call Alpaca API again (cache invalidated)
-        self.manager.get_and_reconcile_positions()
-        self.assertGreater(
-            self.data.get_current_positions_df.call_count, api_calls_after_first,
-            "Reconcile after open_position() should call Alpaca API (cache invalidated)"
-        )
-
-    def test_invalidate_reconciliation_cache_clears_state(self):
-        """invalidate_reconciliation_cache() forces a fresh reconcile."""
-        self.data.get_current_positions_df.return_value = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'qty': [10.0],
-            'avg_entry_price': [100.0],
-            'current_price': [101.0],
-            'market_value': [1010.0],
-        })
-
-        cloud_df = pd.DataFrame({
-            'symbol': ['AAPL'],
-            'shares': [10.0],
-            'entry_price': [100.0],
-            'current_price': [101.0],
-            'position_value': [1010.0],
-            'current_rsi': [45.0],
-            'entry_date': [datetime.now()],
-            'rsi_period': [14],
-            'rsi_lower': [30],
-            'rsi_upper': [70],
-            'alpha': [0.1],
-            'stop_loss_price': [np.nan],
-            'take_profit_price': [np.nan],
-            'exit_date': [None],
-            'exit_price': [pd.NA],
-            'realized_return': [pd.NA],
-            'exit_reason': [None],
-            'closed': [False],
-        })
-
-        def _cloud_side_effect(is_open):
-            return cloud_df.copy() if is_open else self._empty_cloud_df()
-        self.cloud.get_latest_positions_df.side_effect = _cloud_side_effect
-
-        # Populate cache
-        self.manager.get_and_reconcile_positions()
-        api_calls = self.data.get_current_positions_df.call_count
-        self.assertIsNotNone(self.manager._reconciled_at)
-        self.assertIsNotNone(self.manager._cached_open_positions)
-
-        # Invalidate
         self.manager.invalidate_reconciliation_cache()
-        self.assertIsNone(self.manager._reconciled_at)
-        self.assertIsNone(self.manager._cached_open_positions)
-
-        # Next call should hit API
         self.manager.get_and_reconcile_positions()
-        self.assertGreater(
-            self.data.get_current_positions_df.call_count, api_calls)
+        self.assertEqual(self.data.get_current_positions_df.call_count, 2)
 
-    def test_find_fill_by_client_order_id(self):
-        """Exact match by client_order_id returns price/qty/filled_at."""
+    def test_orphan_orders_cancelled_against_broker_symbols(self):
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
+        self.data.get_active_orders.return_value = pd.DataFrame([
+            {"symbol": "AAPL", "order_id": "a1", "order_type": "limit",
+             "side": "sell"},
+            {"symbol": "MSFT", "order_id": "m1", "order_type": "limit",
+             "side": "sell"}])
+        self.manager.get_and_reconcile_positions()
+        self.data.cancel_order.assert_called_once_with("m1")
+
+
+class TestBrokerFetchFailure(_Base):
+    def test_failed_fetch_raises_and_closes_nothing(self):
+        self.store.metadata["AAPL"] = _meta()
+        self.manager.positions = [_pos()]
+        self.data.get_current_positions_df.side_effect = RuntimeError("503")
+        with self.assertRaises(PositionsFetchError):
+            self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed, [])
+        self.assertIn("AAPL", self.store.metadata)
+        self.assertEqual(len(self.manager.positions), 1)
+        self.assertFalse(self.manager.reconcile_ok)
+        self.data.cancel_order.assert_not_called()
+
+    def test_reconcile_ok_recovers_after_success(self):
+        self.data.get_current_positions_df.side_effect = RuntimeError("x")
+        with self.assertRaises(PositionsFetchError):
+            self.manager.get_and_reconcile_positions()
+        self.data.get_current_positions_df.side_effect = None
+        self.manager.get_and_reconcile_positions()
+        self.assertTrue(self.manager.reconcile_ok)
+
+    def test_non_dataframe_response_is_a_failure(self):
+        self.data.get_current_positions_df.return_value = None
+        with self.assertRaises(PositionsFetchError):
+            self.manager.get_and_reconcile_positions()
+
+    def test_unreadable_metadata_suspends_closes_and_writes(self):
+        self.store.metadata["AAPL"] = _meta()
+        self.store.metadata_readable = False
+        self.broker(("NVOC", 20.0, 10.0, 10.5))   # AAPL absent at broker
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.symbol, "NVOC")
+        self.assertEqual(self.store.closed, [])
+        self.assertEqual(set(self.store.metadata), {"AAPL"})  # untouched
+        self.manager.persist_positions()
+        self.assertEqual(set(self.store.metadata), {"AAPL"})
+
+
+class TestClosedByBroker(_Base):
+    def setUp(self):
+        super().setUp()
+        self.store.metadata["AAPL"] = _meta()
+
+    def test_close_fill_becomes_closed_trade_and_metadata_deleted(self):
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
-             "filled_avg_price": 155.0, "client_order_id": "AAPL-BUY-1",
-             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
-             "filled_at": datetime(2025, 6, 10)},
-        ])
-        result = self.manager._find_fill_by_client_order_id(
-            "AAPL", "AAPL-BUY-1")
-        self.assertIsNotNone(result)
-        price, qty, _ = result
-        self.assertEqual(price, 155.0)
-        self.assertEqual(qty, 10.0)
+            _order("sell", 164.5, "oco-leg", datetime(2025, 6, 10), "o2"),
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1")])
+        self.assertEqual(self.manager.get_and_reconcile_positions(), [])
 
-    def test_find_fill_by_client_order_id_fallback_to_order_id(self):
-        """Falls back to matching by order_id when client_order_id differs."""
+        (t,) = self.store.closed
+        self.assertEqual(t["exit_price"], 164.5)
+        self.assertFalse(t["exit_price_estimated"])
+        self.assertEqual(t["exit_reason"], "oco_take_profit")
+        self.assertEqual(t["exit_order_id"], "o2")
+        self.assertAlmostEqual(t["realized_return"], 14.5 / 150.0)
+        self.assertEqual(t["strategy_name"], "rsi_mean_reversion")
+        self.assertEqual(t["entry_client_order_id"], "AAPL-BUY-1")
+        self.assertNotIn("AAPL", self.store.metadata)
+        # visible in memory as a closed position
+        (closed,) = [p for p in self.manager.positions if p.closed]
+        self.assertEqual(closed.exit_price, 164.5)
+
+    def test_stop_loss_reason(self):
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
-             "filled_avg_price": 155.0, "client_order_id": None,
-             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
-             "filled_at": datetime(2025, 6, 10)},
-        ])
-        result = self.manager._find_fill_by_client_order_id("AAPL", "o1")
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0], 155.0)
+            _order("sell", 139.9, "x", datetime(2025, 6, 10), "o2"),
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1")])
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed[0]["exit_reason"], "oco_stop_loss")
 
-    def test_find_fill_by_client_order_id_no_match(self):
+    def test_skips_prior_round_trip_exit(self):
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
-             "filled_avg_price": 155.0, "client_order_id": "OTHER",
-             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
-             "filled_at": datetime(2025, 6, 10)},
-        ])
-        self.assertIsNone(
-            self.manager._find_fill_by_client_order_id("AAPL", "NOPE"))
+            _order("sell", 160.0, "cur", datetime(2025, 6, 10), "o4"),
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o3"),
+            _order("sell", 120.0, "old", datetime(2025, 5, 20), "o2"),
+            _order("buy", 100.0, "OLD", datetime(2025, 5, 1), "o1")])
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed[0]["exit_price"], 160.0)
 
-    def test_find_fill_by_client_order_id_side_filter(self):
-        """side filter excludes a same-id order on the other side."""
+    def test_first_close_after_entry_beats_later_round_trip(self):
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            {"symbol": "AAPL", "side": "buy", "filled_qty": 10.0,
-             "filled_avg_price": 150.0, "client_order_id": "AAPL-BUY-1",
-             "order_id": "o1", "submitted_at": datetime(2025, 6, 1),
-             "filled_at": datetime(2025, 6, 1)},
-        ])
-        self.assertIsNone(self.manager._find_fill_by_client_order_id(
-            "AAPL", "AAPL-BUY-1", side="sell"))
-        res = self.manager._find_fill_by_client_order_id(
-            "AAPL", "AAPL-BUY-1", side="buy")
-        self.assertEqual(res[0], 150.0)
+            _order("sell", 99.0, "later", datetime(2025, 7, 10), "o4"),
+            _order("sell", 155.0, "oco", datetime(2025, 6, 10), "o3"),
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1")])
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed[0]["exit_price"], 155.0)
 
-    def _mk_pos(self, side="long", entry=150.0, cid="AAPL-BUY-1"):
-        return Position(
-            symbol="AAPL", quantity=-10.0 if side == "short" else 10.0,
-            entry_price=entry, current_price=151.0,
-            current_rsi=45.0, entry_date=datetime(2025, 6, 1), alpha=0.05,
-            rsi_period=14, rsi_lower=30, rsi_upper=70,
-            stop_loss_price=140.0, take_profit_price=160.0,
-            client_order_id=cid,
-        )
-
-    def _order(self, side, price, cid, when, oid):
-        return {"symbol": "AAPL", "side": side, "filled_qty": 10.0,
-                "filled_avg_price": price, "client_order_id": cid,
-                "order_id": oid, "submitted_at": when, "filled_at": when}
-
-    def test_close_position_uses_exit_fill_not_entry_fill(self):
-        """Entry fill shares the position's client_order_id; exit must be the later sell."""
+    def test_short_uses_later_buy(self):
+        self.store.metadata["AAPL"] = _meta(side="short", quantity=-10.0)
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            self._order("sell", 155.0, "oco-leg", datetime(2025, 6, 10), "o2"),
-            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
-        ])
-        p = self._mk_pos()
-        self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
+            _order("buy", 140.0, "cover", datetime(2025, 6, 10), "o2"),
+            _order("sell", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1")])
+        self.manager.get_and_reconcile_positions()
+        t = self.store.closed[0]
+        self.assertEqual((t["side"], t["exit_price"]), ("short", 140.0))
+        self.assertAlmostEqual(t["realized_return"], 10.0 / 150.0)
 
-        self.manager.close_position("AAPL")
+    def test_entry_only_history_is_estimated_not_entry_price_fill(self):
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1")])
+        self.data.get_current_snapshot.return_value = {"price": 158.0}
+        self.manager.get_and_reconcile_positions()
+        (t,) = self.store.closed
+        self.assertTrue(t["exit_price_estimated"])
+        self.assertEqual(t["exit_price"], 158.0)
+        self.assertEqual(t["exit_reason"], "broker_closed")
+        self.assertNotIn("AAPL", self.store.metadata)
 
+    def test_estimate_prefers_last_seen_price_then_entry(self):
+        self.broker(("AAPL", 10.0, 150.0, 157.0))
+        self.manager.get_and_reconcile_positions()      # last seen = 157
+        self.manager.invalidate_reconciliation_cache()
+        self.broker()
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1")])
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed[0]["exit_price"], 157.0)
+
+    def test_no_history_at_all_is_estimated_at_entry(self):
+        self.manager.get_and_reconcile_positions()
+        (t,) = self.store.closed
+        self.assertTrue(t["exit_price_estimated"])
+        self.assertEqual(t["exit_price"], 150.0)
+
+    def test_never_opened_drops_metadata_without_trade(self):
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            _order("sell", 120.0, "unrelated", datetime(2025, 5, 20), "o9")])
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed, [])
+        self.assertNotIn("AAPL", self.store.metadata)
+
+    def test_history_lookup_error_defers_close(self):
+        self.data.get_filled_orders_for_symbol.side_effect = RuntimeError("x")
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed, [])
+        self.assertIn("AAPL", self.store.metadata)
+
+    def test_failed_trade_write_keeps_metadata_for_retry(self):
+        self.store.fail_closed_save = True
+        self.manager.get_and_reconcile_positions()
+        self.assertIn("AAPL", self.store.metadata)
+        self.store.fail_closed_save = False
+        self.manager.invalidate_reconciliation_cache()
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(len(self.store.closed), 1)
+        self.assertNotIn("AAPL", self.store.metadata)
+
+    def test_closed_trade_written_only_once(self):
+        self.manager.get_and_reconcile_positions()
+        self.manager.invalidate_reconciliation_cache()
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(len(self.store.closed), 1)
+
+
+class TestOpenPosition(_Base):
+    def test_open_position_upserts_metadata_and_is_visible_same_cycle(self):
+        p = _pos()
+        p.strategy_name = "momentum"
+        self.manager.open_position(p)
+        self.assertIn(p, self.manager.positions)
+        row = self.store.metadata["AAPL"]
+        self.assertEqual(row["strategy_name"], "momentum")
+        self.assertEqual(row["stop_loss_price"], 140.0)
+        self.assertEqual(row["entry_client_order_id"], "AAPL-BUY-1")
+
+    def test_reopening_same_symbol_replaces_not_duplicates(self):
+        self.manager.open_position(_pos())
+        newer = _pos()
+        newer.strategy_name = "other"
+        self.manager.open_position(newer)
+        self.assertEqual(
+            [p for p in self.manager.positions if not p.closed], [newer])
+
+    def test_next_reconcile_overwrites_from_broker(self):
+        p = _pos()
+        self.manager.open_position(p)
+        self.broker(("AAPL", 12.0, 150.5, 151.0))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual((pos.quantity, pos.entry_price), (12.0, 150.5))
+        self.assertIsNot(pos, p)
+        self.assertEqual(self.store.closed, [])
+
+    def test_fill_not_yet_visible_at_broker_is_not_closed(self):
+        self.manager.open_position(_pos())
+        self.broker()                       # broker lag
+        opened = self.manager.get_and_reconcile_positions()
+        self.assertEqual([p.symbol for p in opened], ["AAPL"])
+        self.assertEqual(self.store.closed, [])
+        self.assertIn("AAPL", self.store.metadata)
+
+    def test_after_grace_missing_position_is_closed(self):
+        self.manager.open_position(_pos())
+        sym, (p, ts) = next(iter(self.manager._pending_opens.items()))
+        self.manager._pending_opens[sym] = (
+            p, ts - self.manager.OPEN_VISIBILITY_GRACE_SECONDS - 1)
+        self.manager.invalidate_reconciliation_cache()
+        self.assertEqual(self.manager.get_and_reconcile_positions(), [])
+        self.assertEqual(len(self.store.closed), 1)
+
+
+class TestClosePosition(_Base):
+    def test_close_with_fill_writes_trade_once_and_deletes_metadata(self):
+        p = _pos()
+        self.manager.open_position(p)
+        self.manager.close_position("AAPL", exit_price=155.0)
+        self.assertTrue(p.closed)
         self.assertEqual(p.exit_price, 155.0)
+        self.assertFalse(p.exit_price_estimated)
         self.assertAlmostEqual(p.realized_return, 5.0 / 150.0)
+        (t,) = self.store.closed
+        self.assertEqual(t["exit_price"], 155.0)
+        self.assertFalse(t["exit_price_estimated"])
+        self.assertNotIn("AAPL", self.store.metadata)
+        self.assertIn(p, self.manager.positions)   # stays as closed
 
-    def test_close_position_skips_prior_round_trip_exit(self):
-        """An older sell from a previous round-trip must not be picked."""
+    def test_close_then_reconcile_does_not_duplicate(self):
+        self.manager.open_position(_pos())
+        self.manager.close_position("AAPL", exit_price=155.0)
+        self.broker()
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(len(self.store.closed), 1)
+        self.assertEqual(
+            len([p for p in self.manager.positions if p.closed]), 1)
+
+    def test_close_without_price_uses_history_first_close_after_entry(self):
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            self._order("sell", 160.0, "cur-exit", datetime(2025, 6, 10), "o4"),
-            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o3"),
-            self._order("sell", 120.0, "old-exit", datetime(2025, 5, 20), "o2"),
-            self._order("buy", 100.0, "OLD-BUY", datetime(2025, 5, 1), "o1"),
-        ])
-        p = self._mk_pos()
+            _order("sell", 160.0, "cur", datetime(2025, 6, 10), "o4"),
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o3"),
+            _order("sell", 120.0, "old", datetime(2025, 5, 20), "o2")])
+        p = _pos()
         self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
         self.manager.close_position("AAPL")
         self.assertEqual(p.exit_price, 160.0)
+        self.assertFalse(p.exit_price_estimated)
+        self.assertEqual(self.store.closed[0]["exit_order_id"], "o4")
 
-    def test_close_position_picks_first_close_after_entry(self):
-        """A later round-trip's sell is newer; the close right after entry wins."""
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            self._order("sell", 99.0, "later-exit", datetime(2025, 7, 10), "o4"),
-            self._order("sell", 155.0, "oco", datetime(2025, 6, 10), "o3"),
-            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
-        ])
-        p = self._mk_pos()
+    def test_close_without_price_or_history_is_estimated(self):
+        p = _pos()
         self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
         self.manager.close_position("AAPL")
-        self.assertEqual(p.exit_price, 155.0)
+        self.assertEqual(p.exit_price, 151.0)       # current_price
+        self.assertTrue(p.exit_price_estimated)
+        self.assertTrue(self.store.closed[0]["exit_price_estimated"])
 
-    def test_close_position_short_uses_later_buy(self):
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            self._order("buy", 140.0, "cover", datetime(2025, 6, 10), "o2"),
-            self._order("sell", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
-        ])
-        p = self._mk_pos(side="short")
+    def test_close_short_return_sign(self):
+        p = _pos("short")
         self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
-        self.manager.close_position("AAPL")
-        self.assertEqual(p.exit_price, 140.0)
+        self.manager.close_position("AAPL", exit_price=140.0)
         self.assertAlmostEqual(p.realized_return, 10.0 / 150.0)
+        self.assertEqual(self.store.closed[0]["side"], "short")
 
-    def test_close_position_entry_only_does_not_use_entry_price(self):
-        """With only the entry fill in history, exit falls back to OCO heuristic."""
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
-        ])
-        p = self._mk_pos()
+    def test_close_unknown_symbol_is_noop(self):
+        self.manager.close_position("NOPE", exit_price=1.0)
+        self.assertEqual(self.store.closed, [])
+
+    def test_exit_reason_preserved(self):
+        p = _pos()
+        p.exit_reason = "max_hold_days"
         self.manager.positions = [p]
-        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
-        self.manager.close_position("AAPL")
-        self.assertIn(p.exit_price, (140.0, 160.0, 151.0))
+        self.manager.close_position("AAPL", exit_price=150.0)
+        self.assertEqual(self.store.closed[0]["exit_reason"], "max_hold_days")
 
-    def test_resolve_exit_uses_filled_at_and_post_entry_sell(self):
-        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            {**self._order("sell", 160.0, "x", datetime(2025, 6, 10, 15), "o4"),
-             "submitted_at": datetime(2025, 6, 2)},
-            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o3"),
-            self._order("sell", 120.0, "old", datetime(2025, 5, 20), "o2"),
-        ])
-        price, date, reason = self.manager._resolve_exit_for_symbol(
-            "AAPL", "AAPL-BUY-1", "sell", "buy", 140.0, 160.0, 151.0, 150.0)
-        self.assertEqual(price, 160.0)
-        self.assertEqual(date, datetime(2025, 6, 10, 15))
-        self.assertEqual(reason, "oco_take_profit")
+    def test_failed_trade_write_keeps_metadata(self):
+        self.store.fail_closed_save = True
+        self.manager.open_position(_pos())
+        self.manager.close_position("AAPL", exit_price=155.0)
+        self.assertIn("AAPL", self.store.metadata)
 
-    def test_resolve_exit_short(self):
+
+class TestCloseConfirmation(_Base):
+    """close_position is final only once the broker no longer holds it."""
+
+    def _open_and_close(self, price=155.0):
+        p = _pos()
+        self.manager.open_position(p)
+        self.broker(("AAPL", 10.0, 150.0, 151.0))   # broker still holds it
+        self.manager.close_position("AAPL", exit_price=price)
+        return p
+
+    def test_still_held_writes_nothing_and_keeps_metadata(self):
+        self._open_and_close()
+        self.assertEqual(self.store.closed, [])
+        self.assertIn("AAPL", self.store.metadata)
+
+    def test_still_held_is_not_readopted_or_listed_open_within_grace(self):
+        self._open_and_close()
+        self.manager.invalidate_reconciliation_cache()
+        self.assertEqual(self.manager.get_and_reconcile_positions(), [])
+        self.assertEqual(self.store.metadata["AAPL"]["strategy_name"],
+                         "rsi_mean_reversion")
+        self.assertEqual(self.store.closed, [])
+        # counted once (as the closed copy), not twice
+        self.assertEqual(len(self.manager.positions), 1)
+
+    def test_broker_gone_finalizes_with_the_authoritative_fill(self):
+        self._open_and_close(price=155.0)
+        self.broker()
+        self.manager.invalidate_reconciliation_cache()
+        self.manager.get_and_reconcile_positions()
+        (t,) = self.store.closed
+        self.assertEqual(t["exit_price"], 155.0)
+        self.assertFalse(t["exit_price_estimated"])
+        self.assertNotIn("AAPL", self.store.metadata)
+        self.assertEqual(
+            len([p for p in self.manager.positions if p.closed]), 1)
+
+    def test_still_held_after_grace_reverts_to_open_with_original_metadata(self):
+        p = self._open_and_close()
+        self.manager._closing["AAPL"]["ts"] -= (
+            self.manager.CLOSE_CONFIRM_GRACE_SECONDS + 1)
+        self.manager.invalidate_reconciliation_cache()
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertFalse(pos.closed)
+        self.assertEqual(pos.strategy_name, "rsi_mean_reversion")
+        self.assertEqual((pos.stop_loss_price, pos.take_profit_price),
+                         (140.0, 160.0))
+        self.assertEqual(self.store.closed, [])          # nothing voided
+        self.assertNotIn(p, self.manager.positions)
+        self.assertEqual(
+            [x.symbol for x in self.manager.positions if x.closed], [])
+
+    def test_failed_write_retried_at_next_reconcile(self):
+        self.store.fail_closed_save = True
+        self.manager.open_position(_pos())
+        self.manager.close_position("AAPL", exit_price=155.0)   # broker empty
+        self.assertEqual(self.store.closed, [])
+        self.store.fail_closed_save = False
+        self.manager.invalidate_reconciliation_cache()
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.store.closed[0]["exit_price"], 155.0)
+
+    def test_broker_fetch_failure_at_close_leaves_it_pending(self):
+        self.manager.open_position(_pos())
+        self.data.get_current_positions_df.side_effect = RuntimeError("x")
+        self.manager.close_position("AAPL", exit_price=155.0)
+        self.assertEqual(self.store.closed, [])
+        self.assertIn("AAPL", self.manager._closing)
+
+
+class TestStaleMetadataSide(_Base):
+    def test_side_mismatch_archives_old_and_adopts_fresh(self):
+        self.store.metadata["AAPL"] = _meta(side="long", quantity=10.0)
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            self._order("buy", 140.0, "x", datetime(2025, 6, 10), "o2"),
-            self._order("sell", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
-        ])
-        price, _, _ = self.manager._resolve_exit_for_symbol(
-            "AAPL", "AAPL-BUY-1", "buy", "sell", 160.0, 130.0, 141.0, 150.0)
-        self.assertEqual(price, 140.0)
+            _order("sell", 158.0, "exit", datetime(2025, 6, 10), "o2"),
+            _order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1")])
+        self.broker(("AAPL", -4.0, 170.0, 168.0))     # now SHORT at broker
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.side, "short")
+        self.assertEqual(pos.strategy_name, UNATTRIBUTED)
+        self.assertEqual(pos.entry_price, 170.0)
+        (t,) = self.store.closed
+        self.assertEqual((t["side"], t["exit_price"]), ("long", 158.0))
+        self.assertFalse(t["exit_price_estimated"])
+        self.assertEqual(self.store.metadata["AAPL"]["side"], "short")
+        self.assertEqual(self.store.metadata["AAPL"]["strategy_name"],
+                         UNATTRIBUTED)
+
+    def test_side_mismatch_without_fill_is_estimated(self):
+        self.store.metadata["AAPL"] = _meta(side="long")
+        self.broker(("AAPL", -4.0, 170.0, 168.0))
+        self.manager.get_and_reconcile_positions()
+        self.assertTrue(self.store.closed[0]["exit_price_estimated"])
+
+    def test_matching_side_keeps_metadata(self):
+        self.store.metadata["AAPL"] = _meta(side="short", quantity=-4.0)
+        self.broker(("AAPL", -4.0, 170.0, 168.0))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.strategy_name, "rsi_mean_reversion")
+        self.assertEqual(self.store.closed, [])
+
+
+class TestClosedTradesInMemoryAndDailyCap(_Base):
+    """Positions opened AND closed today must still count against the cap."""
+
+    def _remaining(self):
+        from trading_engine import TradingEngine
+        from config import globalConfig
+        fake = SimpleNamespace(_positions_manager=self.manager)
+        return (TradingEngine._new_positions_remaining_today(fake),
+                globalConfig.MAX_NEW_POSITIONS_PER_DAY)
+
+    def test_opened_and_closed_today_counted(self):
+        now = datetime.now(timezone.utc)
+        self.store.closed.append({
+            "symbol": "OLD", "side": "long", "quantity": 5.0,
+            "entry_price": 10.0, "exit_price": 11.0, "entry_date": now,
+            "exit_date": now, "exit_price_estimated": False,
+            "entry_client_order_id": "c1", "strategy_name": "x"})
+        self.store.closed.append({
+            "symbol": "YEST", "side": "long", "quantity": 5.0,
+            "entry_price": 10.0, "exit_price": 11.0,
+            "entry_date": now - timedelta(days=3),
+            "exit_date": now - timedelta(days=2),
+            "exit_price_estimated": False,
+            "entry_client_order_id": "c2", "strategy_name": "x"})
+        self.store.metadata["AAPL"] = _meta(entry_date=now)
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
+        self.manager.get_and_reconcile_positions()
+        remaining, cap = self._remaining()
+        self.assertEqual(remaining, max(0, cap - 2))
+
+    def test_close_during_session_still_counts(self):
+        p = _pos()
+        p.entry_date = datetime.now(timezone.utc)
+        self.manager.open_position(p)
+        before, cap = self._remaining()
+        self.manager.close_position("AAPL", exit_price=150.0)
+        after, _ = self._remaining()
+        self.assertEqual(before, after)
+        self.assertEqual(after, max(0, cap - 1))
+        # and survives a reconcile reload from closed_trades
+        self.broker()
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self._remaining()[0], after)
+
+    def test_unwritten_closed_trade_kept_in_memory(self):
+        self.store.fail_closed_save = True
+        p = _pos()
+        p.entry_date = datetime.now(timezone.utc)
+        self.manager.open_position(p)
+        self.manager.close_position("AAPL", exit_price=150.0)
+        self.broker()
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(
+            len([x for x in self.manager.positions if x.closed]), 1)
+
+    def test_closed_trade_estimated_flag_round_trips(self):
+        self.store.closed.append({
+            "symbol": "X", "side": "short", "quantity": 2.0,
+            "entry_price": 10.0, "exit_price": None,
+            "entry_date": datetime.now(timezone.utc), "exit_date": None,
+            "exit_price_estimated": True, "entry_client_order_id": None,
+            "strategy_name": None})
+        self.manager.get_and_reconcile_positions()
+        (c,) = [p for p in self.manager.positions if p.closed]
+        self.assertTrue(c.exit_price_estimated)
+        self.assertIsNone(c.exit_price)
+        self.assertEqual(c.side, "short")
+        self.assertEqual(c.strategy_name, UNATTRIBUTED)
+
+
+class TestUnattributedInEngine(_Base):
+    def test_unattributed_counts_toward_caps_and_notional(self):
+        from trading_engine import TradingEngine
+        self.broker(("NVOC", 20.0, 10.0, 10.5))
+        self.manager.get_and_reconcile_positions()
+        fake = SimpleNamespace(_positions_manager=self.manager)
+        used = TradingEngine._strategy_notional_used(fake)
+        self.assertEqual(used, {UNATTRIBUTED: 200.0})
+        # an unknown strategy gets the full-equity budget fallback and does
+        # not consume any enabled strategy's budget
+        engine = TradingEngine.__new__(TradingEngine)
+        budgets = TradingEngine._strategy_budgets(engine, 10000.0)
+        self.assertNotIn(UNATTRIBUTED, budgets)
+        self.assertEqual(budgets.get(UNATTRIBUTED, 10000.0) - 200.0, 9800.0)
+
+    def test_unattributed_is_daily_and_open(self):
+        self.broker(("NVOC", 20.0, 10.0, 10.5))
+        (p,) = self.manager.get_and_reconcile_positions()
+        self.assertFalse(p.intraday)     # gets the daily OCO refresh
+        self.assertFalse(p.closed)
+        self.assertIsNotNone(p.entry_date)   # max-hold arithmetic works
+
+
+class TestPersist(_Base):
+    def test_snapshot_contains_open_positions_only(self):
+        self.store.metadata["AAPL"] = _meta()
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
+        self.manager.get_and_reconcile_positions()
+        self.manager.begin_session()
+        self.manager.persist_positions()
+        (_, rows) = self.store.snapshots[-1]
+        self.assertEqual([r.symbol for r in rows], ["AAPL"])
+        self.assertTrue(all(not r.closed for r in rows))
+
+    def test_persist_writes_in_memory_metadata_edits(self):
+        self.store.metadata["AAPL"] = _meta()
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        pos.stop_loss_price = 145.0
+        self.manager.persist_positions()
+        self.assertEqual(self.store.metadata["AAPL"]["stop_loss_price"], 145.0)
+
+    def test_persist_without_open_positions_writes_nothing(self):
+        self.manager.persist_positions()
+        self.assertEqual(self.store.snapshots, [])
+
+    def test_session_timestamp_stable_within_session(self):
+        self.broker(("AAPL", 10.0, 150.0, 152.0))
+        self.manager.get_and_reconcile_positions()
+        self.manager.begin_session()
+        self.manager.persist_positions()
+        self.manager.persist_positions()
+        self.assertEqual(self.store.snapshots[0][0], self.store.snapshots[1][0])
+
+
+class TestBrokerSlTp(_Base):
+    def test_maps_legs(self):
+        self.data.get_open_orders.return_value = pd.DataFrame([
+            {'symbol': 'NVOC', 'leg_type': 'stop_loss', 'stop_price': 9.5,
+             'limit_price': None},
+            {'symbol': 'NVOC', 'leg_type': 'take_profit', 'stop_price': None,
+             'limit_price': 12.5}])
+        self.assertEqual(self.manager._broker_sl_tp_by_symbol(),
+                         {'NVOC': (9.5, 12.5)})
+
+    def test_best_effort(self):
+        self.data.get_open_orders.side_effect = RuntimeError("x")
+        self.assertEqual(self.manager._broker_sl_tp_by_symbol(), {})
+        self.assertEqual(
+            PositionsManager(self.store, Mock(spec=[]))
+            ._broker_sl_tp_by_symbol(), {})
 
 
 if __name__ == '__main__':

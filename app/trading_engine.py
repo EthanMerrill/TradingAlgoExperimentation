@@ -21,7 +21,7 @@ from indicators import TechnicalIndicators
 from risk import RiskGuard
 from storage import storage
 from order import Order, generate_client_order_id
-from positions import Position, PositionsManager
+from positions import Position, PositionsFetchError, PositionsManager
 from utils import ensure_utc, utc_now
 from utils.datetime_ import get_session
 from utils.calendar import US_EASTERN, is_regular_trading_hours  # type: ignore
@@ -776,6 +776,14 @@ class TradingEngine:
                             shares * opportunity.entry_price)
                 return True
             else:
+                if getattr(self._positions_manager, 'reconcile_ok', True) is False:
+                    logger.error(
+                        "Refusing %s entry for %s: last broker positions "
+                        "reconcile FAILED (open set unknown)",
+                        label, opportunity.symbol)
+                    self._last_order_error = (
+                        "broker positions unavailable — entry refused")
+                    return False
                 if self.trading_client is None:
                     logger.error(
                         "Trading client not available - cannot place order")
@@ -1012,6 +1020,8 @@ class TradingEngine:
                     client_order_id=client_order_id,
                     strategy_name=opportunity.strategy_name,
                     intraday=opportunity.intraday,
+                    composite_score=getattr(
+                        opportunity, 'composite_score', 0.0) or 0.0,
                 )
                 self._positions_manager.open_position(new_position)
         except Exception as e:  # pylint: disable=broad-exception-caught
@@ -2704,7 +2714,15 @@ class TradingEngine:
             # into one snapshot.
             self._positions_manager.begin_session()
             # Refresh positions once at the beginning of the session
-            positions = self._positions_manager.get_and_reconcile_positions()
+            try:
+                positions = self._positions_manager.get_and_reconcile_positions()
+            except PositionsFetchError as e:
+                # Broker positions unknown: fail closed for entries, leave
+                # existing exits/orders untouched, and persist nothing.
+                error_msg = "Broker positions unavailable — skipping session: %s" % e
+                logger.error(error_msg)
+                session_summary['errors'].append(error_msg)
+                return session_summary
 
             if not positions:
                 logger.info("No current positions found")

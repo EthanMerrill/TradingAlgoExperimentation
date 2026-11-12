@@ -236,6 +236,162 @@ class TestPostgresStorage(unittest.TestCase):
         idx = _POSITION_COLS.index("exit_reason") + 2
         self.assertEqual(rows[0][idx], "oco_take_profit")
 
+    # --- position_metadata / closed_trades ---
+
+    def test_new_tables_in_ddl(self):
+        from storage.postgres import _ALL_DDL
+        self.assertIn("CREATE TABLE IF NOT EXISTS position_metadata", _ALL_DDL)
+        self.assertIn("UNIQUE (environment, symbol)", _ALL_DDL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS closed_trades", _ALL_DDL)
+        self.assertIn("UNIQUE (environment, dedup_key)", _ALL_DDL)
+        self.assertIn("exit_price_estimated", _ALL_DDL)
+
+    @patch("config.globalConfig")
+    def test_init_runs_idempotent_migration_for_environment(self, cfg):
+        cfg.DATABASE_URL = "postgresql://u:p@h/db"
+        cfg.ENVIRONMENT = "qa"
+        sys.modules["asyncpg"].create_pool = AsyncMock(return_value=self._pool)
+        self.PostgresStorage(database_url="postgresql://u:p@h/db")
+        sqls = [c[0][0] for c in self._conn.execute.call_args_list]
+        seeds = [q for q in sqls if "INSERT INTO position_metadata" in q
+                 or "INSERT INTO closed_trades" in q]
+        self.assertEqual(len(seeds), 2)
+        for q in seeds:
+            # seeds only into an empty table, from the latest snapshot
+            self.assertIn("NOT EXISTS (SELECT 1 FROM", q)
+            self.assertIn("MAX(snapshot_timestamp)", q)
+            self.assertIn("ON CONFLICT", q)
+        env_args = [c[0][1] for c in self._conn.execute.call_args_list
+                    if len(c[0]) > 1]
+        self.assertEqual(env_args, ["qa", "qa"])
+        meta_sql = next(q for q in seeds if "INTO position_metadata" in q)
+        self.assertIn("COALESCE(closed, FALSE) = FALSE", meta_sql)
+        closed_sql = next(q for q in seeds if "INTO closed_trades" in q)
+        self.assertIn("closed IS TRUE", closed_sql)
+        self.assertIn("(exit_price IS NULL)", closed_sql)
+
+    @patch("config.globalConfig")
+    def test_migration_failure_does_not_block_startup(self, cfg):
+        cfg.DATABASE_URL = "postgresql://u:p@h/db"
+        cfg.ENVIRONMENT = "dev"
+
+        async def _exec(sql, *args):
+            if args:
+                raise RuntimeError("boom")
+            return "OK"
+        self._conn.execute = AsyncMock(side_effect=_exec)
+        sys.modules["asyncpg"].create_pool = AsyncMock(return_value=self._pool)
+        s = self.PostgresStorage(database_url="postgresql://u:p@h/db")
+        self.assertTrue(s._connected)
+
+    def _meta_row(self, symbol="AAPL", **kw):
+        row = {"symbol": symbol, "strategy_name": "rsi_mean_reversion",
+               "rsi_period": 14, "stop_loss_price": 95.0,
+               "entry_date": datetime(2026, 1, 2, 15, 0),
+               "intraday": False, "quantity": 5.0, "entry_price": 100.0}
+        row.update(kw)
+        return row
+
+    def test_save_position_metadata_disconnected_and_empty(self):
+        self.assertFalse(
+            self._disconnected().save_position_metadata([self._meta_row()]))
+        self.assertTrue(self._connected().save_position_metadata([]))
+
+    def test_save_position_metadata_upserts_by_env_symbol(self):
+        from storage.backend import POSITION_METADATA_FIELDS
+        s = self._connected(env="dev")
+        self.assertTrue(s.save_position_metadata([
+            self._meta_row(), self._meta_row("MSFT", strategy_name=None)]))
+        sql, rows = self._conn.executemany.call_args[0]
+        self.assertIn("INSERT INTO position_metadata", sql)
+        self.assertIn("ON CONFLICT (environment, symbol) DO UPDATE", sql)
+        self.assertIn("updated_at = NOW()", sql)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows[0]), len(POSITION_METADATA_FIELDS) + 1)
+        self.assertEqual(rows[0][0], "dev")
+        self.assertEqual(rows[0][1], "AAPL")
+        # naive entry_date localised to UTC for TIMESTAMPTZ
+        idx = POSITION_METADATA_FIELDS.index("entry_date") + 1
+        self.assertIsNotNone(rows[0][idx].tzinfo)
+        # missing strategy falls back to 'unattributed'
+        sidx = POSITION_METADATA_FIELDS.index("strategy_name") + 1
+        self.assertEqual(rows[1][sidx], "unattributed")
+
+    def test_load_position_metadata(self):
+        self.assertIsNone(self._disconnected().load_position_metadata())
+        self._conn.fetch = AsyncMock(return_value=[{"symbol": "AAPL"}])
+        self.assertEqual(self._connected().load_position_metadata(),
+                         [{"symbol": "AAPL"}])
+        sql, env = self._conn.fetch.call_args[0]
+        self.assertIn("FROM position_metadata WHERE environment = $1", sql)
+        self.assertEqual(env, "dev")
+
+    def test_load_position_metadata_error_is_none_not_empty(self):
+        self._conn.fetch = AsyncMock(side_effect=RuntimeError("db down"))
+        self.assertIsNone(self._connected().load_position_metadata())
+
+    def test_delete_position_metadata(self):
+        self.assertFalse(self._disconnected().delete_position_metadata(["A"]))
+        self.assertTrue(self._connected().delete_position_metadata([]))
+        s = self._connected(env="qa")
+        self.assertTrue(s.delete_position_metadata(["AAPL", "MSFT"]))
+        sql, env, symbols = self._conn.execute.call_args[0]
+        self.assertIn("DELETE FROM position_metadata", sql)
+        self.assertEqual((env, symbols), ("qa", ["AAPL", "MSFT"]))
+
+    def _trade(self, **kw):
+        t = {"symbol": "AAPL", "side": "long", "quantity": 5.0,
+             "entry_price": 100.0, "exit_price": 110.0,
+             "entry_date": datetime(2026, 1, 2, 15, 0),
+             "exit_date": datetime(2026, 1, 5, 15, 0),
+             "realized_return": 0.1, "exit_reason": "oco_take_profit",
+             "exit_price_estimated": False, "strategy_name": "x",
+             "entry_client_order_id": "cid-1", "exit_order_id": "o2"}
+        t.update(kw)
+        return t
+
+    def test_save_closed_trade_inserts_once_by_dedup_key(self):
+        from storage.backend import CLOSED_TRADE_FIELDS
+        self.assertFalse(self._disconnected().save_closed_trade(self._trade()))
+        s = self._connected(env="dev")
+        self.assertTrue(s.save_closed_trade(self._trade()))
+        args = self._conn.execute.call_args[0]
+        sql = args[0]
+        self.assertIn("INSERT INTO closed_trades", sql)
+        self.assertIn("ON CONFLICT (environment, dedup_key) DO NOTHING", sql)
+        self.assertEqual(args[1], "dev")
+        self.assertEqual(args[2], "cid-1")            # dedup_key
+        self.assertEqual(len(args), 3 + len(CLOSED_TRADE_FIELDS))
+        eidx = 3 + CLOSED_TRADE_FIELDS.index("exit_date")
+        self.assertIsNotNone(args[eidx].tzinfo)
+
+    def test_closed_trade_key_without_client_order_id(self):
+        from storage.backend import closed_trade_key
+        k1 = closed_trade_key(self._trade(entry_client_order_id=None))
+        k2 = closed_trade_key(self._trade(
+            entry_client_order_id="nan", exit_price=1.0,
+            exit_date=datetime(2030, 1, 1)))
+        self.assertEqual(k1, k2)       # exit data does not affect the key
+        self.assertEqual(k1, "AAPL|long|2026-01-02T15:00:00")
+        self.assertNotEqual(k1, closed_trade_key(self._trade(
+            entry_client_order_id=None, side="short")))
+
+    def test_save_closed_trade_error_returns_false(self):
+        self._conn.execute = AsyncMock(side_effect=RuntimeError("x"))
+        self.assertFalse(self._connected().save_closed_trade(self._trade()))
+
+    def test_load_closed_trades(self):
+        self.assertIsNone(self._disconnected().load_closed_trades())
+        self._conn.fetch = AsyncMock(return_value=[{"symbol": "AAPL"}])
+        self.assertEqual(self._connected().load_closed_trades(50),
+                         [{"symbol": "AAPL"}])
+        sql, env, limit = self._conn.fetch.call_args[0]
+        self.assertIn("FROM closed_trades WHERE environment = $1", sql)
+        self.assertIn("ORDER BY exit_date DESC NULLS LAST", sql)
+        self.assertEqual((env, limit), ("dev", 50))
+        self._conn.fetch = AsyncMock(side_effect=RuntimeError("x"))
+        self.assertIsNone(self._connected().load_closed_trades())
+
     # --- save_orders ---
 
     def test_save_orders_disconnected(self):

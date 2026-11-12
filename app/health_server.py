@@ -137,24 +137,58 @@ def _df_row_to_dict(row) -> dict:
     return d
 
 
-def _fetch_positions_from_storage(storage_backend) -> list[dict]:
-    """Fetch the latest position snapshot from storage and return JSON-safe dicts.
+def _fetch_positions_from_storage(storage_backend, data_provider=None) -> list[dict]:
+    """Rows for /api/positions (frontend filters open/closed itself).
 
-    Delegates the "find latest snapshot + load rows" logic to the storage
-    backend (``get_latest_positions_df(openPosition=None)`` = all rows,
-    unfiltered — the frontend handles open/closed filtering).
+    OPEN rows are the broker's positions joined with ``position_metadata``
+    (same join the trading engine uses).  Without a data provider, or if the
+    broker/metadata read fails, the latest ``position_snapshots`` open rows are
+    used instead.  CLOSED rows come from ``closed_trades`` (snapshot closed
+    rows only as a legacy fallback).  Row shape matches the snapshot schema.
     """
-    df = storage_backend.get_latest_positions_df(openPosition=None)
-    if df is None or df.empty:
-        logger.warning("No position snapshots found in storage")
-        return []
+    # pylint: disable=import-outside-toplevel
+    from positions import PositionsManager
+    from storage.backend import normalize_position_for_save
 
-    logger.info("Latest snapshot: %d rows × %d cols", len(df), len(df.columns))
-    rows = [_df_row_to_dict(row) for _, row in df.iterrows()]
+    open_rows = None
+    if data_provider is not None:
+        try:
+            broker = data_provider.get_current_positions_df(
+                raise_on_error=True)
+            meta_rows = storage_backend.load_position_metadata()
+            if isinstance(meta_rows, list) and isinstance(broker, pd.DataFrame):
+                meta = {str(m['symbol']): m for m in meta_rows}
+                open_rows = [
+                    normalize_position_for_save(
+                        PositionsManager._position_from_broker(
+                            r, meta.get(str(r['symbol']), {})))
+                    for _, r in broker.iterrows()
+                    if r.get('qty') not in (0, 0.0, None)] \
+                    if not broker.empty else []
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning("Broker-based open positions failed (%s); "
+                           "falling back to latest snapshot", e)
 
-    n_closed = sum(1 for r in rows if r.get('closed'))
-    logger.info("Serialized %d total → %d open, %d closed",
-                len(rows), len(rows) - n_closed, n_closed)
+    closed_rows = None
+    trades = storage_backend.load_closed_trades(500)
+    if isinstance(trades, list):
+        closed_rows = [normalize_position_for_save(
+            PositionsManager._closed_from_row(t)) for t in trades]
+        for out, t in zip(closed_rows, trades):
+            out['exit_price_estimated'] = bool(t.get('exit_price_estimated'))
+
+    if open_rows is None or closed_rows is None:
+        df = storage_backend.get_latest_positions_df(openPosition=None)
+        snap = [] if df is None or df.empty else [
+            r.to_dict() for _, r in df.iterrows()]
+        if open_rows is None:
+            open_rows = [r for r in snap if not r.get('closed')]
+        if closed_rows is None:
+            closed_rows = [r for r in snap if r.get('closed')]
+
+    rows = [_df_row_to_dict(r) for r in open_rows + closed_rows]
+    logger.info("Positions payload: %d open, %d closed",
+                len(open_rows), len(closed_rows))
     return rows
 
 
@@ -357,7 +391,8 @@ def create_app(storage_backend=None, shared_state: Optional[dict[str, Any]] = No
             return jsonify({'error': 'Storage backend not available'}), 503
 
         try:
-            rows = _fetch_positions_from_storage(storage_backend)
+            rows = _fetch_positions_from_storage(
+                storage_backend, data_provider)
             return jsonify(rows)
         except Exception as e:
             logger.error("Error fetching positions from storage: %s", e)

@@ -106,6 +106,75 @@ POSITION_FIELDS = [
 ]
 
 
+# Per-open-position metadata the broker cannot know (strategy attribution,
+# intended SL/TP, entry order ids).  Keyed by (environment, symbol).  The broker
+# is the source of truth for *whether* a position is open and its size/price;
+# this table only decorates broker positions.  ``side``/``quantity``/
+# ``entry_price`` are informational (last seen) and are used only to account for
+# the trade when the broker later no longer holds the symbol.
+POSITION_METADATA_FIELDS = [
+    "symbol",
+    "strategy_name",
+    "rsi_period",
+    "rsi_lower",
+    "rsi_upper",
+    "alpha",
+    "composite_score",
+    "stop_loss_price",
+    "take_profit_price",
+    "intraday",
+    "entry_client_order_id",
+    "entry_order_id",
+    "entry_date",
+    "current_rsi",
+    "side",
+    "quantity",
+    "entry_price",
+]
+
+# One row per completed round trip, written exactly once.
+CLOSED_TRADE_FIELDS = [
+    "symbol",
+    "side",
+    "quantity",
+    "entry_price",
+    "exit_price",
+    "entry_date",
+    "exit_date",
+    "realized_return",
+    "exit_reason",
+    "exit_price_estimated",
+    "strategy_name",
+    "entry_client_order_id",
+    "exit_order_id",
+]
+
+
+def closed_trade_key(trade: Mapping[str, Any]) -> str:
+    """Stable dedup key for a closed trade.
+
+    The entry client_order_id when known, else ``symbol|side|entry_date``
+    (UTC, second precision).  Deliberately excludes the exit time so a retried
+    write of an *estimated* exit cannot create a second row.
+    """
+    cid = trade.get("entry_client_order_id")
+    if cid is not None and str(cid).strip().lower() not in (
+            "", "nan", "nat", "none", "<na>"):
+        return str(cid).strip()
+    entry = _safe_datetime(trade.get("entry_date"))
+    entry_txt = ""
+    if entry:
+        try:
+            ts = pd.Timestamp(entry)
+            ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert(
+                "UTC")
+            entry_txt = ts.strftime("%Y-%m-%dT%H:%M:%S")
+        except (TypeError, ValueError):
+            entry_txt = ""
+    return "%s|%s|%s" % (trade.get("symbol"), trade.get("side") or "long",
+                         entry_txt)
+
+
 def _safe_round(value: Any, ndigits: int = 2) -> Any:
     """Round a numeric value safely (passes through non-numerics like Mock).
 
@@ -618,6 +687,35 @@ class StorageBackend(ABC):
     def delete_unsettled_entries(self, client_order_ids: List[str]) -> bool:
         """Delete resolved unsettled-entry records. Default no-op."""
         return False
+
+    # -- position_metadata / closed_trades (broker is the source of truth for
+    #    OPEN positions; these tables only decorate / archive) ---------------
+
+    def save_position_metadata(self, rows: List[Dict[str, Any]]) -> bool:
+        """Upsert metadata rows (POSITION_METADATA_FIELDS) by symbol. Default no-op."""
+        return False
+
+    def load_position_metadata(self) -> Optional[List[Dict[str, Any]]]:
+        """Load metadata rows for this environment.
+
+        Returns ``None`` (not ``[]``) when the store is unavailable or the
+        query failed, so callers can tell "no metadata" from "could not read".
+        """
+        return None
+
+    def delete_position_metadata(self, symbols: List[str]) -> bool:
+        """Delete metadata rows by symbol. Default no-op."""
+        return False
+
+    def save_closed_trade(self, trade: Dict[str, Any]) -> bool:
+        """Insert one closed trade (CLOSED_TRADE_FIELDS), ignoring duplicates
+        by ``closed_trade_key``.  Returns True when persisted (or already
+        present).  Default no-op."""
+        return False
+
+    def load_closed_trades(self, limit: int = 500) -> Optional[List[Dict[str, Any]]]:
+        """Most recent closed trades (newest exit first); ``None`` on failure."""
+        return None
 
     def get_open_orders_stored(self, symbol: Optional[str] = None) -> List[Any]:
         """Load persisted orders that are not in a terminal status."""

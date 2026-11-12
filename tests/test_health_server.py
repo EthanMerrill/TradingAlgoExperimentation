@@ -232,6 +232,55 @@ class TestApiPositionsEndpoint(unittest.TestCase):
         parsed = datetime.fromisoformat(pos['entry_date'])
         self.assertIsInstance(parsed, datetime)
 
+    def test_positions_open_from_broker_closed_from_closed_trades(self):
+        """Open rows = broker + metadata; closed rows = closed_trades; the
+        stale snapshot is not consulted for what is open."""
+        from unittest.mock import Mock as _M
+        storage = _M()
+        storage.get_latest_positions_df.return_value = self.full_df
+        storage.load_position_metadata.return_value = [{
+            'symbol': 'AAPL', 'strategy_name': 'momentum',
+            'stop_loss_price': 140.0, 'take_profit_price': 170.0,
+            'entry_date': pd.Timestamp('2025-06-01', tz='UTC')}]
+        storage.load_closed_trades.return_value = [{
+            'symbol': 'TSLA', 'side': 'short', 'quantity': 3.0,
+            'entry_price': 800.0, 'exit_price': 780.0,
+            'entry_date': pd.Timestamp('2025-06-01', tz='UTC'),
+            'exit_date': pd.Timestamp('2025-06-05', tz='UTC'),
+            'realized_return': 0.025, 'exit_reason': 'oco_filled',
+            'exit_price_estimated': True, 'strategy_name': 'x'}]
+        dp = _M()
+        dp.get_current_positions_df.return_value = pd.DataFrame([
+            {'symbol': 'AAPL', 'qty': 7.0, 'avg_entry_price': 151.0,
+             'current_price': 153.0, 'market_value': 1071.0},
+            {'symbol': 'NVOC', 'qty': -2.0, 'avg_entry_price': 10.0,
+             'current_price': 9.0, 'market_value': -18.0}])
+        client = create_app(storage_backend=storage,
+                            data_provider=dp).test_client()
+        resp = client.get('/api/positions', headers=self._auth_headers())
+        rows = {r['symbol']: r for r in resp.get_json()}
+        self.assertEqual(set(rows), {'AAPL', 'NVOC', 'TSLA'})
+        self.assertFalse(rows['AAPL']['closed'])
+        self.assertEqual(rows['AAPL']['quantity'], 7.0)
+        self.assertEqual(rows['AAPL']['strategy_name'], 'momentum')
+        self.assertEqual(rows['NVOC']['side'], 'short')
+        self.assertEqual(rows['NVOC']['strategy_name'], 'unattributed')
+        self.assertTrue(rows['TSLA']['closed'])
+        self.assertEqual(rows['TSLA']['exit_price'], 780.0)
+        self.assertTrue(rows['TSLA']['exit_price_estimated'])
+        self.assertEqual(rows['TSLA']['side'], 'short')
+
+    def test_positions_falls_back_to_snapshot_when_broker_fails(self):
+        from unittest.mock import Mock as _M
+        dp = _M()
+        dp.get_current_positions_df.side_effect = RuntimeError('down')
+        client = create_app(storage_backend=self.mock_storage,
+                            data_provider=dp).test_client()
+        resp = client.get('/api/positions', headers=self._auth_headers())
+        self.assertEqual(resp.status_code, 200)
+        symbols = {r['symbol'] for r in resp.get_json()}
+        self.assertEqual(symbols, {'AAPL', 'TSLA'})
+
     def test_positions_none_storage_returns_503(self):
         """When storage_backend is None, return 503."""
         app = create_app(storage_backend=None)

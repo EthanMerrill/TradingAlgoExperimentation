@@ -376,6 +376,25 @@ class TestDataProvider(unittest.TestCase):
 
     @patch('data_provider.globalConfig')
     @patch('data_provider.time.sleep')
+    def test_get_current_positions_raise_on_error(self, _mock_sleep, mock_config):
+        """API failures are an empty frame by default but propagate when the
+        caller (position reconcile) must tell failure from 'no positions'."""
+        mock_config.get_alpaca_config.return_value = self.mock_config
+        mock_config.PAPER_TRADE = True
+        mock_config.API_RATE_LIMIT_DELAY = 0.0
+
+        with patch('data_provider.StockHistoricalDataClient'), \
+                patch('data_provider.TradingClient') as mock_trade:
+            trade = Mock()
+            trade.get_all_positions.side_effect = RuntimeError("503")
+            mock_trade.return_value = trade
+            data_provider = DataProvider()
+            self.assertTrue(data_provider.get_current_positions_df().empty)
+            with self.assertRaises(RuntimeError):
+                data_provider.get_current_positions_df(raise_on_error=True)
+
+    @patch('data_provider.globalConfig')
+    @patch('data_provider.time.sleep')
     def test_filter_symbols_by_max_volume(self, _mock_sleep, mock_config):
         """Test universe filter excludes symbols above max volume."""
         mock_config.get_alpaca_config.return_value = self.mock_config

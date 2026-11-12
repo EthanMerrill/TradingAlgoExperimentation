@@ -290,11 +290,19 @@ class DataProvider:
         finally:
             time.sleep(self._rate_limit_delay)
 
-    def get_current_positions_df(self) -> pd.DataFrame:
-        """Get current portfolio positions."""
+    def get_current_positions_df(self, raise_on_error: bool = False) -> pd.DataFrame:
+        """Get current portfolio positions.
+
+        By default API failures are logged and an empty DataFrame is returned,
+        which is indistinguishable from "no positions".  Callers that must not
+        confuse the two (position reconciliation) pass ``raise_on_error=True``
+        to have the underlying exception propagate instead.
+        """
         try:
             if self.trading_client is None:
                 logger.error("Trading client not available")
+                if raise_on_error:
+                    raise RuntimeError("Trading client not available")
                 return pd.DataFrame()
 
             positions = self.trading_client.get_all_positions()
@@ -344,6 +352,8 @@ class DataProvider:
 
         except Exception as e:
             logger.error("Error fetching current positions: %s", e)
+            if raise_on_error:
+                raise
             return pd.DataFrame()
 
     def get_filled_orders_for_symbol(self, symbol: str, limit: int = 50) -> pd.DataFrame:

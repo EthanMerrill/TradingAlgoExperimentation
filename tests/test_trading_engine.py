@@ -75,6 +75,40 @@ class TestTradingEngine(unittest.TestCase):
         engine.set_positions_manager(mock_manager)
         self.assertIs(engine._positions_manager, mock_manager)
 
+    def test_session_fails_closed_when_broker_positions_unavailable(self):
+        """A failed broker positions fetch must skip entries, touch no
+        exits/orders, and persist nothing."""
+        from positions import PositionsFetchError
+        self.engine.dry_run = False
+        pm = self.engine._positions_manager
+        pm.get_and_reconcile_positions.side_effect = PositionsFetchError("503")
+        pm.persist_positions = Mock()
+        self.engine.update_portfolio_orders = Mock()
+        self.engine.identify_purchases = Mock()
+        self.engine.identify_and_execute_shorts = Mock()
+        with patch('trading_engine.storage') as mock_storage:
+            mock_storage.get_open_orders_stored.return_value = []
+            summary = self.engine.execute_trading_session([Mock()])
+        self.engine.identify_purchases.assert_not_called()
+        self.engine.identify_and_execute_shorts.assert_not_called()
+        self.engine.update_portfolio_orders.assert_not_called()
+        pm.persist_positions.assert_not_called()
+        self.assertTrue(any("unavailable" in e for e in summary['errors']))
+
+    def test_place_order_refused_while_reconcile_failed(self):
+        """Bar-loop/queued entries share _place_order: refuse when the last
+        reconcile failed."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine._positions_manager.reconcile_ok = False
+        opp = TradingOpportunity(
+            symbol="AAPL", current_rsi=25.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=95.0, take_profit_price=110.0, num_trades=10)
+        self.assertFalse(self.engine.place_buy_order(opp, 5))
+        self.engine.trading_client.submit_order.assert_not_called()
+
     def test_execute_trading_session_persists_without_backtest_results(self):
         """Positions reconciled from the broker must still persist even when
         there are no new backtest results (regression: the early return used

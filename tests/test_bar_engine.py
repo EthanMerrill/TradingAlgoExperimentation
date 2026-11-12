@@ -91,7 +91,8 @@ class TestIntradayPositionFlag(unittest.TestCase):
         self.assertIs(d["intraday"], True)
         self.assertEqual(d["strategy_name"], "rsi_mean_reversion")
 
-    def test_df_row_round_trip(self):
+    def test_metadata_round_trip(self):
+        """intraday survives metadata row -> broker join."""
         pos = Position(
             symbol="AAA", quantity=10.0, entry_price=10.0,
             current_price=10.5, current_rsi=0.0,
@@ -99,21 +100,18 @@ class TestIntradayPositionFlag(unittest.TestCase):
             rsi_period=14, rsi_lower=30, rsi_upper=70,
             intraday=True,
         )
-        row = pd.Series(normalize_position_for_save(pos))
-        manager = PositionsManager(Mock(), Mock())
-        restored = manager._df_row_to_position(row)
+        meta = PositionsManager._metadata_row(pos)
+        broker_row = pd.Series({"symbol": "AAA", "qty": 10.0,
+                                "avg_entry_price": 10.0,
+                                "current_price": 10.5})
+        restored = PositionsManager._position_from_broker(broker_row, meta)
         self.assertIs(restored.intraday, True)
 
-    def test_legacy_row_defaults_false(self):
-        row = pd.Series({
-            "symbol": "AAA", "shares": 10.0, "entry_price": 10.0,
-            "current_price": 10.5, "current_rsi": 0.0,
-            "entry_date": pd.Timestamp.now(), "rsi_period": 14,
-            "rsi_lower": 30, "rsi_upper": 70, "alpha": 0.05,
-            "closed": False, "exit_date": None,
-        })
-        manager = PositionsManager(Mock(), Mock())
-        restored = manager._df_row_to_position(row)
+    def test_missing_metadata_defaults_false(self):
+        broker_row = pd.Series({"symbol": "AAA", "qty": 10.0,
+                                "avg_entry_price": 10.0,
+                                "current_price": 10.5})
+        restored = PositionsManager._position_from_broker(broker_row, {})
         self.assertIs(restored.intraday, False)
 
 

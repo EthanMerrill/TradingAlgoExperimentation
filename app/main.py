@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from data_provider import data_provider
 from storage import storage
-from positions import PositionsManager
+from positions import PositionsFetchError, PositionsManager
 from optimizer import StrategyOptimizer
 from walk_forward import WalkForwardValidator
 from trading_engine import TradingEngine
@@ -236,6 +236,10 @@ class TradingAlgorithm:
                 'duration': (self.session_metadata['end_time'] - self.session_metadata['start_time']).total_seconds()
             }
 
+        except PositionsFetchError as e:
+            # Broker positions unknown: abort the cycle before any entries.
+            logger.error("Aborting cycle — broker positions unavailable: %s", e)
+            return {'status': 'error', 'error': 'positions_unavailable: %s' % e}
         except (ValueError, TypeError, KeyError) as e:
             logger.error("Error in trading algorithm: %s", e)
             return {'status': 'error', 'error': str(e)}

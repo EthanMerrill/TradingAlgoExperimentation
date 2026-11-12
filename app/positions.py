@@ -1,78 +1,86 @@
+"""Position tracking.
+
+The BROKER (Alpaca) is the single source of truth for which positions are
+OPEN and for their symbol, signed quantity (negative = short), average entry
+price, current price and market value.  Local storage can never add, remove or
+resize an open position.
+
+Local storage holds only what the broker cannot know:
+
+* ``position_metadata`` -- one row per open symbol: strategy attribution, RSI
+  parameters, the *intended* SL/TP levels and the entry order ids.  Joined onto
+  broker positions by symbol.  A broker position with no row is adopted as
+  ``unattributed`` with default parameters.
+* ``closed_trades`` -- one row per completed round trip, written exactly once
+  when the engine closes a position, or when reconcile finds metadata for a
+  symbol the broker no longer holds (exit price resolved from order history; an
+  estimate is a last resort and is flagged ``exit_price_estimated``).
+* ``position_snapshots`` -- a per-session snapshot of broker state + metadata
+  for the dashboard/history.  Never read to decide what is open.
+
+If the broker positions fetch fails, reconcile raises ``PositionsFetchError``:
+nothing is closed and nothing is written.
+"""
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 
 from config import globalConfig  # type: ignore
+from storage.backend import closed_trade_key
 from utils import parse_dt
 
 logger = logging.getLogger(__name__)
 
+UNATTRIBUTED = "unattributed"
 
-def _clean_identifier(value) -> Optional[str]:
-    """Normalize an identifier (order_id/client_order_id) or return None.
 
-    Guards against the literal string ``"nan"``/``"<NA>"``/``"NaT"`` that a
-    past serialization bug could persist into TEXT columns. ``pd.notna`` alone
-    is insufficient because ``pd.notna("nan")`` is True for a non-empty string.
-    """
-    if value is None:
-        return None
-    if not pd.notna(value):
-        return None
-    text = str(value).strip()
-    if not text or text.lower() in ("nan", "nat", "none", "<na>"):
-        return None
-    return text
+class PositionsFetchError(RuntimeError):
+    """The broker positions fetch failed; the open set is unknown."""
 
 
 def _utc_now() -> datetime:
-    """Timezone-aware "now" for timestamps that reach cloud DataFrames.
-
-    Position snapshots loaded from Postgres carry timezone-aware
-    ``datetime64[*, UTC]`` columns, so assigning a *naive* datetime raises
-    ``Invalid value '...' for dtype 'datetime64[s, UTC]'``. Always use this
-    when writing a timestamp into such a column.
-    """
     return datetime.now(timezone.utc)
 
 
-def _as_utc_timestamp(value: Optional[datetime] = None) -> pd.Timestamp:
-    """Coerce ``value`` (or now) into a tz-aware, second-precision Timestamp.
-
-    Naive values are localized to UTC so they can be assigned into the
-    tz-aware datetime columns of a cloud position DataFrame.
-    """
-    ts = pd.Timestamp(value) if value is not None else pd.Timestamp(_utc_now())
-    if ts.tzinfo is None:
-        ts = ts.tz_localize('UTC')
-    return ts.floor('s')
+def _aware(value) -> Optional[datetime]:
+    """Coerce a datetime/Timestamp/str into a tz-aware UTC datetime (or None)."""
+    dt = parse_dt(value)
+    if dt is None or (not isinstance(dt, datetime)) or pd.isna(dt):
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
 
 
-def _ensure_utc_datetime_column(df: pd.DataFrame, column: str) -> None:
-    """Normalize ``df[column]`` to a tz-aware UTC datetime column (in place).
+def _num(value, default=None):
+    """float(value), or ``default`` for None/NaN/unparseable."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return default if pd.isna(out) else out
 
-    Postgres-loaded frames already carry ``datetime64[*, UTC]`` columns, while
-    frames built from storage/CSV or in tests may be naive.  Assigning a tz-aware
-    value into a naive column (or a naive value into an aware column) raises
-    ``Invalid value '...' for dtype 'datetime64[s, UTC]'``, so the column is
-    coerced first and missing columns are created as ``NaT``.
-    """
-    if column in df.columns:
-        df[column] = pd.to_datetime(df[column], utc=True, errors='coerce')
-    else:
-        # Create the column explicitly tz-aware; `df[col] = pd.NaT` would
-        # produce a NAIVE datetime column that rejects aware assignments.
-        df[column] = pd.Series(pd.NaT, index=df.index,
-                               dtype='datetime64[ns, UTC]')
+
+def _text(value) -> Optional[str]:
+    """Stripped string, or None for None/NaN/'nan'-style placeholders."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return None
+    text = str(value).strip()
+    return None if text.lower() in ("", "nan", "nat", "none", "<na>") else text
+
+
+def _realized_return(side: str, entry: Optional[float],
+                     exit_price: Optional[float]) -> Optional[float]:
+    if not entry or entry <= 0 or exit_price is None:
+        return None
+    diff = (entry - exit_price) if side == "short" else (exit_price - entry)
+    return diff / entry
 
 
 @dataclass
 class Position:
-    """Current position information."""
+    """Current (or closed) position information."""
     symbol: str
     quantity: float
     entry_price: float
@@ -93,12 +101,15 @@ class Position:
     side: str = field(init=False, default="long")
     order_id: Optional[str] = None
     client_order_id: Optional[str] = None
-    # Owning strategy (registry key). Defaults to the legacy RSI strategy
-    # so existing persisted rows and callers stay backward compatible.
+    # Owning strategy (registry key); 'unattributed' for broker positions we
+    # have no metadata for.
     strategy_name: str = "rsi_mean_reversion"
     # Intraday (bar-loop) positions are opened and closed within one session;
     # their exits are managed by BarLoopEngine, not the daily OCO refresh.
     intraday: bool = False
+    composite_score: float = 0.0
+    # True when exit_price is an estimate rather than a confirmed fill.
+    exit_price_estimated: bool = False
 
     def __post_init__(self):
         """Derive side from quantity: negative qty = short position."""
@@ -107,199 +118,231 @@ class Position:
 
 
 class PositionsManager:
-    """
-    Tracks state of the positions in the trading engine.
-    This class is responsible for managing position entries, saving them to storage,
-    and providing methods to retrieve and analyze position data.
-    """
+    """Joins broker positions with stored metadata and archives closed trades."""
 
-    # Seconds before a fresh reconciliation is forced.  Calls to
-    # get_and_reconcile_positions() within this window return a cached
-    # result, avoiding duplicate Alpaca API calls within the same cycle.
+    # Calls to get_and_reconcile_positions() within this window return the
+    # cached open set (avoids duplicate Alpaca calls within a cycle).
     RECONCILIATION_CACHE_TTL_SECONDS = 60
+    # Closed trades kept in memory (feeds the engine's "opened today" cap).
+    CLOSED_TRADES_LOOKBACK = 500
+    # A just-opened position may not be visible in the broker's positions
+    # endpoint for a moment; within this window a missing broker position is
+    # not treated as a close.
+    OPEN_VISIBILITY_GRACE_SECONDS = 120
+    # After the engine closes a position, how long the broker may keep
+    # reporting it before we conclude the close did not happen and treat the
+    # position (with its ORIGINAL metadata) as open again.
+    CLOSE_CONFIRM_GRACE_SECONDS = 600
 
     def __init__(self, storage_backend, data_provider_instance):
         self.storage_backend = storage_backend
         self.data_provider = data_provider_instance
-        # Initialize as empty list of Position objects
         self.positions: List[Position] = []
-        # Reconciliation cache to avoid duplicate API calls within a cycle
         self._reconciled_at: Optional[float] = None
         self._cached_open_positions: Optional[List[Position]] = None
-        # Stable snapshot timestamp for the current session so repeated
-        # persists (immediate save on every open + end-of-session save)
-        # upsert into a single snapshot instead of appending one per call.
         self._session_snapshot_timestamp: Optional[str] = None
+        # Last metadata rows read/written, by symbol (fallback if the store
+        # becomes unreadable).  ``_metadata_ok`` is False after a failed read.
+        self._metadata: Dict[str, dict] = {}
+        self._metadata_ok = True
+        # symbol -> (Position, time.time()) opened this process, awaiting
+        # broker visibility.
+        self._pending_opens: Dict[str, Tuple[Position, float]] = {}
+        # False after a failed broker fetch until the next successful one;
+        # the engine refuses new entries while False.
+        self.reconcile_ok = True
+        # symbol -> {"pos": closed Position, "ts": time, "exit_order_id": id}
+        # for closes issued by the engine and not yet confirmed by the broker.
+        # Nothing is written to closed_trades / deleted from metadata until
+        # the broker no longer holds the symbol.  (In-memory on purpose: after
+        # a restart the metadata still exists, so reconcile either archives it
+        # from order history or keeps it attached to a still-open position.)
+        self._closing: Dict[str, dict] = {}
+
+    # ------------------------------------------------------------------
+    # Session / snapshots
+    # ------------------------------------------------------------------
 
     def begin_session(self) -> None:
-        """Start a new persistence session with a fresh snapshot timestamp.
-
-        Call once at the start of each trading session.  All subsequent
-        ``persist_positions`` calls within the session upsert into that one
-        snapshot (the storage backend replaces rows for the same timestamp)
-        rather than writing a new snapshot per open.
-        """
+        """Start a persistence session: all snapshot saves this session upsert
+        into one snapshot timestamp."""
         self._session_snapshot_timestamp = datetime.now().strftime(
             "%Y%m%d_%H%M%S")
 
     def _session_timestamp(self) -> str:
-        """Return the current session's snapshot timestamp, lazily creating one."""
         if self._session_snapshot_timestamp is None:
-            self._session_snapshot_timestamp = datetime.now().strftime(
-                "%Y%m%d_%H%M%S")
-        return self._session_snapshot_timestamp
-
-    def _persist_positions(self, positions_df: pd.DataFrame):
-        """Save a positions DataFrame while preserving historical closed rows.
-
-        Each ``save_positions`` call in this class originally wrote only
-        open + newly-closed positions, silently dropping every closed
-        position from all prior cycles.  This wrapper loads the existing
-        closed rows from the latest file and merges them in so the full
-        history survives.
-        """
-        historical_closed = self.storage_backend.get_latest_positions_df(False)
-        if not historical_closed.empty:
-            # Only keep columns that exist in the incoming DataFrame so
-            # schema changes don't cause concat mismatches.
-            common_cols = [
-                c for c in positions_df.columns if c in historical_closed.columns]
-            # Drop rows already present in positions_df (by symbol) to
-            # avoid duplicating positions that just closed this cycle.
-            if 'symbol' in common_cols and not positions_df.empty:
-                incoming_symbols = set(positions_df['symbol'].astype(str))
-                historical_closed = historical_closed[
-                    ~historical_closed['symbol'].astype(
-                        str).isin(incoming_symbols)
-                ]
-            if not historical_closed.empty:
-                positions_df = pd.concat(
-                    [positions_df, historical_closed[common_cols]],
-                    ignore_index=True,
-                )
-        self.storage_backend.save_positions(
-            positions_df, timestamp=self._session_timestamp())
+            self.begin_session()
+        return self._session_snapshot_timestamp  # type: ignore[return-value]
 
     def persist_positions(self) -> None:
-        """Persist the full in-memory position state (open + closed).
+        """Persist open-position metadata and this session's open snapshot.
 
-        Single save path: builds a DataFrame from ``self.positions`` and
-        delegates to ``_persist_positions`` so historical closed rows are
-        preserved.  Replaces direct ``storage.save_positions(positions)``
-        calls that silently dropped closed positions.
+        Metadata edits made in memory (e.g. refreshed SL/TP) are written back;
+        skipped when the last metadata read failed, so defaults can never
+        overwrite real attribution.  Closed trades are written at close time,
+        not here.
         """
-        if not self.positions:
-            logger.info(
-                "persist_positions: no positions in memory — nothing to save")
+        open_positions = [p for p in self.positions if not p.closed]
+        if not open_positions:
+            logger.info("persist_positions: no open positions to save")
             return
-        # pylint: disable=import-outside-toplevel
-        from storage.backend import normalize_position_for_save
+        if self._metadata_ok:
+            self._save_metadata(open_positions)
+        self.storage_backend.save_positions(
+            open_positions, timestamp=self._session_timestamp())
 
-        rows = [normalize_position_for_save(p) for p in self.positions]
-        self._persist_positions(pd.DataFrame(rows))
+    # ------------------------------------------------------------------
+    # Metadata <-> Position
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _df_row_to_position(row: pd.Series, closed: bool = None,
-                            exit_date_default=None) -> Position:
-        """Convert a single DataFrame row (from cloud / closed / newly_closed) to a Position.
+    def _metadata_row(p: Position) -> dict:
+        return {
+            "symbol": p.symbol,
+            "strategy_name": p.strategy_name or UNATTRIBUTED,
+            "rsi_period": p.rsi_period,
+            "rsi_lower": p.rsi_lower,
+            "rsi_upper": p.rsi_upper,
+            "alpha": p.alpha,
+            "composite_score": p.composite_score,
+            "stop_loss_price": p.stop_loss_price,
+            "take_profit_price": p.take_profit_price,
+            "intraday": bool(p.intraday),
+            "entry_client_order_id": p.client_order_id,
+            "entry_order_id": p.order_id,
+            "entry_date": p.entry_date,
+            "current_rsi": p.current_rsi,
+            "side": p.side,
+            "quantity": p.quantity,
+            "entry_price": p.entry_price,
+        }
 
-        Args:
-            row: DataFrame row with position columns.
-            closed: Override for closed status. If None (default), reads from row.
-            exit_date_default: Default value for exit_date (passed to parse_dt).
-        """
-        if closed is None:
-            closed = row['closed'] if 'closed' in row else False
-        exit_date = parse_dt(row['exit_date'], default=exit_date_default)
+    def _save_metadata(self, positions: List[Position]) -> bool:
+        rows = [self._metadata_row(p) for p in positions]
+        try:
+            ok = bool(self.storage_backend.save_position_metadata(rows))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving position metadata: %s", exc)
+            ok = False
+        if ok:
+            self._metadata.update({r["symbol"]: r for r in rows})
+        else:
+            logger.error("Could not persist metadata for %s",
+                         [r["symbol"] for r in rows])
+        return ok
 
+    @staticmethod
+    def _position_from_broker(row, meta: dict) -> Position:
+        """Broker row + metadata -> Position.  Symbol, quantity, entry price
+        and current price come ONLY from the broker row."""
+        qty = _num(row.get("qty"), 0.0)
+        entry_price = _num(row.get("avg_entry_price"), 0.0)
+        side = "short" if qty < 0 else "long"
+        pct_sl, pct_tp = globalConfig.STOP_LOSS_PCT, globalConfig.TAKE_PROFIT_PCT
+        sl = _num(meta.get("stop_loss_price"))
+        tp = _num(meta.get("take_profit_price"))
+        if entry_price > 0:
+            if sl is None:
+                sl = entry_price * (1 + pct_sl if side == "short" else 1 - pct_sl)
+            if tp is None:
+                tp = entry_price * (1 - pct_tp if side == "short" else 1 + pct_tp)
+        current = _num(row.get("current_price"), 0.0) or entry_price
         return Position(
-            symbol=row['symbol'],
-            quantity=float(row['shares']) if 'shares' in row else 0,
-            entry_price=float(row['entry_price']
-                              ) if 'entry_price' in row else 0,
-            current_price=float(row['current_price']
-                                ) if 'current_price' in row else 0,
-            entry_date=parse_dt(row['entry_date'], default=datetime.now()),
-            current_rsi=float(row['current_rsi']
-                              ) if 'current_rsi' in row else 0.0,
-            rsi_period=int(row['rsi_period']) if 'rsi_period' in row else 14,
-            rsi_lower=int(row['rsi_lower']) if 'rsi_lower' in row else 30,
-            rsi_upper=int(row['rsi_upper']) if 'rsi_upper' in row else 70,
-            alpha=float(row['alpha']) if 'alpha' in row and pd.notna(
-                row['alpha']) else 0.0,
-            stop_loss_price=float(row['stop_loss_price']) if 'stop_loss_price' in row and pd.notna(
-                row['stop_loss_price']) else None,
-            take_profit_price=float(row['take_profit_price']) if 'take_profit_price' in row and pd.notna(
-                row['take_profit_price']) else None,
-            exit_price=float(row['exit_price']) if 'exit_price' in row and pd.notna(
-                row['exit_price']) else None,
-            realized_return=float(row['realized_return']) if 'realized_return' in row and pd.notna(
-                row['realized_return']) else None,
-            exit_reason=str(row['exit_reason']) if 'exit_reason' in row and pd.notna(
-                row['exit_reason']) and row['exit_reason'] is not None else None,
-            closed=closed,
-            exit_date=exit_date,
-            order_id=_clean_identifier(
-                row['order_id']) if 'order_id' in row else None,
-            client_order_id=_clean_identifier(
-                row['client_order_id']) if 'client_order_id' in row else None,
-            strategy_name=str(row['strategy_name']) if 'strategy_name' in row and pd.notna(
-                row['strategy_name']) else "rsi_mean_reversion",
-            intraday=bool(row['intraday']) if 'intraday' in row and pd.notna(
-                row['intraday']) else False,
+            symbol=str(row["symbol"]),
+            quantity=qty,
+            entry_price=entry_price,
+            current_price=current,
+            current_rsi=_num(meta.get("current_rsi"), 0.0),
+            entry_date=_aware(meta.get("entry_date")) or _utc_now(),
+            alpha=_num(meta.get("alpha"), 0.0),
+            rsi_period=int(_num(meta.get("rsi_period"), 14)),
+            rsi_lower=int(_num(meta.get("rsi_lower"), 30)),
+            rsi_upper=int(_num(meta.get("rsi_upper"), 70)),
+            stop_loss_price=sl,
+            take_profit_price=tp,
+            order_id=_text(meta.get("entry_order_id")),
+            client_order_id=_text(meta.get("entry_client_order_id")),
+            strategy_name=_text(meta.get("strategy_name")) or UNATTRIBUTED,
+            intraday=bool(meta.get("intraday") or False),
+            composite_score=_num(meta.get("composite_score"), 0.0),
         )
+
+    def _adopt(self, row, broker_levels) -> dict:
+        """Default metadata for a broker position we have no record of."""
+        symbol = str(row["symbol"])
+        side = "short" if _num(row.get("qty"), 0.0) < 0 else "long"
+        entry_date = _utc_now()
+        try:
+            info = self.data_provider.get_entry_order_for_symbol(
+                symbol, side=side)
+            if info is not None:
+                found = _aware(info[0])
+                if found is not None:
+                    entry_date = found
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass  # Mock/unknown shapes or API errors: keep "now"
+        sl, tp = broker_levels.get(symbol, (None, None))
+        logger.warning(
+            "Broker position %s (%s) has no stored metadata — adopting as "
+            "'%s' (entry_date=%s, broker SL/TP=%s/%s)",
+            symbol, side, UNATTRIBUTED, entry_date, sl, tp)
+        return {"symbol": symbol, "strategy_name": UNATTRIBUTED,
+                "entry_date": entry_date, "stop_loss_price": sl,
+                "take_profit_price": tp}
+
+    # ------------------------------------------------------------------
+    # Broker helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_broker_positions(self) -> pd.DataFrame:
+        try:
+            df = self.data_provider.get_current_positions_df(
+                raise_on_error=True)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "BROKER POSITIONS FETCH FAILED (%s) — open set unknown; not "
+                "reconciling, nothing closed or written", exc)
+            raise PositionsFetchError(str(exc)) from exc
+        if not isinstance(df, pd.DataFrame):
+            raise PositionsFetchError(
+                "positions fetch returned %s" % type(df).__name__)
+        if df.empty or 'symbol' not in df.columns:
+            return pd.DataFrame(columns=['symbol', 'qty', 'avg_entry_price',
+                                         'current_price', 'market_value'])
+        return df
 
     def _broker_sl_tp_by_symbol(
         self,
     ) -> Dict[str, Tuple[Optional[float], Optional[float]]]:
-        """Map symbol -> (stop_loss_price, take_profit_price) from the broker.
-
-        Reads the currently-open protective legs (Alpaca bracket / OCO children)
-        so the stored snapshot can carry the levels that are *actually working*
-        instead of an entry-anchored heuristic.  Best-effort: returns ``{}``
-        when the provider has no ``get_open_orders`` method or the lookup fails.
-        """
-        provider = self.data_provider
-        getter = getattr(provider, 'get_open_orders', None)
+        """symbol -> (stop_loss, take_profit) from the broker's live protective
+        legs.  Best-effort: ``{}`` when unavailable."""
+        getter = getattr(self.data_provider, 'get_open_orders', None)
         if getter is None:
             return {}
         try:
             orders_df = getter()
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.warning(
-                "Could not fetch broker open orders for SL/TP reconcile: %s", e)
-            return {}
-        if orders_df is None or getattr(orders_df, 'empty', True):
-            return {}
-
-        result: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
-        try:
+            if orders_df is None or getattr(orders_df, 'empty', True):
+                return {}
+            result: Dict[str, Tuple[Optional[float], Optional[float]]] = {}
             for _, row in orders_df.iterrows():
                 symbol = str(row.get('symbol'))
                 leg = str(row.get('leg_type') or '')
                 sl, tp = result.get(symbol, (None, None))
                 if leg == 'stop_loss':
-                    price = row.get('stop_price')
-                    if pd.notna(price):
-                        sl = float(price)
+                    sl = _num(row.get('stop_price'), sl)
                 elif leg == 'take_profit':
-                    price = row.get('limit_price')
-                    if pd.notna(price):
-                        tp = float(price)
+                    tp = _num(row.get('limit_price'), tp)
                 result[symbol] = (sl, tp)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.warning("Error building broker SL/TP map: %s", e)
-        return result
+            return result
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("Could not build broker SL/TP map: %s", exc)
+            return {}
 
     def _cancel_orphan_orders(self, live_symbols: set) -> None:
         """Cancel active broker orders whose symbol has no open position.
 
-        An orphan leg (e.g. a bracket child that outlived its position) is
-        dangerous: a resting sell on a flat symbol can open an unintended
-        short. Reconcile is the authority that the broker holds no such
-        position, so any active order on a symbol outside ``live_symbols`` is
-        cancelled. Gated by ``globalConfig.CANCEL_ORPHAN_ORDERS``; always
-        logged. Best-effort — never raises into the reconcile path.
+        A resting sell on a flat symbol can open an unintended short.  Gated by
+        ``globalConfig.CANCEL_ORPHAN_ORDERS``; best-effort, never raises.
         """
         if not getattr(globalConfig, 'CANCEL_ORPHAN_ORDERS', True):
             return
@@ -312,625 +355,200 @@ class PositionsManager:
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning("Orphan-order check could not fetch orders: %s", e)
             return
-        if not isinstance(orders_df, pd.DataFrame) or orders_df.empty:
+        if not isinstance(orders_df, pd.DataFrame) or orders_df.empty \
+                or 'symbol' not in orders_df.columns:
             return
-        if 'symbol' not in orders_df.columns:
-            return
-
         orphans = orders_df[~orders_df['symbol'].astype(str).isin(live_symbols)]
         for _, row in orphans.iterrows():
             order_id = row.get('order_id')
-            if not order_id:
-                continue
-            if cancel(str(order_id)):
+            if order_id and cancel(str(order_id)):
                 logger.warning(
                     "Cancelled ORPHAN order %s (%s %s) for %s — no live "
                     "position in Alpaca", order_id, row.get('order_type'),
                     row.get('side'), row.get('symbol'))
 
-    def get_and_reconcile_positions(self) -> List[Position]:
-        """
-        Retrieves positions from storage and alpaca and updates prices
-        Returns a list of open Position objects.
-        """
+    # ------------------------------------------------------------------
+    # Reconcile
+    # ------------------------------------------------------------------
 
-        # Short-circuit: return cached result if reconciliation was done
-        # recently (avoids duplicate Alpaca API calls within a cycle).
+    def get_and_reconcile_positions(self) -> List[Position]:
+        """Return OPEN positions built from the broker, joined with metadata.
+
+        Also archives metadata whose symbol the broker no longer holds as a
+        closed trade, and refreshes ``self.positions`` (open + recent closed).
+        Raises ``PositionsFetchError`` (leaving state untouched) if the broker
+        fetch fails.
+        """
         now = datetime.now().timestamp()
-        if (
-            self._reconciled_at is not None
-            and self._cached_open_positions is not None
-            and (now - self._reconciled_at) < self.RECONCILIATION_CACHE_TTL_SECONDS
-        ):
-            logger.debug(
-                "Reconciliation cache hit — returning %d cached open positions (%.1fs ago)",
-                len(self._cached_open_positions), now - self._reconciled_at,
-            )
+        if (self._reconciled_at is not None
+                and self._cached_open_positions is not None
+                and (now - self._reconciled_at)
+                < self.RECONCILIATION_CACHE_TTL_SECONDS):
             return self._cached_open_positions
 
-        alpaca_positions = self.data_provider.get_current_positions_df()
-        cloud_positions = self.storage_backend.get_latest_positions_df(True)
-        alpaca_symbols_list = (
-            sorted(alpaca_positions['symbol'].astype(str).tolist())
-            if not alpaca_positions.empty and 'symbol' in alpaca_positions.columns
-            else []
-        )
-        cloud_symbols_list = (
-            sorted(cloud_positions['symbol'].astype(str).tolist())
-            if not cloud_positions.empty and 'symbol' in cloud_positions.columns
-            else []
-        )
-        logger.info(
-            "Reconciliation start: alpaca_open_rows=%d, cloud_open_rows=%d, alpaca_symbols=%s, cloud_symbols=%s",
-            len(alpaca_positions), len(
-                cloud_positions), alpaca_symbols_list, cloud_symbols_list
-        )
+        try:
+            broker = self._fetch_broker_positions()
+        except PositionsFetchError:
+            self.reconcile_ok = False
+            raise
+        self.reconcile_ok = True
+        live = {str(r["symbol"]): r for _, r in broker.iterrows()
+                if _num(r.get("qty"), 0.0) != 0}
+        self._cancel_orphan_orders(set(live))
 
-        # Alpaca is the authority on what is open: cancel any active broker
-        # order whose symbol has no live position (orphan legs).
-        self._cancel_orphan_orders(set(alpaca_symbols_list))
+        held_out = self._settle_closing(live)
+        stored = self._load_metadata()
+        prior_open = {p.symbol: p for p in self.positions if not p.closed}
+        pending = self._live_pending(live)
 
-        # Broker's currently-open protective levels, keyed by symbol, so the
-        # stored SL/TP reflects what is actually working at the broker rather
-        # than a heuristic that can diverge from the live orders.
-        broker_sl_tp = self._broker_sl_tp_by_symbol()
-
-        # Normalize cloud schema when there is no prior snapshot but Alpaca has open positions.
-        if cloud_positions.empty:
-            if not alpaca_positions.empty:
-                logger.info(
-                    "Cloud positions are empty. Initializing with Alpaca positions.")
-                cloud_positions = pd.DataFrame({
-                    'symbol': alpaca_positions['symbol'],
-                    'shares': pd.to_numeric(
-                        alpaca_positions.get('qty', 0), errors='coerce').fillna(0.0),
-                    'entry_price': pd.to_numeric(
-                        alpaca_positions.get('avg_entry_price', 0), errors='coerce').fillna(0.0),
-                    'current_price': pd.to_numeric(
-                        alpaca_positions.get('current_price', 0), errors='coerce').fillna(0.0),
-                    'position_value': pd.to_numeric(
-                        alpaca_positions.get('market_value', 0), errors='coerce').fillna(0.0),
-                    'current_rsi': 0.0,
-                    'entry_date': pd.Timestamp(datetime.now()).floor('s'),
-                    'rsi_period': 14,
-                    'rsi_lower': 30,
-                    'rsi_upper': 70,
-                    'alpha': 0.0,
-                    'stop_loss_price': np.nan,
-                    'take_profit_price': np.nan,
-                    'exit_date': pd.NaT,
-                    'exit_price': np.nan,
-                    'realized_return': np.nan,
-                    'exit_reason': None,
-                    'closed': False,
-                })
-                # Mark that we just created the cloud snapshot from Alpaca so
-                # we can enrich these rows using order history/backtests
-                initialized_from_alpaca = True
-            else:
-                cloud_positions = pd.DataFrame()
-                initialized_from_alpaca = False
-        else:
-            initialized_from_alpaca = False
-
-        # If we initialized the cloud positions from Alpaca (no prior snapshot),
-        # attempt to enrich each row with order-history-derived entry_date/price
-        # and constrained backtests to avoid look-ahead bias.
-        if 'initialized_from_alpaca' in locals() and initialized_from_alpaca:
-            logger.info(
-                "Enriching initialized Alpaca positions with order history/backtests")
-            try:
-                from optimizer import StrategyOptimizer
-                optimizer = StrategyOptimizer()
-            except (ImportError, AttributeError) as e:
-                logger.warning(
-                    "Could not initialize strategy optimizer for enrichment: %s", e)
-                optimizer = None
-
-            for idx, row in cloud_positions.iterrows():
-                symbol = row['symbol']
-                # Derive side from quantity sign (negative = short)
-                qty = float(row.get('shares', 0) or 0)
-                position_side = "short" if qty < 0 else "long"
-
-                entry_date = parse_dt(
-                    row.get('entry_date'), default=datetime.now())
-                entry_price = float(row.get('entry_price', 0) or 0)
-                order_info = None
-                try:
-                    order_info = self.data_provider.get_entry_order_for_symbol(
-                        symbol, side=position_side)
-                except (ValueError, RuntimeError, AttributeError):
-                    order_info = None
-
-                if order_info is not None:
-                    try:
-                        order_submitted_at, order_price = order_info
-                        entry_date = order_submitted_at
-                        entry_price = order_price
-                    except (TypeError, ValueError):
-                        # Unexpected return shape (e.g. a Mock); ignore and fall back
-                        order_info = None
-
-                # Default params
-                current_rsi = 0.0
-                rsi_period = 14
-                rsi_lower = 30
-                rsi_upper = 70
-                alpha = 0.0
-
-                if optimizer is not None:
-                    try:
-                        start_date = globalConfig.BACKTEST_START_DATE
-                        if order_info is not None:
-                            end_date = order_info[0] - timedelta(days=1)
-                        else:
-                            end_date = datetime.now() - timedelta(minutes=20)
-
-                        if end_date > start_date:
-                            backtest_result = optimizer.optimize_symbol(
-                                symbol, start_date, end_date, direction=position_side
-                            )
-                            if backtest_result is not None:
-                                bp = backtest_result.params or {}
-                                rsi_period = int(bp.get("rsi_period", 14))
-                                rsi_lower = int(bp.get("rsi_lower", 30))
-                                rsi_upper = int(bp.get("rsi_upper", 70))
-                                alpha = float(backtest_result.alpha)
-                        else:
-                            logger.warning(
-                                "%s: Entry date %s is too old for backtest window "
-                                "(start=%s). Using default RSI parameters.",
-                                symbol, entry_date, start_date
-                            )
-                    except (ValueError, TypeError, KeyError, RuntimeError) as e:
-                        logger.warning(
-                            "Backtest enrichment failed for %s: %s", symbol, e)
-
-                # write enriched values back into the DataFrame (ensure datetime precision)
-                try:
-                    cloud_positions.at[idx, 'entry_date'] = pd.Timestamp(
-                        entry_date).floor('s')
-                except (ValueError, TypeError):
-                    cloud_positions.at[idx, 'entry_date'] = entry_date
-                cloud_positions.at[idx, 'entry_price'] = entry_price
-                cloud_positions.at[idx, 'current_rsi'] = current_rsi
-                cloud_positions.at[idx, 'rsi_period'] = rsi_period
-                cloud_positions.at[idx, 'rsi_lower'] = rsi_lower
-                cloud_positions.at[idx, 'rsi_upper'] = rsi_upper
-                cloud_positions.at[idx, 'alpha'] = alpha
-
-        # Reconcile positions from both sources
-        newly_closed_positions = pd.DataFrame()
-        if not cloud_positions.empty and 'symbol' in cloud_positions.columns:
-            alpaca_symbols = set(alpaca_positions['symbol']) if (
-                not alpaca_positions.empty and 'symbol' in alpaca_positions.columns
-            ) else set()
-            cloud_symbols = set(cloud_positions['symbol'])
-            logger.info(
-                "Reconciliation symbol sets: alpaca_open=%d, cloud_open=%d",
-                len(alpaca_symbols), len(cloud_symbols)
-            )
-
-            # Add Alpaca-only symbols as open positions (broker is source of truth for open holdings).
-            alpaca_only_symbols = alpaca_symbols - cloud_symbols
-            if alpaca_only_symbols:
-                logger.warning(
-                    "Found %d symbols in Alpaca that are not in storage: %s. Adding as open positions.",
-                    len(alpaca_only_symbols), alpaca_only_symbols)
-
-                optimizer = None
-                try:
-                    # Local import avoids unnecessary startup cost and potential import cycles.
-                    from optimizer import StrategyOptimizer
-                    optimizer = StrategyOptimizer()
-                except (ImportError, AttributeError) as e:
+        if self._metadata_ok:
+            # Metadata whose side contradicts the broker's is from an earlier
+            # round trip on this symbol: archive it, then adopt fresh below.
+            for symbol, row in live.items():
+                meta_side = _text(stored.get(symbol, {}).get("side"))
+                broker_side = "short" if _num(row.get("qty"), 0.0) < 0 else "long"
+                if meta_side and meta_side != broker_side:
                     logger.warning(
-                        "Could not initialize strategy optimizer for Alpaca-only positions: %s", e)
+                        "%s: stored metadata side=%s but broker is %s — stale "
+                        "metadata; archiving it and adopting the broker "
+                        "position fresh", symbol, meta_side, broker_side)
+                    self._archive_closed([symbol], stored, prior_open)
+                    stored.pop(symbol, None)
+            gone = [s for s in stored if s not in live and s not in pending
+                    and s not in self._closing]
+            self._archive_closed(gone, stored, prior_open)
 
-                new_rows = []
-                for symbol in alpaca_only_symbols:
-                    alpaca_row = alpaca_positions.loc[
-                        alpaca_positions['symbol'] == symbol].iloc[0]
+        broker_levels = None
+        to_save: List[Position] = []
+        open_positions: List[Position] = []
+        for symbol, row in live.items():
+            if symbol in held_out:
+                continue
+            meta = stored.get(symbol)
+            if meta is None:
+                if broker_levels is None:
+                    broker_levels = self._broker_sl_tp_by_symbol()
+                meta = self._adopt(row, broker_levels)
+                adopted = True
+            else:
+                adopted = False
+            pos = self._position_from_broker(row, meta)
+            open_positions.append(pos)
+            if adopted or self._informational_changed(meta, pos):
+                to_save.append(pos)
+        open_positions.extend(pending.values())
 
-                    # Derive side from quantity sign (negative = short)
-                    alpaca_qty = float(alpaca_row.get('qty', 0) or 0)
-                    position_side = "short" if alpaca_qty < 0 else "long"
+        if to_save and self._metadata_ok:
+            self._save_metadata(to_save)
+        elif not self._metadata_ok:
+            self._metadata = {p.symbol: self._metadata_row(p)
+                              for p in open_positions}
 
-                    # Try to find the entry order from Alpaca order history
-                    # to determine the real entry date and price, avoiding
-                    # look-ahead bias in backtest enrichment.
-                    entry_date = datetime.now()
-                    entry_price = float(alpaca_row.get(
-                        'avg_entry_price', 0) or 0)
-                    order_info = None
-                    try:
-                        order_info = self.data_provider.get_entry_order_for_symbol(
-                            symbol, side=position_side)
-                    except (ValueError, RuntimeError, AttributeError):
-                        order_info = None
-
-                    if order_info is not None:
-                        try:
-                            order_submitted_at, order_price = order_info
-                            logger.info(
-                                "Found order history for Alpaca-only %s: submitted_at=%s, price=%.2f",
-                                symbol, order_submitted_at, order_price
-                            )
-                            entry_date = order_submitted_at
-                            entry_price = order_price
-                        except (TypeError, ValueError):
-                            order_info = None
-
-                    current_rsi = 0.0
-                    rsi_period = 14
-                    rsi_lower = 30
-                    rsi_upper = 70
-                    alpha = 0.0
-                    composite_score = 0.0
-
-                    if optimizer is not None:
-                        try:
-                            start_date = globalConfig.BACKTEST_START_DATE
-
-                            # If we have a real entry date from order history,
-                            # end the backtest the day before submission to
-                            # eliminate look-ahead bias.
-                            if order_info is not None:
-                                entry_submitted = order_info[0]
-                                end_date = entry_submitted - timedelta(days=1)
-                                logger.info(
-                                    "%s: Running constrained backtest [%s to %s] based on order submitted_at",
-                                    symbol, start_date.date() if hasattr(start_date, 'date') else start_date,
-                                    end_date.date() if hasattr(end_date, 'date') else end_date
-                                )
-                            else:
-                                end_date = datetime.now() - timedelta(minutes=20)
-                                logger.info(
-                                    "%s: No order history found. Running full-range backtest [%s to %s]",
-                                    symbol,
-                                    start_date.date() if hasattr(start_date, 'date') else start_date,
-                                    end_date.date() if hasattr(end_date, 'date') else end_date
-                                )
-
-                            # Skip backtest if the entry is so old that
-                            # the backtest window would be empty or negative.
-                            if end_date <= start_date:
-                                logger.warning(
-                                    "%s: Entry date %s is too old for backtest window (start=%s). "
-                                    "Using default RSI parameters.",
-                                    symbol, entry_date, start_date
-                                )
-                            else:
-                                backtest_result = optimizer.optimize_symbol(
-                                    symbol, start_date, end_date, direction=position_side
-                                )
-                                if backtest_result is not None:
-                                    bp = backtest_result.params or {}
-                                    rsi_period = int(bp.get("rsi_period", 14))
-                                    rsi_lower = int(bp.get("rsi_lower", 30))
-                                    rsi_upper = int(bp.get("rsi_upper", 70))
-                                    alpha = float(backtest_result.alpha)
-                                    composite_score = float(
-                                        backtest_result.composite_score)
-                        except (ValueError, TypeError, KeyError, RuntimeError) as e:
-                            logger.warning(
-                                "Backtest enrichment failed for Alpaca-only symbol %s: %s", symbol, e)
-
-                    # Prefer the broker's actual open protective levels; fall
-                    # back to the entry-anchored heuristic only when the broker
-                    # reports none (e.g. a bracket still held or expired).
-                    broker_levels = broker_sl_tp.get(symbol) or (None, None)
-                    if broker_levels[0] is not None:
-                        sl_price = float(broker_levels[0])
-                    elif entry_price > 0:
-                        sl_price = entry_price * (
-                            1 + globalConfig.STOP_LOSS_PCT
-                            if position_side == 'short'
-                            else 1 - globalConfig.STOP_LOSS_PCT)
-                    else:
-                        sl_price = np.nan
-                    if broker_levels[1] is not None:
-                        tp_price = float(broker_levels[1])
-                    elif entry_price > 0:
-                        tp_price = entry_price * (
-                            1 - globalConfig.TAKE_PROFIT_PCT
-                            if position_side == 'short'
-                            else 1 + globalConfig.TAKE_PROFIT_PCT)
-                    else:
-                        tp_price = np.nan
-
-                    new_rows.append({
-                        'symbol': symbol,
-                        'shares': float(alpaca_row.get('qty', 0) or 0),
-                        'entry_price': entry_price,
-                        'current_price': float(alpaca_row.get('current_price', 0) or 0),
-                        'position_value': float(alpaca_row.get('market_value', 0) or 0),
-                        'current_rsi': current_rsi,
-                        'entry_date': pd.Timestamp(entry_date).floor('s'),
-                        'rsi_period': rsi_period,
-                        'rsi_lower': rsi_lower,
-                        'rsi_upper': rsi_upper,
-                        'alpha': alpha,
-                        'composite_score': composite_score,
-                        'stop_loss_price': sl_price,
-                        'take_profit_price': tp_price,
-                        'exit_date': pd.NaT,
-                        'exit_price': np.nan,
-                        'realized_return': np.nan,
-                        'exit_reason': None,
-                        'closed': False,
-                    })
-                cloud_positions = pd.concat(
-                    [cloud_positions, pd.DataFrame(new_rows)], ignore_index=True)
-                logger.info(
-                    "Added %d Alpaca-only symbols to in-memory positions snapshot",
-                    len(new_rows)
-                )
-
-            # Any symbol still in cloud open positions but not in Alpaca is treated as closed.
-            cloud_only_symbols = set(
-                cloud_positions['symbol']) - alpaca_symbols
-            if cloud_only_symbols:
-                logger.warning(
-                    "Found %d symbols in storage that are not in Alpaca: %s. Marking as closed",
-                    len(cloud_only_symbols), cloud_only_symbols)
-                newly_closed_positions = cloud_positions[
-                    cloud_positions['symbol'].isin(cloud_only_symbols)
-                ].copy()
-                # Mark cloud-only symbols as closed
-                for symbol in cloud_only_symbols:
-                    symbol_mask = cloud_positions['symbol'] == symbol
-
-                    # Determine position side from quantity sign (negative = short)
-                    cloud_qty = float(cloud_positions.loc[symbol_mask, 'shares'].values[0]) \
-                        if 'shares' in cloud_positions.columns else 0.0
-                    position_side = "short" if cloud_qty < 0 else "long"
-                    # Close-order side: long→sell, short→buy
-                    close_order_side = "sell" if position_side == "long" else "buy"
-                    entry_order_side = "buy" if position_side == "long" else "sell"
-
-                    stop_loss = cloud_positions.loc[symbol_mask, 'stop_loss_price'].values[0] \
-                        if 'stop_loss_price' in cloud_positions.columns else np.nan
-                    take_profit = cloud_positions.loc[symbol_mask, 'take_profit_price'].values[0] \
-                        if 'take_profit_price' in cloud_positions.columns else np.nan
-                    current_price = cloud_positions.loc[symbol_mask, 'current_price'].values[0] \
-                        if 'current_price' in cloud_positions.columns else np.nan
-                    entry_price = cloud_positions.loc[symbol_mask, 'entry_price'].values[0] \
-                        if 'entry_price' in cloud_positions.columns else np.nan
-
-                    client_order_id = None
-                    if 'client_order_id' in cloud_positions.columns:
-                        cid_vals = cloud_positions.loc[
-                            symbol_mask, 'client_order_id']
-                        if len(cid_vals) and pd.notna(cid_vals.values[0]):
-                            client_order_id = str(cid_vals.values[0])
-
-                    exit_price_val, exit_date_val, exit_reason_val = \
-                        self._resolve_exit_for_symbol(
-                            symbol, client_order_id, close_order_side,
-                            entry_order_side, stop_loss, take_profit,
-                            current_price, entry_price)
-
-                    cloud_positions.loc[symbol_mask,
-                                        'exit_price'] = exit_price_val
-
-                    _ensure_utc_datetime_column(cloud_positions, 'exit_date')
-                    cloud_positions.loc[symbol_mask,
-                                        'exit_date'] = _as_utc_timestamp(
-                                            exit_date_val)
-
-                    if 'entry_price' in cloud_positions.columns:
-                        if 'realized_return' not in cloud_positions.columns:
-                            cloud_positions['realized_return'] = np.nan
-                        entry_prices = pd.to_numeric(
-                            cloud_positions.loc[symbol_mask, 'entry_price'], errors='coerce')
-                        valid_mask = entry_prices > 0
-                        if position_side == "short":
-                            cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
-                                valid_mask,
-                                (entry_prices - exit_price_val) / entry_prices,
-                                np.nan
-                            )
-                        else:
-                            cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
-                                valid_mask,
-                                (exit_price_val - entry_prices) / entry_prices,
-                                np.nan
-                            )
-
-                    cloud_positions.loc[cloud_positions['symbol']
-                                        == symbol, 'closed'] = True
-                    cloud_positions.loc[cloud_positions['symbol']
-                                        == symbol, 'exit_reason'] = exit_reason_val
-                    cloud_positions['closed'] = cloud_positions['closed'].astype(
-                        bool)
-
-                logger.info(
-                    "Marked %d positions as closed in cloud storage", len(cloud_only_symbols))
-
-                # Keep the updated closed rows so they can be re-added to self.positions
-                # and persisted in the next positions snapshot save.
-                newly_closed_positions = cloud_positions[
-                    cloud_positions['symbol'].isin(cloud_only_symbols)
-                ].copy()
-        # Update cloud open positions with current broker values for symbols that are currently open in Alpaca.
-        if not alpaca_positions.empty and not cloud_positions.empty and 'symbol' in cloud_positions.columns:
-            for index, row in cloud_positions.iterrows():
-                symbol = row['symbol']
-                if symbol in alpaca_positions['symbol'].values:
-                    cloud_positions.at[index, 'current_price'] = alpaca_positions.loc[
-                        alpaca_positions['symbol'] == symbol, 'current_price'].values[0]
-                    cloud_positions.at[index, 'shares'] = alpaca_positions.loc[
-                        alpaca_positions['symbol'] == symbol, 'qty'].values[0]
-                    cloud_positions.at[index, 'position_value'] = alpaca_positions.loc[
-                        alpaca_positions['symbol'] == symbol, 'market_value'].values[0]
-                    # Alpaca is the source of truth for live position values.
-                    # Always overwrite entry_price, shares, and current_price
-                    # from the broker's current state.
-                    cloud_positions.at[index, 'entry_price'] = alpaca_positions.loc[
-                        alpaca_positions['symbol'] == symbol, 'avg_entry_price'].values[0]
-                    # Keep stored protective levels aligned with the broker's
-                    # actual open orders: they can differ from the strategy's
-                    # intended levels (e.g. when an OCO refresh was skipped).
-                    levels = broker_sl_tp.get(symbol)
-                    if levels:
-                        if levels[0] is not None:
-                            cloud_positions.at[index,
-                                               'stop_loss_price'] = levels[0]
-                        if levels[1] is not None:
-                            cloud_positions.at[index,
-                                               'take_profit_price'] = levels[1]
-                    # Ensure any datetime-like columns remain compatible when
-                    # overwriting values coming from Alpaca.
-                    if 'entry_date' in cloud_positions.columns:
-                        try:
-                            parsed = parse_dt(
-                                cloud_positions.at[index, 'entry_date'])
-                            if parsed is not None:
-                                cloud_positions.at[index, 'entry_date'] = pd.Timestamp(
-                                    parsed).floor('s')
-                        except (ValueError, TypeError):
-                            # Fall back to leaving the existing value if parsing fails
-                            pass
-        # Convert cloud positions DataFrame to a list of Position objects
-        self.positions = []
-        if not cloud_positions.empty:
-            for _, row in cloud_positions.iterrows():
-                if 'closed' in row and row['closed']:
-                    continue  # Skip closed positions
-                self.positions.append(self._df_row_to_position(row))
-
-        # add the closed positions
-        closed_positions = self.storage_backend.get_latest_positions_df(False)
-        if not closed_positions.empty:
-            for _, row in closed_positions.iterrows():
-                self.positions.append(self._df_row_to_position(row))
-
-        if not newly_closed_positions.empty:
-            for _, row in newly_closed_positions.iterrows():
-                self.positions.append(self._df_row_to_position(
-                    row, closed=True, exit_date_default=datetime.now()))
-
-        open_positions = [pos for pos in self.positions if not pos.closed]
-        closed_positions_count = len(self.positions) - len(open_positions)
+        self.positions = open_positions + self._closed_positions()
         logger.info(
-            "Reconciliation complete: open_positions=%d, closed_positions=%d, total_in_memory=%d",
-            len(open_positions), closed_positions_count, len(self.positions)
-        )
+            "Reconciliation complete: open=%d (%s), closed_in_memory=%d",
+            len(open_positions), sorted(p.symbol for p in open_positions),
+            len(self.positions) - len(open_positions))
 
-        # Cache the result so subsequent calls within the same cycle
-        # short-circuit and avoid duplicate Alpaca API calls.
         self._reconciled_at = datetime.now().timestamp()
         self._cached_open_positions = open_positions
-
         return open_positions
 
-    def _resolve_exit_for_symbol(
-        self,
-        symbol: str,
-        client_order_id: Optional[str],
-        close_order_side: str,
-        entry_order_side: str,
-        stop_loss: float,
-        take_profit: float,
-        current_price: float,
-        entry_price: float,
-    ) -> tuple:
-        """Determine exit price/date/reason for a cloud-only closed position.
+    @staticmethod
+    def _informational_changed(meta: dict, pos: Position) -> bool:
+        """Has the broker-side size/price/side drifted from the stored copy?"""
+        return (
+            (_text(meta.get("side")) or "long") != pos.side
+            or abs((_num(meta.get("quantity"), 0.0)) - pos.quantity) > 1e-9
+            or abs((_num(meta.get("entry_price"), 0.0)) - pos.entry_price) > 1e-6)
 
-        Resolution order:
-          1. Filled close-side order from Alpaca history (first one after the
-             entry fill when the entry client_order_id is known) -> oco_stop_loss /
-             oco_take_profit / oco_filled; no entry order ever -> failed_to_open.
-          2. OCO approximation (nearest of stop/TP to current price),
-             falling back to current price, entry price, then 0.0.
+    def _load_metadata(self) -> Dict[str, dict]:
+        """Stored metadata by symbol; falls back to the last known copy (and
+        disables metadata/close writes) when the store is unreadable."""
+        rows = self.storage_backend.load_position_metadata()
+        if not isinstance(rows, list):
+            logger.error(
+                "Position metadata UNREADABLE — using last known copy; "
+                "metadata writes and trade closes are suspended this cycle")
+            self._metadata_ok = False
+            return dict(self._metadata)
+        self._metadata_ok = True
+        self._metadata = {str(r["symbol"]): dict(r) for r in rows}
+        return dict(self._metadata)
 
-        Returns (exit_price, exit_date, exit_reason).
-        """
-        exit_price_val = None
-        exit_date_val = None
-        exit_reason_val = None
-
-        # --- Step 1: Check Alpaca order history for a real fill ---
-        # NOTE: client_order_id on a Position is the ENTRY order's id, so it is
-        # only used to anchor in time: the exit is the first close-side fill
-        # after the entry fill (never the entry order itself).
-        try:
-            orders_df = self.data_provider.get_filled_orders_for_symbol(
-                symbol, limit=20)
-            if not orders_df.empty and 'side' in orders_df.columns:
-                latest_close = self._select_close_order(
-                    orders_df, close_order_side, entry_order_side,
-                    client_order_id)
-                if exit_price_val is None and latest_close is not None:
-                    filled_price = float(
-                        latest_close['filled_avg_price'])
-                    filled_at = self._order_time(latest_close)
-                    if filled_at is not None:
-                        exit_date_val = filled_at
-                    exit_price_val = filled_price
-
-                    # Determine whether it hit stop_loss or take_profit
-                    if pd.notna(stop_loss) and pd.notna(take_profit):
-                        dist_stop = abs(filled_price - stop_loss)
-                        dist_take = abs(filled_price - take_profit)
-                        if dist_stop <= dist_take:
-                            exit_reason_val = "oco_stop_loss"
-                        else:
-                            exit_reason_val = "oco_take_profit"
-                    else:
-                        exit_reason_val = "oco_filled"
-                    logger.info(
-                        "Reconcile %s: found filled %s order at $%.2f (%s) — exit_reason=%s",
-                        symbol, close_order_side, filled_price,
-                        filled_at, exit_reason_val
-                    )
-
-                # Check if any entry order ever existed
-                if exit_price_val is None:
-                    entry_orders = orders_df[
-                        (orders_df['side'] == entry_order_side) &
-                        (orders_df['filled_qty'] > 0)
-                    ]
-                    if entry_orders.empty:
-                        exit_reason_val = "failed_to_open"
-                        exit_price_val = 0.0
-                        logger.warning(
-                            "Reconcile %s: no filled %s order found in history — "
-                            "marking as failed_to_open",
-                            symbol, entry_order_side
-                        )
-        except Exception as e:
-            logger.warning(
-                "Reconcile %s: order history lookup failed: %s", symbol, e)
-
-        # --- Step 2: Fallback to OCO approximation ---
-        if exit_price_val is None:
-            if (pd.notna(stop_loss) and pd.notna(take_profit)
-                    and pd.notna(current_price) and current_price > 0):
-                if abs(current_price - stop_loss) <= abs(current_price - take_profit):
-                    chosen = "stop_loss"
-                    exit_price_val = stop_loss
-                else:
-                    chosen = "take_profit"
-                    exit_price_val = take_profit
-                logger.info(
-                    "Reconcile OCO-fallback for %s: using %s=%.2f "
-                    "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
-                    symbol, chosen, exit_price_val, stop_loss, take_profit,
-                    current_price, entry_price
-                )
-            elif pd.notna(current_price) and current_price > 0:
-                exit_price_val = current_price
-            elif pd.notna(entry_price) and entry_price > 0:
-                exit_price_val = entry_price
+    def _live_pending(self, live: dict) -> Dict[str, Position]:
+        """Just-opened positions not yet visible at the broker (within grace)."""
+        now = datetime.now().timestamp()
+        pending: Dict[str, Position] = {}
+        for symbol, (pos, opened) in list(self._pending_opens.items()):
+            if symbol in live or now - opened > self.OPEN_VISIBILITY_GRACE_SECONDS:
+                del self._pending_opens[symbol]
             else:
-                exit_price_val = 0.0
+                logger.warning(
+                    "%s opened %.0fs ago but not yet in broker positions — "
+                    "keeping the pending entry for now", symbol, now - opened)
+                pending[symbol] = pos
+        return pending
 
-        if exit_reason_val is None:
-            exit_reason_val = 'broker_closed'
-        return exit_price_val, exit_date_val, exit_reason_val
+    def _closed_positions(self) -> List[Position]:
+        """Recent closed trades (DB) plus any closed this process that the DB
+        does not (yet) have, so the daily-opened count never drops a trade."""
+        rows = self.storage_backend.load_closed_trades(
+            self.CLOSED_TRADES_LOOKBACK)
+        previous = [p for p in self.positions if p.closed]
+        if not isinstance(rows, list):
+            logger.error("closed_trades unreadable — keeping in-memory closed")
+            return previous
+        closed = [self._closed_from_row(r) for r in rows]
+        keys = {closed_trade_key(self._trade_row(p)) for p in closed}
+        closed.extend(p for p in previous
+                      if closed_trade_key(self._trade_row(p)) not in keys)
+        return closed
+
+    @staticmethod
+    def _closed_from_row(r: dict) -> Position:
+        side = _text(r.get("side")) or "long"
+        qty = abs(_num(r.get("quantity"), 0.0))
+        entry = _num(r.get("entry_price"), 0.0)
+        exit_price = _num(r.get("exit_price"))
+        return Position(
+            symbol=str(r["symbol"]),
+            quantity=-qty if side == "short" else qty,
+            entry_price=entry,
+            current_price=exit_price if exit_price is not None else entry,
+            current_rsi=0.0,
+            entry_date=_aware(r.get("entry_date")) or _utc_now(),
+            alpha=0.0, rsi_period=14, rsi_lower=30, rsi_upper=70,
+            exit_date=_aware(r.get("exit_date")),
+            exit_price=exit_price,
+            realized_return=_num(r.get("realized_return")),
+            exit_reason=_text(r.get("exit_reason")),
+            closed=True,
+            client_order_id=_text(r.get("entry_client_order_id")),
+            order_id=_text(r.get("exit_order_id")),
+            strategy_name=_text(r.get("strategy_name")) or UNATTRIBUTED,
+            exit_price_estimated=bool(r.get("exit_price_estimated")),
+        )
+
+    @staticmethod
+    def _trade_row(p: Position) -> dict:
+        """closed_trades row for a closed Position (exit_order_id excluded:
+        Position.order_id is the ENTRY order)."""
+        return {
+            "symbol": p.symbol, "side": p.side,
+            "quantity": abs(p.quantity), "entry_price": p.entry_price,
+            "exit_price": p.exit_price, "entry_date": p.entry_date,
+            "exit_date": p.exit_date, "realized_return": p.realized_return,
+            "exit_reason": p.exit_reason,
+            "exit_price_estimated": p.exit_price_estimated,
+            "strategy_name": p.strategy_name,
+            "entry_client_order_id": p.client_order_id,
+            "exit_order_id": None,
+        }
+
+    # ------------------------------------------------------------------
+    # Closing
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _order_time(row) -> Optional[datetime]:
@@ -951,346 +569,291 @@ class PositionsManager:
             return ts.to_pydatetime()
         return None
 
-    def _select_close_order(
-        self,
-        orders_df: pd.DataFrame,
-        close_order_side: str,
-        entry_order_side: str,
-        entry_client_order_id: Optional[str],
-    ):
-        """Pick the filled close-side order that closed the current position.
+    def _select_close_order(self, orders_df: pd.DataFrame,
+                            close_order_side: str, entry_order_side: str,
+                            entry_client_order_id: Optional[str]):
+        """Pick the filled close-side order that closed the position.
 
-        Position.client_order_id is the ENTRY order's id.  When that entry
-        fill is found in history, return the earliest close-side fill at or
-        after it (skipping closes from earlier round-trips on the symbol).
-        Otherwise fall back to the most recent filled close-side order.
-        Returns a row (Series) or None.
+        With the entry fill found in history: the EARLIEST close-side fill at
+        or after it (never an older round trip's exit; None if there is none).
+        Otherwise the most recent filled close-side order.  Returns a row or
+        None.
         """
         close_orders = orders_df[
             (orders_df['side'] == close_order_side) &
-            (orders_df['filled_qty'] > 0)
-        ]
+            (orders_df['filled_qty'] > 0)]
         if close_orders.empty:
             return None
 
         entry_time = None
         if entry_client_order_id:
             entry = self._find_fill_by_client_order_id(
-                None, entry_client_order_id, side=entry_order_side,
-                orders_df=orders_df)
+                entry_client_order_id, entry_order_side, orders_df)
             if entry is not None:
-                entry_time = self._order_time({'filled_at': entry[2]})
+                entry_time = self._order_time({'filled_at': entry})
 
         rows = [(self._order_time(r), i)
                 for i, (_, r) in enumerate(close_orders.iterrows())]
         if entry_time is not None:
             after = [(t, i) for t, i in rows if t is not None and t >= entry_time]
-            if after:
-                # Earliest close after entry = the fill that closed it.
-                return close_orders.iloc[min(after)[1]]
-            # Entry known but no close after it: do not borrow an older
-            # round-trip's exit.
-            return None
-        # No anchor: most recent close (orders arrive newest-first, but sort
-        # by time defensively; untimed rows keep their original order).
+            return close_orders.iloc[min(after)[1]] if after else None
         timed = [(t, i) for t, i in rows if t is not None]
         if timed:
             return close_orders.iloc[max(timed)[1]]
         return close_orders.iloc[0]
 
-    def _find_fill_by_client_order_id(
-        self, symbol: str, client_order_id: Optional[str],
-        side: Optional[str] = None,
-        orders_df: Optional[pd.DataFrame] = None,
-    ) -> Optional[tuple]:
-        """Find a filled order by client_order_id (fallback: order_id).
-
-        If ``side`` is given, only orders on that side are considered.  A
-        Position's client_order_id identifies its ENTRY order, so callers
-        looking for the entry fill must pass the entry side.
-
-        Returns (filled_avg_price, filled_qty, filled_at) or None.
-        Used to deterministically match a position to its close fill instead
-        of guessing by side + most-recent order.
-        """
-        if not client_order_id:
+    @staticmethod
+    def _find_fill_by_client_order_id(client_order_id: str, side: str,
+                                      orders_df: pd.DataFrame):
+        """filled_at of the filled ``side`` order matching client_order_id
+        (fallback: order_id), or None."""
+        if 'client_order_id' not in orders_df.columns:
             return None
-        if orders_df is None:
-            try:
-                orders_df = self.data_provider.get_filled_orders_for_symbol(
-                    symbol, limit=50)
-            except Exception:  # pylint: disable=broad-exception-caught
-                return None
-        if orders_df.empty or 'client_order_id' not in orders_df.columns:
-            return None
-
-        if side is not None:
-            if 'side' not in orders_df.columns:
-                return None
-            orders_df = orders_df[orders_df['side'] == side]
-        if 'filled_qty' in orders_df.columns:
-            orders_df = orders_df[orders_df['filled_qty'] > 0]
-        if orders_df.empty:
-            return None
-
+        df = orders_df[(orders_df['side'] == side)
+                       & (orders_df['filled_qty'] > 0)]
         cid = str(client_order_id)
-        matched = orders_df[orders_df['client_order_id'].astype(str) == cid]
-        if matched.empty and 'order_id' in orders_df.columns:
-            matched = orders_df[orders_df['order_id'].astype(str) == cid]
-        if matched.empty:
-            return None
+        matched = df[df['client_order_id'].astype(str) == cid]
+        if matched.empty and 'order_id' in df.columns:
+            matched = df[df['order_id'].astype(str) == cid]
+        return None if matched.empty else matched.iloc[0].get('filled_at')
 
-        row = matched.iloc[0]
-        price = row.get('filled_avg_price')
-        qty = row.get('filled_qty')
-        filled_at = row.get('filled_at')
+    def _find_close_fill(self, symbol: str, side: str,
+                         entry_client_order_id: Optional[str]):
+        """(close_order_row | None, entry_ever_filled) from order history.
+
+        Raises if the history lookup itself fails.
+        """
+        orders_df = self.data_provider.get_filled_orders_for_symbol(
+            symbol, limit=50)
+        if (not isinstance(orders_df, pd.DataFrame) or orders_df.empty
+                or 'side' not in orders_df.columns):
+            return None, True  # no usable history: cannot say "never opened"
+        entry_side = "sell" if side == "short" else "buy"
+        close_side = "buy" if side == "short" else "sell"
+        close = self._select_close_order(
+            orders_df, close_side, entry_side, entry_client_order_id)
+        entered = not orders_df[(orders_df['side'] == entry_side)
+                                & (orders_df['filled_qty'] > 0)].empty
+        return close, entered
+
+    def _write_closed_trade(self, trade: dict) -> bool:
+        """Persist a closed trade once (dedup-keyed), then drop its metadata."""
         try:
-            price = float(price) if price is not None and pd.notna(
-                price) else None
-            qty = float(qty) if qty is not None and pd.notna(qty) else None
-        except (TypeError, ValueError):
-            return None
-        return (price, qty, filled_at)
+            saved = bool(self.storage_backend.save_closed_trade(trade))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving closed trade %s: %s",
+                         trade.get("symbol"), exc)
+            saved = False
+        if not saved:
+            logger.error("Closed trade for %s NOT persisted (metadata kept; "
+                         "will retry on the next reconcile)", trade["symbol"])
+            return False
+        try:
+            self.storage_backend.delete_position_metadata([trade["symbol"]])
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error deleting metadata for %s: %s",
+                         trade["symbol"], exc)
+        self._metadata.pop(trade["symbol"], None)
+        return True
+
+    def _finalize_close(self, symbol: str) -> bool:
+        """Broker no longer holds ``symbol``: write the engine's close."""
+        rec = self._closing[symbol]
+        trade = self._trade_row(rec["pos"])
+        trade["exit_order_id"] = rec["exit_order_id"]
+        if self._write_closed_trade(trade):
+            del self._closing[symbol]
+            return True
+        return False
+
+    def _settle_closing(self, live: dict) -> set:
+        """Resolve engine-issued closes against the broker's positions.
+
+        * broker no longer holds the symbol -> finalize (write closed trade,
+          delete metadata);
+        * broker still holds it within the grace window -> hold it out of the
+          open set (the close may simply not have settled; avoids a double
+          exit) without touching its metadata;
+        * still held after the grace window -> the close did not happen: drop
+          the closing record and the in-memory closed copy so the broker
+          position is open again with its original metadata.
+        Returns the symbols to hold out of the open set.
+        """
+        held_out = set()
+        now = datetime.now().timestamp()
+        for symbol in list(self._closing):
+            rec = self._closing[symbol]
+            if symbol not in live:
+                self._finalize_close(symbol)
+            elif now - rec["ts"] > self.CLOSE_CONFIRM_GRACE_SECONDS:
+                logger.warning(
+                    "%s: close issued %.0fs ago but the broker STILL holds "
+                    "it — treating it as open again (original metadata "
+                    "kept)", symbol, now - rec["ts"])
+                self.positions = [p for p in self.positions
+                                  if p is not rec["pos"]]
+                del self._closing[symbol]
+            else:
+                logger.warning(
+                    "%s: close issued but broker still lists it — holding it "
+                    "out of the open set until the close settles", symbol)
+                held_out.add(symbol)
+        return held_out
+
+    def _archive_closed(self, symbols: List[str], stored: Dict[str, dict],
+                        prior_open: Dict[str, Position]) -> None:
+        """Write closed_trades for metadata symbols the broker no longer holds."""
+        for symbol in symbols:
+            meta = stored[symbol]
+            qty = _num(meta.get("quantity"), 0.0)
+            side = _text(meta.get("side")) or ("short" if qty < 0 else "long")
+            entry_price = _num(meta.get("entry_price"), 0.0)
+            cid = _text(meta.get("entry_client_order_id"))
+            try:
+                close, entered = self._find_close_fill(symbol, side, cid)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Order history lookup failed for %s (%s) — "
+                               "deferring its close", symbol, exc)
+                continue
+            if not entered:
+                logger.warning(
+                    "%s has metadata but no filled entry in order history — "
+                    "never opened; dropping metadata, no trade recorded",
+                    symbol)
+                self.storage_backend.delete_position_metadata([symbol])
+                self._metadata.pop(symbol, None)
+                continue
+
+            sl = _num(meta.get("stop_loss_price"))
+            tp = _num(meta.get("take_profit_price"))
+            exit_order_id = None
+            estimated = close is None
+            if close is not None:
+                exit_price = float(close['filled_avg_price'])
+                exit_date = (_aware(self._order_time(close)) or _utc_now())
+                exit_order_id = _text(close.get('order_id'))
+                if sl is not None and tp is not None:
+                    reason = ("oco_stop_loss"
+                              if abs(exit_price - sl) <= abs(exit_price - tp)
+                              else "oco_take_profit")
+                else:
+                    reason = "oco_filled"
+            else:
+                exit_price = self._estimate_exit_price(
+                    symbol, prior_open.get(symbol), entry_price)
+                exit_date, reason = _utc_now(), "broker_closed"
+                logger.warning(
+                    "%s: no close fill found in order history — recording "
+                    "ESTIMATED exit $%.2f", symbol, exit_price)
+
+            self._write_closed_trade({
+                "symbol": symbol, "side": side, "quantity": abs(qty),
+                "entry_price": entry_price, "exit_price": exit_price,
+                "entry_date": _aware(meta.get("entry_date")),
+                "exit_date": exit_date,
+                "realized_return": _realized_return(side, entry_price, exit_price),
+                "exit_reason": reason, "exit_price_estimated": estimated,
+                "strategy_name": _text(meta.get("strategy_name")) or UNATTRIBUTED,
+                "entry_client_order_id": cid, "exit_order_id": exit_order_id,
+            })
+
+    def _estimate_exit_price(self, symbol: str, prior: Optional[Position],
+                             entry_price: float) -> float:
+        """Last resort: last seen price, else live snapshot, else entry."""
+        if prior is not None and prior.current_price and prior.current_price > 0:
+            return float(prior.current_price)
+        try:
+            snap = self.data_provider.get_current_snapshot(symbol)
+            price = _num(snap.get('price')) if isinstance(snap, dict) else None
+            if price and price > 0:
+                return price
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+        return entry_price
 
     def close_position(self, symbol: str, exit_price: Optional[float] = None):
+        """Record the close of an open position (engine-initiated).
+
+        ``exit_price`` should be the broker's confirmed fill.  Without it the
+        price is looked up in order history, then estimated from the last
+        known price (flagged ``exit_price_estimated``).  Writes one
+        closed_trades row, deletes the metadata, and keeps the position in
+        memory as closed (so it still counts toward today's entries).
         """
-        Close a position by symbol.
-
-        Marks the position as closed in-place (no longer removes from the list)
-        so the realized return is preserved for subsequent cloud saves.
-
-        Args:
-            symbol: Symbol of the open position to close.
-            exit_price: Authoritative exit price (the broker's confirmed fill
-                price) when the caller has it.  When omitted, the price is
-                resolved from order history, falling back to the OCO
-                stop/take-profit heuristic — which can materially misstate the
-                realized return, so callers should pass the real fill whenever
-                it is available.
-        """
-        # Find the position in self.positions
-        position_found = False
-        target_position = None
-        for i, position in enumerate(self.positions):
-            if position.symbol == symbol and not position.closed:
-                target_position = position
-                position_found = True
-                break
-
-        if not position_found:
+        pos = next((p for p in self.positions
+                    if p.symbol == symbol and not p.closed), None)
+        if pos is None:
             logger.warning(
-                "Position with symbol %s not found in current open positions.", symbol)
+                "Position with symbol %s not found in current open positions.",
+                symbol)
             return
 
-        position_side = target_position.side
-
-        # Determine which order side represents the close:
-        #   Long positions  are closed with sell orders
-        #   Short positions are closed with buy  orders (cover)
-        close_order_side = "sell" if position_side == "long" else "buy"
-
-        # Resolve the actual fill price for this close, preferring an exact
-        # match by client_order_id/order_id and falling back to the
-        # most-recent close-side heuristic.
-        filled_exit_price = None
-        if exit_price is not None:
-            # Caller confirmed the broker fill — authoritative.
+        price = _num(exit_price)
+        exit_date, exit_order_id, estimated = _utc_now(), None, False
+        if price is None:
             try:
-                filled_exit_price = float(exit_price)
-                logger.info(
-                    "Using caller-supplied exit price for %s: $%.2f",
-                    symbol, filled_exit_price)
-            except (TypeError, ValueError):
-                filled_exit_price = None
+                close, _ = self._find_close_fill(
+                    symbol, pos.side, pos.client_order_id)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Could not fetch close fill for %s: %s",
+                               symbol, exc)
+                close = None
+            if close is not None:
+                price = float(close['filled_avg_price'])
+                exit_date = _aware(self._order_time(close)) or exit_date
+                exit_order_id = _text(close.get('order_id'))
+        if price is None:
+            price = pos.current_price if pos.current_price and \
+                pos.current_price > 0 else pos.entry_price
+            estimated = True
+            logger.warning("Exit price for %s ESTIMATED at $%.2f", symbol, price)
 
-        if filled_exit_price is None:
-            try:
-                orders_df = self.data_provider.get_filled_orders_for_symbol(
-                    symbol, limit=50)
-                if not orders_df.empty and 'side' in orders_df.columns:
-                    entry_side = "buy" if position_side == "long" else "sell"
-                    latest_close = self._select_close_order(
-                        orders_df, close_order_side, entry_side,
-                        getattr(target_position, 'client_order_id', None))
-                    if latest_close is not None:
-                        filled_exit_price = float(
-                            latest_close['filled_avg_price'])
-                        logger.info(
-                            "Found filled close order for %s (side=%s): price=%.2f, qty=%.2f",
-                            symbol, close_order_side, filled_exit_price,
-                            latest_close['filled_qty']
-                        )
-            except Exception as e:
-                logger.warning(
-                    "Could not fetch filled close price for %s: %s. Will use fallback.",
-                    symbol, e
-                )
+        pos.closed = True
+        pos.exit_date = exit_date
+        pos.exit_price = price
+        pos.exit_price_estimated = estimated
+        pos.realized_return = _realized_return(pos.side, pos.entry_price, price)
+        pos.exit_reason = pos.exit_reason or "manual"
+        self._pending_opens.pop(symbol, None)
 
-        # Determine exit_price:
-        #   1. Actual fill from Alpaca order history (best)
-        #   2. OCO target (stop_loss or take_profit) closest to current_price
-        #   3. current_price
-        #   4. entry_price (last resort)
-        if filled_exit_price is not None:
-            exit_price = filled_exit_price
-        else:
-            exit_price = self._determine_exit_price_for_position(
-                target_position, symbol
-            )
-
-        # Calculate realized return — formula differs for longs vs shorts.
-        #   Long:  (exit - entry) / entry  → profit when exit > entry
-        #   Short: (entry - exit) / entry  → profit when exit < entry (covered lower)
-        if target_position.entry_price and target_position.entry_price > 0:
-            if position_side == "short":
-                realized_return = (
-                    target_position.entry_price - exit_price
-                ) / target_position.entry_price
-            else:
-                realized_return = (
-                    exit_price - target_position.entry_price
-                ) / target_position.entry_price
-        else:
-            realized_return = None
-
-        # Mark the position closed in-place (keep in self.positions so
-        # the end-of-session save picks up the realized return).
-        target_position.closed = True
-        target_position.exit_date = _utc_now()
-        target_position.exit_price = exit_price
-        target_position.realized_return = realized_return
-        target_position.exit_reason = target_position.exit_reason or "manual"
-
-        # Update cloud positions snapshot and persist immediately.
-        cloud_positions = self.storage_backend.get_latest_positions_df(True)
-        if not cloud_positions.empty and 'symbol' in cloud_positions.columns:
-            symbol_mask = cloud_positions['symbol'] == symbol
-
-            cloud_positions.loc[symbol_mask, 'exit_price'] = exit_price
-            _ensure_utc_datetime_column(cloud_positions, 'exit_date')
-            cloud_positions.loc[symbol_mask, 'exit_date'] = _as_utc_timestamp()
-            cloud_positions.loc[symbol_mask, 'closed'] = True
-            cloud_positions['closed'] = cloud_positions['closed'].astype(bool)
-
-            if 'entry_price' in cloud_positions.columns:
-                entry_prices = pd.to_numeric(
-                    cloud_positions.loc[symbol_mask, 'entry_price'], errors='coerce')
-                if position_side == "short":
-                    cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
-                        entry_prices > 0,
-                        (entry_prices - exit_price) / entry_prices,
-                        np.nan
-                    )
-                else:
-                    cloud_positions.loc[symbol_mask, 'realized_return'] = np.where(
-                        entry_prices > 0,
-                        (exit_price - entry_prices) / entry_prices,
-                        np.nan
-                    )
-
-            if 'exit_reason' not in cloud_positions.columns:
-                cloud_positions['exit_reason'] = None
-            cloud_positions.loc[symbol_mask,
-                                'exit_reason'] = target_position.exit_reason
-
-            self._persist_positions(cloud_positions)
-
-        logger.info(
-            "Closed %s position for %s: exit=%.2f, realized_return=%.4f",
-            position_side, symbol, exit_price,
-            realized_return if realized_return is not None else 0.0
-        )
-
-        # Invalidate reconciliation cache so the next reconcile reflects
-        # the closed position without an extra Alpaca round-trip.
+        # Not final until the broker confirms the symbol is gone (see
+        # _settle_closing); verify right away in the common case.
+        self._closing[symbol] = {"pos": pos, "ts": datetime.now().timestamp(),
+                                 "exit_order_id": exit_order_id}
+        try:
+            still_held = symbol in set(
+                self._fetch_broker_positions()["symbol"].astype(str))
+        except PositionsFetchError:
+            still_held = True    # unknown: leave pending, reconcile settles
+        if not still_held:
+            self._finalize_close(symbol)
+        logger.info("Closed %s position for %s: exit=%.2f, realized_return=%s",
+                    pos.side, symbol, price, pos.realized_return)
         self.invalidate_reconciliation_cache()
 
-    def _determine_exit_price_for_position(self, position, symbol: str) -> float:
-        """
-        Determine the most likely exit price when the actual fill cannot
-        be fetched from Alpaca order history.
-
-        Tries OCO targets (stop_loss / take_profit) first — picking whichever
-        is closer to current_price — then falls back to current_price or entry_price.
-        """
-        stop_loss = position.stop_loss_price
-        take_profit = position.take_profit_price
-        current_price = position.current_price
-        entry_price = position.entry_price
-
-        # Try OCO target approximation
-        if (stop_loss is not None and take_profit is not None
-                and current_price is not None and current_price > 0):
-            dist_to_stop = abs(current_price - stop_loss)
-            dist_to_take = abs(current_price - take_profit)
-            if dist_to_stop <= dist_to_take:
-                chosen = "stop_loss"
-                exit_price = stop_loss
-            else:
-                chosen = "take_profit"
-                exit_price = take_profit
-            logger.info(
-                "OCO-fallback exit price for %s: using %s=%.2f "
-                "(stop_loss=%.2f, take_profit=%.2f, current=%.2f, entry=%.2f)",
-                symbol, chosen, exit_price, stop_loss, take_profit,
-                current_price, entry_price
-            )
-            return exit_price
-
-        # Fall back to current_price or entry_price
-        if current_price is not None and current_price > 0:
-            logger.info(
-                "Fallback exit price for %s: using current_price=%.2f "
-                "(no OCO targets available)",
-                symbol, current_price
-            )
-            return current_price
-        elif entry_price is not None and entry_price > 0:
-            logger.warning(
-                "Fallback exit price for %s: using entry_price=%.2f "
-                "(last resort — may report 0%% return)",
-                symbol, entry_price
-            )
-            return entry_price
-        else:
-            logger.error(
-                "Could not determine any exit price for %s", symbol
-            )
-            return 0.0
+    # ------------------------------------------------------------------
+    # Opening
+    # ------------------------------------------------------------------
 
     def open_position(self, position: Position):
-        """
-        Adds a new position to the current positions.
-        Args:
-            position (Position): The position to add.
-        """
-        # Check if the position already exists
-        for existing_position in self.positions:
-            if existing_position.symbol == position.symbol and not existing_position.closed:
-                logger.warning(
-                    "Position for %s already exists. Use update_position to modify it.", position.symbol)
-                return
-
-        # Add the new position
+        """Record metadata for a position the engine just opened (confirmed
+        fill).  The broker still decides whether it is open: the in-memory
+        entry lets the engine see it this cycle and is replaced from broker
+        data on the next reconcile."""
+        self.positions = [p for p in self.positions
+                          if not (p.symbol == position.symbol and not p.closed)]
         self.positions.append(position)
-        # Invalidate reconciliation cache so the next reconcile picks up
-        # the newly opened position from the broker.
+        self._pending_opens[position.symbol] = (
+            position, datetime.now().timestamp())
+        if not self._save_metadata([position]):
+            logger.error(
+                "Metadata for %s NOT saved — it will be adopted as "
+                "'%s' by the next reconcile", position.symbol, UNATTRIBUTED)
         self.invalidate_reconciliation_cache()
-        # Persist immediately so a newly-opened position survives even if
-        # the end-of-session persist is bypassed (e.g. process exits first).
-        try:
-            self.persist_positions()
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.error("Error persisting positions after opening %s: %s",
-                         position.symbol, exc)
-        logger.info(
-            "Opened new position for %s. Full saved positions: %s", position.symbol, self.positions)
+        logger.info("Opened new position for %s (%s, qty=%s)", position.symbol,
+                    position.strategy_name, position.quantity)
 
     def invalidate_reconciliation_cache(self) -> None:
-        """Clear the reconciliation cache, forcing a fresh reconcile on next call.
-
-        Call this after any operation that changes positions (open, close, etc.)
-        so subsequent get_and_reconcile_positions() calls see the latest state.
-        """
+        """Force a fresh reconcile on the next get_and_reconcile_positions()."""
         self._reconciled_at = None
         self._cached_open_positions = None

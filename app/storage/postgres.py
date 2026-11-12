@@ -29,6 +29,10 @@ from storage.backend import (
     dict_to_order,
     retention_cutoff_timestamp,
     POSITION_FIELDS,
+    POSITION_METADATA_FIELDS,
+    CLOSED_TRADE_FIELDS,
+    closed_trade_key,
+    _safe_datetime,
     ORDER_FIELDS,
     STRATEGY_PERFORMANCE_FIELDS,
 )
@@ -310,11 +314,127 @@ CREATE TABLE IF NOT EXISTS unsettled_entries (
 );
 """
 
+_DDL_POSITION_METADATA = """
+CREATE TABLE IF NOT EXISTS position_metadata (
+    id                    SERIAL PRIMARY KEY,
+    environment           TEXT        NOT NULL,
+    symbol                TEXT        NOT NULL,
+    strategy_name         TEXT        NOT NULL DEFAULT 'unattributed',
+    rsi_period            INTEGER,
+    rsi_lower             INTEGER,
+    rsi_upper             INTEGER,
+    alpha                 DOUBLE PRECISION,
+    composite_score       DOUBLE PRECISION,
+    stop_loss_price       DOUBLE PRECISION,
+    take_profit_price     DOUBLE PRECISION,
+    intraday              BOOLEAN     DEFAULT FALSE,
+    entry_client_order_id TEXT,
+    entry_order_id        TEXT,
+    entry_date            TIMESTAMPTZ,
+    current_rsi           DOUBLE PRECISION,
+    side                  TEXT        DEFAULT 'long',
+    quantity              DOUBLE PRECISION,
+    entry_price           DOUBLE PRECISION,
+    created_at            TIMESTAMPTZ DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_position_metadata_env_symbol UNIQUE (environment, symbol)
+);
+"""
+
+_DDL_CLOSED_TRADES = """
+CREATE TABLE IF NOT EXISTS closed_trades (
+    id                    SERIAL PRIMARY KEY,
+    environment           TEXT        NOT NULL,
+    symbol                TEXT        NOT NULL,
+    side                  TEXT        DEFAULT 'long',
+    quantity              DOUBLE PRECISION,
+    entry_price           DOUBLE PRECISION,
+    exit_price            DOUBLE PRECISION,
+    entry_date            TIMESTAMPTZ,
+    exit_date             TIMESTAMPTZ,
+    realized_return       DOUBLE PRECISION,
+    exit_reason           TEXT,
+    exit_price_estimated  BOOLEAN     DEFAULT FALSE,
+    strategy_name         TEXT,
+    entry_client_order_id TEXT,
+    exit_order_id         TEXT,
+    dedup_key             TEXT        NOT NULL,
+    created_at            TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_closed_trades_env_key UNIQUE (environment, dedup_key)
+);
+CREATE INDEX IF NOT EXISTS idx_closed_trades_exit
+    ON closed_trades (environment, exit_date);
+"""
+
+# One-time, idempotent migration from the legacy snapshot model.  Each
+# statement only runs while its target table has no rows for the environment,
+# and seeds from the LATEST snapshot only (OPEN rows -> position_metadata,
+# CLOSED rows -> closed_trades).  NULL exit prices are preserved and flagged
+# exit_price_estimated.  The key expression must stay in sync with
+# storage.backend.closed_trade_key.
+_KEY_SQL = (
+    "COALESCE(NULLIF(NULLIF(lower(client_order_id), 'nan'), 'none'), '') <> ''"
+)
+_MIGRATE_METADATA_SQL = """
+INSERT INTO position_metadata
+    (environment, symbol, strategy_name, rsi_period, rsi_lower, rsi_upper,
+     alpha, stop_loss_price, take_profit_price, intraday,
+     entry_client_order_id, entry_order_id, entry_date, current_rsi,
+     side, quantity, entry_price)
+SELECT DISTINCT ON (symbol)
+    environment, symbol, COALESCE(strategy_name, 'rsi_mean_reversion'),
+    rsi_period, rsi_lower, rsi_upper, alpha, stop_loss_price,
+    take_profit_price, COALESCE(intraday, FALSE),
+    CASE WHEN """ + _KEY_SQL + """ THEN client_order_id END,
+    order_id, entry_date, current_rsi,
+    COALESCE(side, CASE WHEN shares < 0 THEN 'short' ELSE 'long' END),
+    shares, entry_price
+FROM position_snapshots
+WHERE environment = $1
+  AND snapshot_timestamp = (SELECT MAX(snapshot_timestamp)
+                            FROM position_snapshots WHERE environment = $1)
+  AND COALESCE(closed, FALSE) = FALSE
+  AND NOT EXISTS (SELECT 1 FROM position_metadata WHERE environment = $1)
+ORDER BY symbol, id DESC
+ON CONFLICT (environment, symbol) DO NOTHING
+"""
+_MIGRATE_CLOSED_SQL = """
+INSERT INTO closed_trades
+    (environment, symbol, side, quantity, entry_price, exit_price, entry_date,
+     exit_date, realized_return, exit_reason, exit_price_estimated,
+     strategy_name, entry_client_order_id, dedup_key)
+SELECT DISTINCT ON (dk)
+    environment, symbol, side, shares, entry_price, exit_price, entry_date,
+    exit_date, realized_return, exit_reason, (exit_price IS NULL),
+    COALESCE(strategy_name, 'rsi_mean_reversion'), cid, dk
+FROM (
+    SELECT environment, symbol, shares, entry_price, exit_price, entry_date,
+           exit_date, realized_return, exit_reason, strategy_name, id,
+           COALESCE(side, CASE WHEN shares < 0 THEN 'short' ELSE 'long' END)
+               AS side,
+           CASE WHEN """ + _KEY_SQL + """ THEN client_order_id END AS cid,
+           CASE WHEN """ + _KEY_SQL + """ THEN client_order_id
+                ELSE symbol || '|' || COALESCE(side,
+                         CASE WHEN shares < 0 THEN 'short' ELSE 'long' END)
+                     || '|' || COALESCE(to_char(entry_date AT TIME ZONE 'UTC',
+                                        'YYYY-MM-DD"T"HH24:MI:SS'), '')
+           END AS dk
+    FROM position_snapshots
+    WHERE environment = $1
+      AND snapshot_timestamp = (SELECT MAX(snapshot_timestamp)
+                                FROM position_snapshots WHERE environment = $1)
+      AND closed IS TRUE
+      AND NOT EXISTS (SELECT 1 FROM closed_trades WHERE environment = $1)
+) s
+ORDER BY dk, id DESC
+ON CONFLICT (environment, dedup_key) DO NOTHING
+"""
+
 _ALL_DDL = (
     _DDL_BACKTEST_RESULTS + _DDL_POSITION_SNAPSHOTS
     + _DDL_SESSION_METADATA + _DDL_ORDERS
     + _DDL_STRATEGY_PERFORMANCE + _DDL_PENDING_SIGNALS
-    + _DDL_UNSETTLED_ENTRIES
+    + _DDL_UNSETTLED_ENTRIES + _DDL_POSITION_METADATA + _DDL_CLOSED_TRADES
 )
 
 # ---------------------------------------------------------------------------
@@ -379,9 +499,25 @@ class PostgresStorage(StorageBackend):
             raise RuntimeError("Could not create Postgres pool")
         async with pool.acquire() as conn:
             await conn.execute(_ALL_DDL)
+            await self._migrate_positions_model(conn)
         self._connected = True
         logger.info(
             "Postgres pool connected & schema ensured (env=%s)", self._env)
+
+    async def _migrate_positions_model(self, conn) -> None:
+        """Seed position_metadata / closed_trades from the latest snapshot.
+
+        Idempotent (each seed is a no-op once its table has rows for this
+        environment) and best-effort: a failure is logged and never blocks
+        startup, since reconcile adopts any unseeded broker position anyway.
+        """
+        try:
+            for sql in (_MIGRATE_METADATA_SQL, _MIGRATE_CLOSED_SQL):
+                status = await conn.execute(sql, self._env)
+                logger.info("Positions-model migration (%s): %s",
+                            sql.split()[2], status)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Positions-model migration failed: %s", exc)
 
     async def _get_pool(self) -> Optional[asyncpg.Pool]:
         """Return the shared pool, (re)creating it on the persistent loop.
@@ -1182,6 +1318,112 @@ class PostgresStorage(StorageBackend):
             logger.error(
                 "Error deleting unsettled entries from Postgres: %s", exc)
             return False
+
+    # -- position_metadata / closed_trades -----------------------------------
+
+    def save_position_metadata(self, rows: List[Dict[str, Any]]) -> bool:
+        """Upsert metadata rows by (environment, symbol)."""
+        if not self._connected:
+            logger.error("Postgres not connected — cannot save position metadata")
+            return False
+        if not rows:
+            return True
+        cols = POSITION_METADATA_FIELDS
+        placeholders = ", ".join(f"${i}" for i in range(1, len(cols) + 2))
+        updates = ", ".join(
+            f"{c} = EXCLUDED.{c}" for c in cols if c != "symbol")
+        sql = (
+            "INSERT INTO position_metadata (environment, "
+            + ", ".join(cols) + ") VALUES (" + placeholders + ") "
+            "ON CONFLICT (environment, symbol) DO UPDATE SET "
+            + updates + ", updated_at = NOW()"
+        )
+        tuples: List[tuple] = []
+        for r in rows:
+            tup: tuple = (self._env,)
+            for c in cols:
+                v = r.get(c)
+                if c == "entry_date":
+                    v = _safe_datetime(v)
+                elif c == "intraday":
+                    v = bool(v)
+                elif c == "strategy_name":
+                    v = v or "unattributed"
+                tup += (v,)
+            tuples.append(tup)
+        try:
+            _sync(self._execute_many(sql, tuples))
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving position metadata: %s", exc)
+            return False
+
+    def load_position_metadata(self) -> Optional[List[Dict[str, Any]]]:
+        if not self._connected:
+            return None
+        try:
+            rows = _sync(self._fetch(
+                "SELECT " + ", ".join(POSITION_METADATA_FIELDS)
+                + " FROM position_metadata WHERE environment = $1", self._env))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error loading position metadata: %s", exc)
+            return None
+        return [dict(r) for r in rows]
+
+    def delete_position_metadata(self, symbols: List[str]) -> bool:
+        if not self._connected:
+            return False
+        if not symbols:
+            return True
+        try:
+            _sync(self._execute(
+                "DELETE FROM position_metadata WHERE environment = $1 "
+                "AND symbol = ANY($2::text[])", self._env, list(symbols)))
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error deleting position metadata: %s", exc)
+            return False
+
+    def save_closed_trade(self, trade: Dict[str, Any]) -> bool:
+        """Insert a closed trade once; duplicates (same dedup key) are ignored."""
+        if not self._connected:
+            logger.error("Postgres not connected — cannot save closed trade")
+            return False
+        cols = CLOSED_TRADE_FIELDS
+        placeholders = ", ".join(f"${i}" for i in range(1, len(cols) + 3))
+        sql = (
+            "INSERT INTO closed_trades (environment, dedup_key, "
+            + ", ".join(cols) + ") VALUES (" + placeholders + ") "
+            "ON CONFLICT (environment, dedup_key) DO NOTHING"
+        )
+        vals: tuple = (self._env, closed_trade_key(trade))
+        for c in cols:
+            v = trade.get(c)
+            if c in ("entry_date", "exit_date"):
+                v = _safe_datetime(v)
+            elif c == "exit_price_estimated":
+                v = bool(v)
+            vals += (v,)
+        try:
+            _sync(self._execute(sql, *vals))
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving closed trade: %s", exc)
+            return False
+
+    def load_closed_trades(self, limit: int = 500) -> Optional[List[Dict[str, Any]]]:
+        if not self._connected:
+            return None
+        try:
+            rows = _sync(self._fetch(
+                "SELECT " + ", ".join(CLOSED_TRADE_FIELDS)
+                + " FROM closed_trades WHERE environment = $1 "
+                "ORDER BY exit_date DESC NULLS LAST, id DESC LIMIT $2",
+                self._env, int(limit)))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error loading closed trades: %s", exc)
+            return None
+        return [dict(r) for r in rows]
 
     # -- list_backtest_files -------------------------------------------------
 
