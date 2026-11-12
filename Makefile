@@ -54,3 +54,8 @@ docker-build:
 
 docker-run:
 	docker run --rm -it -e PAPER_TRADE=True trading-algo
+
+.PHONY: portfolio-backtest
+portfolio-backtest:
+	# e.g. make portfolio-backtest ARGS="--symbols AAPL,MSFT --start 2022-01-01 --placebo 20"
+	ENVIRONMENT=dev .venv/bin/python app/portfolio_backtest.py $(ARGS)
