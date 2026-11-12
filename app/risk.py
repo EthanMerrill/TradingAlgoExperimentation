@@ -1,7 +1,9 @@
 """Portfolio-level risk guard: daily loss limit, drawdown halt, manual halt.
 
 Only gates NEW entries. Exits and protective orders must never consult this.
-All checks fail open when data is unavailable (logged at debug).
+Fails CLOSED: if account data cannot be fetched or evaluated, new entries
+are blocked (a blind bot must not open risk). An account with no session
+history yet is not a failure — the drawdown check is simply skipped.
 """
 import logging
 import os
@@ -58,11 +60,15 @@ class RiskGuard:
             return self._cached_reason
         try:
             reason = self._evaluate()
+            cache = True
         except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.debug("Risk check failed open: %s", e)
-            reason = None
-        self._cached_at = now
-        self._cached_reason = reason
+            reason = f"risk check unavailable ({e}) — failing closed"
+            cache = False  # retry on the next call rather than for a full TTL
+        if cache:
+            self._cached_at = now
+            self._cached_reason = reason
+        else:
+            self._cached_at = None
         if reason and reason != self._last_logged:
             logger.warning("RISK HALT — new entries blocked: %s", reason)
         self._last_logged = reason
@@ -71,8 +77,7 @@ class RiskGuard:
     def _evaluate(self) -> Optional[str]:
         info = self._get_account_info()
         if not isinstance(info, dict) or not info:
-            logger.debug("Risk check: account info unavailable")
-            return None
+            raise RuntimeError("account info unavailable")
         for flag in ('trading_blocked', 'account_blocked',
                      'trade_suspended_by_user'):
             if info.get(flag) is True:
@@ -80,13 +85,13 @@ class RiskGuard:
 
         equity = _num(info.get('equity'))
         if equity is None or equity <= 0:
-            return None
+            raise RuntimeError(f"invalid account equity {info.get('equity')!r}")
         self.state = {'equity': equity}
 
         last_equity = _num(info.get('last_equity'))
         max_loss = float(self._cfg('MAX_DAILY_LOSS_PCT', 0.03))
         if last_equity is None or last_equity <= 0:
-            logger.debug("Risk check: last_equity unavailable")
+            raise RuntimeError("last_equity unavailable — cannot check daily loss")
         else:
             change = (equity - last_equity) / last_equity
             self.state['daily_change_pct'] = change
@@ -113,8 +118,7 @@ class RiskGuard:
         try:
             rows = self._load_meta(limit=_HISTORY_LIMIT) or []
         except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.debug("Risk check: no session history: %s", e)
-            return None
+            raise RuntimeError(f"session history unavailable: {e}") from e
         values = []
         for row in rows:
             meta = row.get('metadata') if isinstance(row, dict) else None

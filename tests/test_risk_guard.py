@@ -39,11 +39,36 @@ class TestRiskGuard(unittest.TestCase):
                    ).entry_block_reason()
         self.assertIn('daily loss', r)
 
-    def test_missing_last_equity_does_not_block(self):
-        self.assertIsNone(_guard({'equity': 1.0}).entry_block_reason())
+    def test_missing_last_equity_fails_closed(self):
+        r = _guard({'equity': 1.0}).entry_block_reason()
+        self.assertIn('failing closed', r)
 
-    def test_empty_account_info_does_not_block(self):
-        self.assertIsNone(_guard({}).entry_block_reason())
+    def test_empty_account_info_fails_closed(self):
+        self.assertIn('failing closed', _guard({}).entry_block_reason())
+
+    def test_account_fetch_error_fails_closed(self):
+        def boom():
+            raise ConnectionError("alpaca down")
+        g = RiskGuard(_cfg(), boom)
+        self.assertIn('failing closed', g.entry_block_reason())
+
+    def test_history_load_error_fails_closed(self):
+        def boom(**kw):
+            raise ConnectionError("db down")
+        g = RiskGuard(_cfg(), lambda: {'equity': 1.0, 'last_equity': 1.0}, boom)
+        self.assertIn('failing closed', g.entry_block_reason())
+
+    def test_failure_not_cached(self):
+        state = {'ok': False}
+
+        def info():
+            if not state['ok']:
+                raise ConnectionError("blip")
+            return {'equity': 1.0, 'last_equity': 1.0}
+        g = RiskGuard(_cfg(), info)
+        self.assertIsNotNone(g.entry_block_reason())
+        state['ok'] = True
+        self.assertIsNone(g.entry_block_reason())
 
     def test_drawdown_blocks(self):
         meta = [{'metadata': {'portfolio_value': 100000.0}},
@@ -64,7 +89,7 @@ class TestRiskGuard(unittest.TestCase):
         ).entry_block_reason())
 
     def test_manual_halt_env_read_at_check_time(self):
-        g = _guard({'equity': 1.0})
+        g = _guard({'equity': 1.0, 'last_equity': 1.0})
         self.assertIsNone(g.entry_block_reason())
         os.environ['TRADING_HALTED'] = '1'
         self.assertIn('manual halt', g.entry_block_reason())
@@ -84,7 +109,7 @@ class TestRiskGuard(unittest.TestCase):
 
         def info():
             calls.append(1)
-            return {'equity': 1.0}
+            return {'equity': 1.0, 'last_equity': 1.0}
         g = RiskGuard(_cfg(), info)
         g.entry_block_reason()
         g.entry_block_reason()
