@@ -4,8 +4,10 @@ Orchestrates the entire trading workflow.
 """
 import argparse
 import asyncio
+import contextlib
 import logging
 import sys
+import threading
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -49,6 +51,24 @@ class TradingAlgorithm:
         # worker (Phase D) as context for intraday strategies during RTH. Bar-
         # loop strategies are evaluated even when this is empty.
         self._last_backtest_results: List = []
+        # Serializes ALL broker-touching work across the main loop, the daily
+        # scheduler and the bar-loop thread (they share one TradingEngine and
+        # PositionsManager). Re-entrant so a thread may nest phases.
+        self.trading_lock = threading.RLock()
+
+    @contextlib.contextmanager
+    def _trading_phase(self, dry_run: bool):
+        """Hold the trading lock with the engine in ``dry_run`` mode, then
+        restore the engine's previous mode (so a dashboard dry-run cannot leak
+        into the bar loop / queue flush)."""
+        with self.trading_lock:
+            engine = self.trading_engine
+            previous = getattr(engine, 'dry_run', False)
+            engine.set_dry_run_mode(dry_run)
+            try:
+                yield
+            finally:
+                engine.set_dry_run_mode(previous)
 
     @property
     def last_backtest_results(self) -> List:
@@ -82,9 +102,6 @@ class TradingAlgorithm:
         self.session_metadata['start_time'] = utc_now()
         _report(1, "Starting cycle")
 
-        # Clear per-cycle caches to avoid stale data
-        self.trading_engine._clear_ohlcv_cache()
-
         # Startup banner
         logger.info("🚀" * 20)
         logger.info("🚀 TRADING ALGORITHM STARTING")
@@ -102,47 +119,49 @@ class TradingAlgorithm:
                     globalConfig.RSI_FINE_TUNING_ENABLED)
         logger.info("=" * 60)
 
-        # Set dry run mode on trading engine
-        self.trading_engine.set_dry_run_mode(dry_run)
-
         try:
-            # Check if it's a trading day
-            if not self.trading_calendar.is_trading_day():
-                if force_backtest:
-                    logger.info(
-                        "Market is closed today, but force backtest is enabled - continuing execution")
-                else:
-                    logger.info("Market is closed today - skipping execution")
-                    if (dry_run is False):
-                        return {'status': 'market_closed'}
-                    else:
-                        # In dry run mode, we can still simulate the trading day
+            # Phase 1 (locked): account + positions. The slow backtest below
+            # runs OUTSIDE the lock so the bar loop is not starved for 90 min.
+            with self._trading_phase(dry_run):
+                # Clear per-cycle caches (shared with the bar loop) under the lock
+                self.trading_engine._clear_ohlcv_cache()
+                # Check if it's a trading day
+                if not self.trading_calendar.is_trading_day():
+                    if force_backtest:
                         logger.info(
-                            "Simulating trading day in dry run mode...")
+                            "Market is closed today, but force backtest is enabled - continuing execution")
+                    else:
+                        logger.info("Market is closed today - skipping execution")
+                        if (dry_run is False):
+                            return {'status': 'market_closed'}
+                        else:
+                            # In dry run mode, we can still simulate the trading day
+                            logger.info(
+                                "Simulating trading day in dry run mode...")
 
-            # Step 1: Check current positions and account status
-            logger.info("🔍 Checking account status and current positions...")
-            _report(3, "Checking account & positions")
-            account_info = data_provider.get_account_info()
-            current_positions = self.positions_manager.get_and_reconcile_positions()
-            if current_positions is None:
-                logger.warning(
-                    "Positions manager returned None during reconciliation; defaulting to empty positions list")
-                current_positions = []
-            if self.positions_manager.positions is None:
-                logger.warning(
-                    "Positions manager in-memory positions is None; defaulting to empty list")
-                self.positions_manager.positions = []
+                # Step 1: Check current positions and account status
+                logger.info("🔍 Checking account status and current positions...")
+                _report(3, "Checking account & positions")
+                account_info = data_provider.get_account_info()
+                current_positions = self.positions_manager.get_and_reconcile_positions()
+                if current_positions is None:
+                    logger.warning(
+                        "Positions manager returned None during reconciliation; defaulting to empty positions list")
+                    current_positions = []
+                if self.positions_manager.positions is None:
+                    logger.warning(
+                        "Positions manager in-memory positions is None; defaulting to empty list")
+                    self.positions_manager.positions = []
 
-            logger.info("💰 Account Summary:")
-            logger.info("   • Equity: $%.2f", account_info.get('equity', 0))
-            logger.info("   • Cash Available: $%.2f",
-                        account_info.get('cash', 0))
-            logger.info("   • Current Open Positions: %d",
-                        len(current_positions))
-            logger.info("   • In-Memory Position Records (open + closed): %d",
-                        len(self.positions_manager.positions))
-            logger.info("─" * 40)
+                logger.info("💰 Account Summary:")
+                logger.info("   • Equity: $%.2f", account_info.get('equity', 0))
+                logger.info("   • Cash Available: $%.2f",
+                            account_info.get('cash', 0))
+                logger.info("   • Current Open Positions: %d",
+                            len(current_positions))
+                logger.info("   • In-Memory Position Records (open + closed): %d",
+                            len(self.positions_manager.positions))
+                logger.info("─" * 40)
 
             # Check if we have enough buying power to potentially trade
             buying_power = account_info.get('buying_power', 0)
@@ -186,15 +205,16 @@ class TradingAlgorithm:
             logger.info(
                 "🎯 Analyzing trading opportunities and executing orders...")
             _report(90, "Executing trading session")
-            trading_summary = self.trading_engine.execute_trading_session(
-                backtest_results)
+            with self._trading_phase(dry_run):
+                trading_summary = self.trading_engine.execute_trading_session(
+                    backtest_results)
 
-            # Step 4: Save results and metadata
-            self.session_metadata['end_time'] = utc_now()
-            self.session_metadata['results_summary'] = trading_summary
-            logger.info("💾 Saving session results and metadata...")
-            _report(97, "Saving session results")
-            await self._save_session_results(dry_run, account_info, backtest_results, trading_summary)
+                # Step 4: Save results and metadata
+                self.session_metadata['end_time'] = utc_now()
+                self.session_metadata['results_summary'] = trading_summary
+                logger.info("💾 Saving session results and metadata...")
+                _report(97, "Saving session results")
+                await self._save_session_results(dry_run, account_info, backtest_results, trading_summary)
             _report(100, "Cycle complete")
 
             # Success banner
@@ -693,31 +713,87 @@ def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
         algorithm.trading_engine, algorithm.positions_manager)
     bar_engine.set_dry_run_mode(bool(shared_state.get('dry_run', False)))
     last_close_date: Optional[str] = None
+    last_flush_date: Optional[str] = None
+    lock = algorithm.trading_lock
     logger.info("📈 Bar-loop worker started for intraday strategies")
 
     while True:
         try:
             _time.sleep(60)
-            # Don't interfere with a running daily cycle.
-            if shared_state.get('cycle_running', False):
-                continue
-
             now = datetime.now()
-            results = algorithm.last_backtest_results
+            today = now.strftime('%Y-%m-%d')
+            past_cutoff = bar_engine.intraday_exit_due(now)
+            close_window = (
+                past_cutoff
+                or bar_engine.session_ended(now)
+            ) and bar_engine.has_open_intraday_positions() \
+                and last_close_date != today
 
-            if bar_engine.is_rth(now):
-                summary = bar_engine.run_intraday_cycle(results, as_of=now)
-                if summary.get('signals') or summary.get('orders_placed'):
-                    logger.info("📈 Intraday cycle: %s", summary)
-            elif bar_engine.session_ended(now) and bar_engine.has_open_intraday_positions():
-                today = now.strftime('%Y-%m-%d')
-                if last_close_date != today:
-                    summary = bar_engine.close_intraday_positions(as_of=now)
-                    last_close_date = today
-                    logger.info("🕓 Intraday session close: %s", summary)
+            # Normal ticks skip when a cycle holds the lock (don't pile up);
+            # the session-close exit must not be skipped, so it waits.
+            if close_window:
+                acquired = lock.acquire(timeout=300)
+            else:
+                acquired = lock.acquire(blocking=False)
+            if not acquired:
+                if close_window:
+                    logger.error(
+                        "🕓 Could not acquire trading lock for intraday close "
+                        "within 300s — will retry next tick")
+                continue
+            try:
+                # Process-level dry-run mode, never a dashboard cycle's.
+                dry = bool(shared_state.get('dry_run', False))
+                algorithm.trading_engine.set_dry_run_mode(dry)
+                bar_engine.set_dry_run_mode(dry)
+                results = algorithm.last_backtest_results
+
+                if bar_engine.is_rth(now):
+                    # Submit entries queued by off-hours cycles on the first
+                    # RTH tick of the day (before the intraday cycle runs).
+                    if last_flush_date != today:
+                        flush_summary = (
+                            algorithm.trading_engine.flush_queued_entries(as_of=now))
+                        if flush_summary.get('flushed'):
+                            logger.info(
+                                "⏳ Queued-entry flush: %s", flush_summary)
+                        last_flush_date = today
+                    if close_window:
+                        # Flat-at-close: exit BEFORE the bell (a DAY market
+                        # order after 16:00 would sit until the next open).
+                        last_close_date = _close_intraday(
+                            bar_engine, now, today, last_close_date)
+                    elif not past_cutoff:
+                        # No new intraday entries after the exit cutoff.
+                        summary = bar_engine.run_intraday_cycle(
+                            results, as_of=now)
+                        if summary.get('signals') or summary.get('orders_placed'):
+                            logger.info("📈 Intraday cycle: %s", summary)
+                elif close_window:
+                    # Post-close fallback (missed the pre-close window).
+                    logger.error(
+                        "🕓 Intraday positions still open AFTER the close — "
+                        "attempting fallback exit (DAY orders may not fill "
+                        "until the next open)")
+                    last_close_date = _close_intraday(
+                        bar_engine, now, today, last_close_date)
+            finally:
+                lock.release()
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Bar-loop worker error: %s", e)
             _time.sleep(60)
+
+
+def _close_intraday(bar_engine, now, today: str, last_close_date: Optional[str]) -> Optional[str]:
+    """Close intraday positions; return today's date only if all closes succeeded."""
+    summary = bar_engine.close_intraday_positions(as_of=now)
+    logger.info("🕓 Intraday session close: %s", summary)
+    if summary.get('failed') or summary.get('errors'):
+        logger.error(
+            "🕓 Intraday close incomplete (failed=%s) — will retry next tick",
+            summary.get('failed'))
+        return last_close_date
+    return today
 
 
 async def main():
@@ -759,12 +835,16 @@ async def main():
         # (the HEALTHCHECK runs curl against :8080/health regardless of KEEP_ALIVE).
         # When KEEP_ALIVE is false, the process exits after run_full_cycle completes
         # and the daemon thread is torn down automatically.
-        import threading
         shared_state: dict = {
             'last_result': None,
             'cycle_running': False,
             'cycle_flags': {},
             'trigger_event': threading.Event(),
+            # Process-level dry-run mode (CLI --dry-run); the bar loop and
+            # queue flush always run in this mode regardless of per-cycle
+            # dashboard dry-run requests.
+            'dry_run': bool(args.dry_run),
+            'trading_lock': algorithm.trading_lock,
         }
         health_thread = threading.Thread(
             target=start_health_server,
@@ -791,27 +871,27 @@ async def main():
                 )
                 scheduler_thread.start()
 
-            # Start the bar-loop worker when intraday strategies are enabled
-            from bar_engine import BarLoopEngine  # pylint: disable=import-outside-toplevel
-            if BarLoopEngine(
-                algorithm.trading_engine,
-                algorithm.positions_manager,
-            ).enabled_bar_loop_strategies():
-                bar_loop_thread = threading.Thread(
-                    target=_bar_loop_worker,
-                    args=(algorithm, shared_state),
-                    daemon=True,
-                )
-                bar_loop_thread.start()
+            # Start the bar-loop worker: evaluates intraday strategies during
+            # RTH when enabled, and submits queued off-hours entries at each
+            # market open even when no intraday strategies are enabled.
+            bar_loop_thread = threading.Thread(
+                target=_bar_loop_worker,
+                args=(algorithm, shared_state),
+                daemon=True,
+            )
+            bar_loop_thread.start()
 
-        session_result = await algorithm.run_full_cycle(
-            force_backtest=args.force_backtest,
-            dry_run=args.dry_run,
-            test_mode=args.test_mode,
-        )
+        shared_state['cycle_running'] = True
+        try:
+            session_result = await algorithm.run_full_cycle(
+                force_backtest=args.force_backtest,
+                dry_run=args.dry_run,
+                test_mode=args.test_mode,
+            )
+        finally:
+            shared_state['cycle_running'] = False
         # Expose the completed result to the health server
         shared_state['last_result'] = session_result
-        shared_state['cycle_running'] = False
         _finish_initial_job_if_any(shared_state, session_result)
 
         logger.info("=" * 50)

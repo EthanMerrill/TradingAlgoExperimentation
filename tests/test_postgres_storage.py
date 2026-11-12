@@ -560,6 +560,101 @@ class TestPostgresStorage(unittest.TestCase):
         self._conn.fetch = AsyncMock(side_effect=RuntimeError("boom"))
         self.assertEqual(s.load_session_metadata(), [])
 
+    # -- pending_signals -----------------------------------------------------
+
+    def _pending_signal(self, symbol="AAPL", direction="long"):
+        return {
+            "symbol": symbol,
+            "direction": direction,
+            "strategy_name": "rsi_mean_reversion",
+            "opportunity": {"symbol": symbol, "entry_price": 100.0},
+        }
+
+    def test_save_pending_signals_disconnected(self):
+        self.assertFalse(
+            self._disconnected().save_pending_signals([self._pending_signal()]))
+
+    def test_save_pending_signals_empty(self):
+        self.assertTrue(self._connected().save_pending_signals([]))
+
+    def test_save_pending_signals_upserts_by_env_symbol_direction(self):
+        s = self._connected(env="dev")
+        self.assertTrue(s.save_pending_signals([
+            self._pending_signal(), self._pending_signal("TSLA", "short")]))
+        sql = self._conn.executemany.call_args[0][0]
+        rows = self._conn.executemany.call_args[0][1]
+        self.assertIn("INSERT INTO pending_signals", sql)
+        self.assertIn("ON CONFLICT (environment, symbol, direction)", sql)
+        self.assertIn("status = 'queued'", sql)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][0], "dev")          # environment
+        self.assertEqual(rows[0][1], "AAPL")
+        self.assertEqual(rows[0][2], "long")
+        self.assertEqual(json.loads(rows[0][4]), {"symbol": "AAPL",
+                                                  "entry_price": 100.0})
+        self.assertEqual(rows[1][2], "short")
+
+    def test_save_pending_signals_serializes_datetime_values(self):
+        """Non-JSON-safe values (datetimes) in the opportunity are serialized
+        via the default encoder instead of raising."""
+        s = self._connected()
+        sig = self._pending_signal()
+        sig["opportunity"]["queued_check"] = datetime(2026, 10, 31, 10, 0)
+        self.assertTrue(s.save_pending_signals([sig]))
+        row = self._conn.executemany.call_args[0][1][0]
+        self.assertEqual(json.loads(row[4])["queued_check"],
+                         "2026-10-31T10:00:00")
+
+    def test_load_pending_signals_disconnected(self):
+        self.assertEqual(self._disconnected().load_pending_signals(), [])
+
+    def test_load_pending_signals_scopes_env_and_status(self):
+        s = self._connected(env="qa")
+        self._conn.fetch = AsyncMock(return_value=[{
+            "id": 7, "symbol": "AAPL", "direction": "long",
+            "strategy_name": "rsi_mean_reversion", "status": "queued",
+            "reason": None, "queued_at": datetime(2026, 10, 31, 10, 0),
+            "opportunity": '{"symbol": "AAPL"}',
+        }])
+        signals = s.load_pending_signals()
+        sql = self._conn.fetch.call_args[0][0]
+        args = self._conn.fetch.call_args[0][1:]
+        self.assertIn("FROM pending_signals", sql)
+        self.assertIn("environment = $1", sql)
+        self.assertIn("status = $2", sql)
+        self.assertIn("ORDER BY queued_at ASC", sql)
+        self.assertEqual(args[0], "qa")
+        self.assertEqual(args[1], "queued")
+        self.assertEqual(signals[0]["id"], 7)
+        self.assertEqual(signals[0]["opportunity"], {"symbol": "AAPL"})
+
+    def test_resolve_pending_signals_disconnected(self):
+        self.assertFalse(self._disconnected().resolve_pending_signals([1], "submitted"))
+
+    def test_resolve_pending_signals_builds_env_scoped_update(self):
+        s = self._connected(env="qa")
+        self.assertTrue(s.resolve_pending_signals([1, 2], "expired",
+                                                  reason="stale"))
+        sql = self._conn.execute.call_args[0][0]
+        args = self._conn.execute.call_args[0][1:]
+        self.assertIn("UPDATE pending_signals", sql)
+        self.assertIn("environment = $1", sql)
+        self.assertIn("resolved_at", sql)
+        self.assertEqual(args[0], "qa")
+        self.assertEqual(args[1], "expired")
+        self.assertEqual(args[2], "stale")
+        self.assertEqual(list(args[3:]), [1, 2])
+
+    def test_resolve_pending_signals_empty_ids_noop(self):
+        s = self._connected()
+        self.assertTrue(s.resolve_pending_signals([], "submitted"))
+        self._conn.execute.assert_not_called()
+
+    def test_resolve_pending_signals_swallows_db_errors(self):
+        s = self._connected()
+        self._conn.execute = AsyncMock(side_effect=RuntimeError("boom"))
+        self.assertFalse(s.resolve_pending_signals([1], "submitted"))
+
 
 if __name__ == "__main__":
     unittest.main()

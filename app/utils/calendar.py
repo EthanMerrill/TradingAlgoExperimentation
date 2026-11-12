@@ -4,7 +4,7 @@ from typing import Optional
 
 import pytz
 
-from .datetime_ import is_trading_day
+from .datetime_ import get_session, is_trading_day
 
 US_EASTERN = pytz.timezone("US/Eastern")
 RTH_OPEN = dtime(9, 30)
@@ -27,19 +27,21 @@ def to_eastern(dt: Optional[datetime] = None) -> datetime:
 
 
 def is_regular_trading_hours(dt: Optional[datetime] = None) -> bool:
-    """True during US regular trading hours: Mon-Fri, 09:30-16:00 ET."""
+    """True during the regular session (holiday- and early-close-aware)."""
     now = to_eastern(dt)
-    if now.weekday() >= 5:
+    session = get_session(now.date())
+    if session is None:
         return False
-    return RTH_OPEN <= now.time() <= RTH_CLOSE
+    return session[0] <= now.time() <= session[1]
 
 
 def is_session_ended(dt: Optional[datetime] = None) -> bool:
-    """True on a weekday after the 16:00 ET close."""
+    """True on a trading day after that day's actual close (16:00 or 13:00)."""
     now = to_eastern(dt)
-    if now.weekday() >= 5:
+    session = get_session(now.date())
+    if session is None:
         return False
-    return now.time() > RTH_CLOSE
+    return now.time() > session[1]
 
 
 class TradingCalendar:

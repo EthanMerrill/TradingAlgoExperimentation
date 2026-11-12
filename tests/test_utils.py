@@ -34,33 +34,10 @@ class TestUtilityFunctions(unittest.TestCase):
         mock_mkdir.assert_called_once_with(exist_ok=True)
         mock_basic_config.assert_called_once()
 
-    @patch('utils.datetime_.importlib.import_module')
-    def test_is_trading_day_weekday(self, mock_import_module):
-        mock_holidays_module = Mock()
-        mock_holidays_module.country_holidays.return_value = set()
-        mock_import_module.return_value = mock_holidays_module
-
-        result = is_trading_day(datetime(2025, 6, 11))  # Wednesday
-        self.assertTrue(result)
-
-    @patch('utils.datetime_.importlib.import_module')
-    def test_is_trading_day_weekend(self, mock_import_module):
-        mock_holidays_module = Mock()
-        mock_holidays_module.country_holidays.return_value = set()
-        mock_import_module.return_value = mock_holidays_module
-
-        result = is_trading_day(datetime(2025, 6, 14))  # Saturday
-        self.assertFalse(result)
-
-    @patch('utils.datetime_.importlib.import_module')
-    def test_is_trading_day_holiday(self, mock_import_module):
-        mock_holidays_module = Mock()
-        mock_holidays_module.country_holidays.return_value = {
-            datetime(2025, 7, 4).date()}
-        mock_import_module.return_value = mock_holidays_module
-
-        result = is_trading_day(datetime(2025, 7, 4))
-        self.assertFalse(result)
+    def test_is_trading_day_basic(self):
+        self.assertTrue(is_trading_day(datetime(2025, 6, 11)))   # Wednesday
+        self.assertFalse(is_trading_day(datetime(2025, 6, 14)))  # Saturday
+        self.assertFalse(is_trading_day(datetime(2025, 7, 4)))   # Independence
 
 
 class TestPerformanceMetrics(unittest.TestCase):

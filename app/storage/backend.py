@@ -559,7 +559,8 @@ class StorageBackend(ABC):
         return []
 
     def load_session_metadata(
-        self, limit: Optional[int] = None, timestamp: Optional[str] = None,
+        self, limit: Optional[int] = None,
+        timestamp: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Load stored session metadata rows, newest first.
 
@@ -575,6 +576,33 @@ class StorageBackend(ABC):
     ) -> List[Any]:
         """Load persisted orders. Default returns an empty list."""
         return []
+
+    # -- pending_signals (off-hours entry queue) ------------------------------
+
+    def save_pending_signals(
+        self, signals: List[Dict[str, Any]]
+    ) -> bool:
+        """Queue entry signals for submission at the next market open.
+
+        Each signal dict: ``symbol``, ``direction`` ('long'|'short'),
+        ``opportunity`` (serializable dict), optional ``strategy_name``,
+        ``queued_at``. Upserts by (environment, symbol, direction) so a
+        re-queued symbol refreshes its stored opportunity instead of
+        duplicating. Default no-op.
+        """
+        return False
+
+    def load_pending_signals(
+        self, status: str = "queued"
+    ) -> List[Dict[str, Any]]:
+        """Load queued pending signals for this environment. Default no-op."""
+        return []
+
+    def resolve_pending_signals(
+        self, ids: List[int], status: str, reason: Optional[str] = None
+    ) -> bool:
+        """Mark pending signals resolved ('submitted'/'expired'). Default no-op."""
+        return False
 
     def get_open_orders_stored(self, symbol: Optional[str] = None) -> List[Any]:
         """Load persisted orders that are not in a terminal status."""

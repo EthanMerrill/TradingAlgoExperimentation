@@ -738,3 +738,23 @@ class TestApiRunsEndpoint(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestCheckAuthConstantTime(unittest.TestCase):
+    def test_check_auth(self):
+        import health_server
+        with patch.dict(os.environ, {'DASHBOARD_PASSWORD': 'pw\u00e9'}):
+            self.assertTrue(health_server._check_auth('admin', 'pw\u00e9'))
+            self.assertFalse(health_server._check_auth('admin', 'bad'))
+            self.assertFalse(health_server._check_auth('root', 'pw\u00e9'))
+            self.assertFalse(health_server._check_auth(None, None))
+        with patch.dict(os.environ, {'DASHBOARD_PASSWORD': ''}):
+            self.assertFalse(health_server._check_auth('admin', ''))
+
+    def test_uses_compare_digest(self):
+        import health_server
+        with patch.dict(os.environ, {'DASHBOARD_PASSWORD': 'pw'}), \
+                patch.object(health_server.hmac, 'compare_digest',
+                             return_value=True) as cd:
+            self.assertTrue(health_server._check_auth('admin', 'pw'))
+            self.assertEqual(cd.call_count, 2)

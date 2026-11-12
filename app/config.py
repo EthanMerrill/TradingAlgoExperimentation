@@ -109,6 +109,29 @@ class Config:
             self.ENFORCE_RTH_ENTRIES = trading.get(
                 'enforce_rth_entries', True)
 
+            # Queue entry signals generated outside regular trading hours and
+            # submit them at the next market open instead of dropping them.
+            self.QUEUE_OFF_HOURS_ENTRIES = trading.get(
+                'queue_off_hours_entries', True)
+
+            # Pending signals expire once more than this many trading
+            # sessions have opened since they were queued (see
+            # flush_queued_entries).
+            self.PENDING_SIGNAL_MAX_AGE_DAYS = trading.get(
+                'pending_signal_max_age_days', 1)
+
+            # Portfolio risk controls (new entries only; see app/risk.py).
+            self.MAX_DAILY_LOSS_PCT = trading.get('max_daily_loss_pct', 0.03)
+            self.MAX_DRAWDOWN_HALT_PCT = trading.get(
+                'max_drawdown_halt_pct', 0.15)
+            self.TRADING_HALTED = trading.get('halted', False)
+
+            # Intraday forced-exit time (ET) and lead minutes.
+            self.INTRADAY_EXIT_TIME = trading.get(
+                'intraday_exit_time', '15:55')
+            self.INTRADAY_EXIT_LEAD_MINUTES = trading.get(
+                'intraday_exit_lead_minutes', 5)
+
             # Reconcile cancels broker orders whose symbol has no live position
             # (orphan legs) — a resting sell on a flat symbol can open a short.
             self.CANCEL_ORPHAN_ORDERS = trading.get(
@@ -241,6 +264,19 @@ class Config:
 
         # Only submit entry orders during regular trading hours.
         self.ENFORCE_RTH_ENTRIES = True
+
+        # Queue off-hours entry signals for the next market open.
+        self.QUEUE_OFF_HOURS_ENTRIES = True
+        # Trading sessions a queued signal may span before expiring.
+        self.PENDING_SIGNAL_MAX_AGE_DAYS = 1
+
+        # Portfolio risk controls (new entries only; see app/risk.py).
+        self.MAX_DAILY_LOSS_PCT = 0.03
+        self.MAX_DRAWDOWN_HALT_PCT = 0.15
+        self.TRADING_HALTED = False
+
+        self.INTRADAY_EXIT_TIME = "15:55"
+        self.INTRADAY_EXIT_LEAD_MINUTES = 5
 
         # Cancel broker orders on symbols with no live position (orphans).
         self.CANCEL_ORPHAN_ORDERS = True

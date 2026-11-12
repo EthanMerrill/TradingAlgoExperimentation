@@ -1430,28 +1430,121 @@ class TestPositionsManager(unittest.TestCase):
         self.assertIsNone(
             self.manager._find_fill_by_client_order_id("AAPL", "NOPE"))
 
-    def test_close_position_prefers_client_order_id_fill(self):
-        """close_position uses the exact client_order_id fill, not a heuristic."""
+    def test_find_fill_by_client_order_id_side_filter(self):
+        """side filter excludes a same-id order on the other side."""
         self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
-            {"symbol": "AAPL", "side": "sell", "filled_qty": 10.0,
-             "filled_avg_price": 155.0, "client_order_id": "AAPL-BUY-1",
-             "order_id": "o1", "submitted_at": datetime(2025, 6, 10),
-             "filled_at": datetime(2025, 6, 10)},
+            {"symbol": "AAPL", "side": "buy", "filled_qty": 10.0,
+             "filled_avg_price": 150.0, "client_order_id": "AAPL-BUY-1",
+             "order_id": "o1", "submitted_at": datetime(2025, 6, 1),
+             "filled_at": datetime(2025, 6, 1)},
         ])
-        p = Position(
-            symbol="AAPL", quantity=10.0, entry_price=150.0, current_price=151.0,
+        self.assertIsNone(self.manager._find_fill_by_client_order_id(
+            "AAPL", "AAPL-BUY-1", side="sell"))
+        res = self.manager._find_fill_by_client_order_id(
+            "AAPL", "AAPL-BUY-1", side="buy")
+        self.assertEqual(res[0], 150.0)
+
+    def _mk_pos(self, side="long", entry=150.0, cid="AAPL-BUY-1"):
+        return Position(
+            symbol="AAPL", quantity=-10.0 if side == "short" else 10.0,
+            entry_price=entry, current_price=151.0,
             current_rsi=45.0, entry_date=datetime(2025, 6, 1), alpha=0.05,
             rsi_period=14, rsi_lower=30, rsi_upper=70,
             stop_loss_price=140.0, take_profit_price=160.0,
-            client_order_id="AAPL-BUY-1",
+            client_order_id=cid,
         )
+
+    def _order(self, side, price, cid, when, oid):
+        return {"symbol": "AAPL", "side": side, "filled_qty": 10.0,
+                "filled_avg_price": price, "client_order_id": cid,
+                "order_id": oid, "submitted_at": when, "filled_at": when}
+
+    def test_close_position_uses_exit_fill_not_entry_fill(self):
+        """Entry fill shares the position's client_order_id; exit must be the later sell."""
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            self._order("sell", 155.0, "oco-leg", datetime(2025, 6, 10), "o2"),
+            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
+        ])
+        p = self._mk_pos()
         self.manager.positions = [p]
         self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
 
         self.manager.close_position("AAPL")
 
-        self.assertTrue(p.closed)
         self.assertEqual(p.exit_price, 155.0)
+        self.assertAlmostEqual(p.realized_return, 5.0 / 150.0)
+
+    def test_close_position_skips_prior_round_trip_exit(self):
+        """An older sell from a previous round-trip must not be picked."""
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            self._order("sell", 160.0, "cur-exit", datetime(2025, 6, 10), "o4"),
+            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o3"),
+            self._order("sell", 120.0, "old-exit", datetime(2025, 5, 20), "o2"),
+            self._order("buy", 100.0, "OLD-BUY", datetime(2025, 5, 1), "o1"),
+        ])
+        p = self._mk_pos()
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
+        self.manager.close_position("AAPL")
+        self.assertEqual(p.exit_price, 160.0)
+
+    def test_close_position_picks_first_close_after_entry(self):
+        """A later round-trip's sell is newer; the close right after entry wins."""
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            self._order("sell", 99.0, "later-exit", datetime(2025, 7, 10), "o4"),
+            self._order("sell", 155.0, "oco", datetime(2025, 6, 10), "o3"),
+            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
+        ])
+        p = self._mk_pos()
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
+        self.manager.close_position("AAPL")
+        self.assertEqual(p.exit_price, 155.0)
+
+    def test_close_position_short_uses_later_buy(self):
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            self._order("buy", 140.0, "cover", datetime(2025, 6, 10), "o2"),
+            self._order("sell", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
+        ])
+        p = self._mk_pos(side="short")
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
+        self.manager.close_position("AAPL")
+        self.assertEqual(p.exit_price, 140.0)
+        self.assertAlmostEqual(p.realized_return, 10.0 / 150.0)
+
+    def test_close_position_entry_only_does_not_use_entry_price(self):
+        """With only the entry fill in history, exit falls back to OCO heuristic."""
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
+        ])
+        p = self._mk_pos()
+        self.manager.positions = [p]
+        self.cloud.get_latest_positions_df.return_value = pd.DataFrame()
+        self.manager.close_position("AAPL")
+        self.assertIn(p.exit_price, (140.0, 160.0, 151.0))
+
+    def test_resolve_exit_uses_filled_at_and_post_entry_sell(self):
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            {**self._order("sell", 160.0, "x", datetime(2025, 6, 10, 15), "o4"),
+             "submitted_at": datetime(2025, 6, 2)},
+            self._order("buy", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o3"),
+            self._order("sell", 120.0, "old", datetime(2025, 5, 20), "o2"),
+        ])
+        price, date, reason = self.manager._resolve_exit_for_symbol(
+            "AAPL", "AAPL-BUY-1", "sell", "buy", 140.0, 160.0, 151.0, 150.0)
+        self.assertEqual(price, 160.0)
+        self.assertEqual(date, datetime(2025, 6, 10, 15))
+        self.assertEqual(reason, "oco_take_profit")
+
+    def test_resolve_exit_short(self):
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame([
+            self._order("buy", 140.0, "x", datetime(2025, 6, 10), "o2"),
+            self._order("sell", 150.0, "AAPL-BUY-1", datetime(2025, 6, 1), "o1"),
+        ])
+        price, _, _ = self.manager._resolve_exit_for_symbol(
+            "AAPL", "AAPL-BUY-1", "buy", "sell", 160.0, 130.0, 141.0, 150.0)
+        self.assertEqual(price, 140.0)
 
 
 if __name__ == '__main__':

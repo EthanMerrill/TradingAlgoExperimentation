@@ -4,7 +4,7 @@ Handles order placement, position management, and portfolio updates.
 """
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, asdict
 # pylint: disable=broad-exception-caught
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,11 +18,13 @@ from alpaca.trading.requests import (GetOrdersRequest, LimitOrderRequest,
                                      TakeProfitRequest)
 from data_provider import data_provider
 from indicators import TechnicalIndicators
+from risk import RiskGuard
 from storage import storage
 from order import Order, generate_client_order_id
 from positions import Position, PositionsManager
 from utils import ensure_utc, utc_now
-from utils.calendar import is_regular_trading_hours  # type: ignore
+from utils.datetime_ import get_session
+from utils.calendar import US_EASTERN, is_regular_trading_hours  # type: ignore
 from strategies.base import StrategyContext
 from strategies.registry import get_strategy
 from strategies.base import BacktestResult
@@ -60,6 +62,19 @@ _TERMINAL_ORDER_STATUSES = frozenset({
 _UNREPLACEABLE_ORDER_STATUSES = frozenset({
     'held', 'pending_cancel', 'pending_replace',
 })
+
+
+def _parse_queued_at(value: Any) -> Optional[datetime]:
+    """Parse a queued_at value (datetime or ISO string) into a UTC datetime."""
+    if isinstance(value, datetime):
+        return ensure_utc(value)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return ensure_utc(datetime.fromisoformat(
+            value.replace('Z', '+00:00')))
+    except ValueError:
+        return None
 
 
 def _status_str(value: Any) -> str:
@@ -121,6 +136,11 @@ class TradingOpportunity:
     intraday: bool = False
 
 
+# Dataclass field names of TradingOpportunity — used to reconstruct queued
+# off-hours signals at flush time (extra/unknown keys are ignored).
+_OPPORTUNITY_FIELDS = frozenset(f.name for f in fields(TradingOpportunity))
+
+
 class TradingEngine:
     """Main trading execution engine."""
 
@@ -129,6 +149,8 @@ class TradingEngine:
     # the market is closed, so it queues) must not stall the trading cycle.
     # Exits use a longer wait because the realized return depends on it.
     ENTRY_FILL_WAIT_SECONDS = 5.0
+    # Max wait for a cancelled entry order to reach a terminal status.
+    ENTRY_CANCEL_SETTLE_SECONDS = 10.0
 
 
     def __init__(self):
@@ -149,10 +171,19 @@ class TradingEngine:
         # summary's `errors` so failures are visible in the dashboard instead
         # of only appearing in the log.
         self._last_order_error: Optional[str] = None
+        # Portfolio-level kill switch (daily loss / drawdown / manual halt /
+        # account status). Gates new entries only, never exits.
+        self._risk_guard = RiskGuard(
+            globalConfig, lambda: data_provider.get_account_info(),
+            lambda **kw: storage.load_session_metadata(**kw))
         # Per-cycle OHLCV cache: avoids redundant API calls when multiple
         # methods (price, RSI, take-profit) need data for the same symbol.
         # Keyed by symbol, cleared at the start of each run cycle.
         self._ohlcv_cache: Dict[str, pd.DataFrame] = {}
+        # symbol -> (covered start date, monotonic fetch time) for the cache
+        # above. Kept separate because strategies share `_ohlcv_cache` as a
+        # plain symbol->DataFrame mapping.
+        self._ohlcv_meta: Dict[str, Tuple[datetime, float]] = {}
 
     def set_positions_manager(self, manager: PositionsManager) -> None:
         """Inject a shared PositionsManager instance (single source of state)."""
@@ -451,6 +482,27 @@ class TradingEngine:
                 pos.entry_price * abs(pos.quantity)
         return used
 
+    def _new_positions_remaining_today(self) -> int:
+        """New-position allowance left today (US/Eastern), longs + shorts.
+
+        Counts every position opened today (open or closed, either direction —
+        this includes entries placed earlier in the same session) against
+        MAX_NEW_POSITIONS_PER_DAY, so re-runs, queue flushes and the bar loop
+        do not each get a fresh allowance.
+        """
+        today = datetime.now(US_EASTERN).date()
+        opened_today = 0
+        for pos in self._positions_manager.positions:
+            entry = getattr(pos, 'entry_date', None)
+            if entry is None:
+                continue
+            try:
+                if ensure_utc(entry).astimezone(US_EASTERN).date() == today:
+                    opened_today += 1
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return max(0, globalConfig.MAX_NEW_POSITIONS_PER_DAY - opened_today)
+
     def calculate_position_sizes(self, opportunities: List[TradingOpportunity]) -> List[Tuple[TradingOpportunity, int]]:
         """
         Calculate position sizes for trading opportunities.
@@ -485,7 +537,7 @@ class TradingEngine:
             # Calculate how many new positions we can take
             current_position_count = len(current_positions)
             max_new_positions = min(
-                globalConfig.MAX_NEW_POSITIONS_PER_DAY,
+                self._new_positions_remaining_today(),
                 globalConfig.MAX_POSITIONS - current_position_count
             )
 
@@ -583,6 +635,11 @@ class TradingEngine:
                 return []
 
             equity = account_info['equity']
+            buying_power = account_info.get('buying_power', 0) or 0
+
+            if buying_power <= 0:
+                logger.info("Insufficient buying power for new shorts")
+                return []
 
             # Calculate total notional value of existing short positions.
             # quantity is negative for shorts, so use abs() — otherwise the
@@ -595,6 +652,11 @@ class TradingEngine:
 
             max_short_notional = equity * globalConfig.MAX_SHORT_LONG_RATIO
             available_short_notional = max_short_notional - current_short_notional
+            # Cap by buying power, keeping the MIN_CASH_PCT buffer free.
+            min_cash_pct = getattr(globalConfig, 'MIN_CASH_PCT', 0.0) or 0.0
+            available_short_notional = min(
+                available_short_notional,
+                buying_power - equity * min_cash_pct)
 
             logger.info(
                 "Short leverage: existing=%d, notional=$%.2f, max=$%.2f, available=$%.2f",
@@ -611,7 +673,7 @@ class TradingEngine:
             # Calculate how many new short positions we can take
             current_position_count = len(current_positions)
             max_new_positions = min(
-                globalConfig.MAX_NEW_POSITIONS_PER_DAY,
+                self._new_positions_remaining_today(),
                 globalConfig.MAX_POSITIONS - current_position_count
             )
 
@@ -692,6 +754,9 @@ class TradingEngine:
         client_order_id: Optional[str] = None
         placed_order_id: Optional[str] = None
         entry_fill_price: Optional[float] = None
+        # Actual filled quantity (None until a fill is confirmed). The recorded
+        # Position/Order qty always uses this when known, never `shares`.
+        entry_filled_qty: Optional[float] = None
         self._last_order_error = None
         try:
             if self.dry_run:
@@ -723,6 +788,13 @@ class TradingEngine:
                         label, opportunity.symbol)
                     self._last_order_error = (
                         f"{opportunity.symbol}: entry skipped — outside RTH")
+                    return False
+
+                # Portfolio kill switch: blocks NEW entries only.
+                risk_reason = self._risk_guard.entry_block_reason()
+                if risk_reason:
+                    self._last_order_error = (
+                        f"{opportunity.symbol}: entry blocked — {risk_reason}")
                     return False
 
                 client_order_id = self._make_unique_client_order_id(
@@ -771,22 +843,51 @@ class TradingEngine:
                 elif entry_fill_price is None:
                     logger.warning(
                         "Could not confirm entry fill for %s (status=%s) — "
-                        "cancelling the entry and recording the estimated price "
-                        "$%.2f", opportunity.symbol, entry_status,
-                        opportunity.entry_price)
+                        "cancelling the entry", opportunity.symbol,
+                        entry_status)
                     self._cancel_entry_order(placed_order_id)
+                    # The order may be 'pending_cancel' and still fill — wait
+                    # (bounded) for a terminal status before re-querying.
+                    settled = self._wait_for_orders_cancelled(
+                        [str(placed_order_id)],
+                        timeout=self.ENTRY_CANCEL_SETTLE_SECONDS)
+                    entry_fill_price, entry_filled_qty = \
+                        self._requery_entry_fill(placed_order_id)
+                    if not settled:
+                        logger.error(
+                            "Entry order %s for %s did not reach a terminal "
+                            "status after cancel — it may still fill. NOT "
+                            "recording a position; reconcile must pick it up.",
+                            placed_order_id, opportunity.symbol)
+                        entry_fill_price, entry_filled_qty = None, None
+                        order_success = False
+                    elif entry_fill_price is None or not entry_filled_qty:
+                        logger.error(
+                            "Entry order %s for %s unfilled after cancel "
+                            "(status=%s) — no position recorded",
+                            placed_order_id, opportunity.symbol, entry_status)
+                        entry_fill_price, entry_filled_qty = None, None
+                        order_success = False
+                    else:
+                        logger.warning(
+                            "Entry %s for %s filled %.0f of %d shares @ $%.2f "
+                            "before cancel settled — recording the filled part",
+                            placed_order_id, opportunity.symbol,
+                            entry_filled_qty, shares, entry_fill_price)
                 else:
+                    entry_filled_qty = (
+                        float(filled_qty) if filled_qty else float(shares))
                     logger.info(
                         "Confirmed entry fill for %s: %d shares @ $%.2f "
                         "(estimated $%.2f)", opportunity.symbol,
-                        filled_qty or shares, entry_fill_price,
+                        entry_filled_qty, entry_fill_price,
                         opportunity.entry_price)
 
                 # Arm protection only against actually-filled shares.
                 if order_success and entry_fill_price is not None:
                     protected = self.place_oco_close_order(
                         opportunity.symbol,
-                        float(filled_qty) if filled_qty else float(shares),
+                        float(entry_filled_qty),
                         opportunity.stop_loss_price,
                         opportunity.take_profit_price,
                         side="short" if quantity_sign < 0 else "long")
@@ -804,14 +905,27 @@ class TradingEngine:
             logger.error(error_msg)
             self._last_order_error = error_msg
 
+        if order_success and entry_fill_price is None:
+            # An exception after submission (before the fill was confirmed)
+            # must not fall through to recording a position at the estimated
+            # price — that is the phantom-position path. Reconcile adopts any
+            # real broker position on the next cycle.
+            logger.error(
+                "Entry for %s submitted but fill not confirmed — no position "
+                "recorded; reconcile will adopt it if it filled",
+                opportunity.symbol)
+            order_success = False
+
         if order_success:
             recorded_entry_price = (
                 entry_fill_price if entry_fill_price is not None
                 else opportunity.entry_price)
+            recorded_qty = (
+                entry_filled_qty if entry_filled_qty else float(shares))
             try:
                 new_position = Position(
                     symbol=opportunity.symbol,
-                    quantity=float(shares) * quantity_sign,
+                    quantity=recorded_qty * quantity_sign,
                     entry_price=recorded_entry_price,
                     current_price=recorded_entry_price,
                     current_rsi=opportunity.current_rsi,
@@ -844,7 +958,7 @@ class TradingEngine:
                             order_id=placed_order_id,
                             symbol=opportunity.symbol,
                             side="buy" if side == OrderSide.BUY else "sell",
-                            qty=float(shares),
+                            qty=recorded_qty,
                             order_type="market",
                             order_class="simple",
                             status="new",
@@ -1050,11 +1164,23 @@ class TradingEngine:
                 "Failed to close %s at market (%s)", symbol, reason)
             return False
 
-        fill_price = self._wait_for_order_fill(order_id)
+        fill_price, fill_status = self._wait_for_order_fill_status(order_id)
         if fill_price is not None:
             logger.info(
                 "Confirmed exit fill for %s: %d shares @ $%.2f (order %s)",
                 symbol, shares, fill_price, order_id)
+        elif fill_status in _TERMINAL_ORDER_STATUSES:
+            # Rejected/canceled/expired: the position is still open at the
+            # broker — do NOT mark it closed locally.
+            logger.error(
+                "Close order %s for %s reached terminal status '%s' without "
+                "a fill — position NOT closed", order_id, symbol, fill_status)
+            return False
+        else:
+            logger.warning(
+                "Close order %s for %s not confirmed filled (status=%s) — "
+                "closing locally with estimated exit price",
+                order_id, symbol, fill_status)
 
         if not self.dry_run:
             position.exit_reason = reason
@@ -1498,15 +1624,9 @@ class TradingEngine:
             if side == "short":
                 order_side = OrderSide.BUY
                 action_label = "buy (cover)"
-                # For buy stop-limit, limit_price must be >= stop_price
-                # (buy at limit_price or better means equal or lower)
-                stop_limit_buffer = round(stop_loss_price * 1.005, 2)
             else:
                 order_side = OrderSide.SELL
                 action_label = "sell"
-                # For sell stop-limit, limit_price must be <= stop_price
-                # (sell at limit_price or better means equal or higher)
-                stop_limit_buffer = round(stop_loss_price * 0.995, 2)
 
             # Create OCO order according to Alpaca documentation
             # OCO orders must be limit orders with take_profit and stop_loss parameters
@@ -1529,11 +1649,9 @@ class TradingEngine:
                 # API will treat this as a plain limit order and drop the
                 # stop-loss leg.
                 take_profit=TakeProfitRequest(limit_price=take_profit_price),
-                stop_loss=StopLossRequest(
-                    stop_price=stop_loss_price,
-                    # Stop-limit order with small buffer
-                    limit_price=stop_limit_buffer
-                ),
+                # Plain stop (market on trigger): a stop-limit never fills when
+                # price gaps through the limit, leaving the position unprotected.
+                stop_loss=StopLossRequest(stop_price=stop_loss_price),
                 client_order_id=client_order_id,
             )
 
@@ -1703,17 +1821,26 @@ class TradingEngine:
     def _wait_for_order_fill(self, order_id: Optional[str],
                              timeout: float = 15.0,
                              poll_interval: float = 0.5) -> Optional[float]:
+        """Price-only wrapper around :meth:`_wait_for_order_fill_status`."""
+        return self._wait_for_order_fill_status(
+            order_id, timeout, poll_interval)[0]
+
+    def _wait_for_order_fill_status(
+            self, order_id: Optional[str], timeout: float = 15.0,
+            poll_interval: float = 0.5) -> Tuple[Optional[float], str]:
         """Wait (bounded) for a close order to fill; return its average fill price.
 
         Market orders normally fill in well under a second, but the fill is not
         immediately visible on the submit response.  Polling gives the realized
         return a real fill price instead of a heuristic fallback.
 
-        Returns ``None`` when the order has not filled within ``timeout`` (or
-        cannot be polled), so callers fall back to their previous behaviour.
+        Returns ``(fill_price, status)``. ``fill_price`` is ``None`` when the
+        order has not filled within ``timeout`` (or cannot be polled); the
+        status lets callers tell a terminal rejection/cancel from a timeout
+        (``'unknown'`` when the order could not be polled).
         """
         if not order_id or self.trading_client is None or self.dry_run:
-            return None
+            return None, 'unknown'
 
         deadline = time.monotonic() + timeout
         last_status = None
@@ -1723,23 +1850,23 @@ class TradingEngine:
             except Exception as e:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "Could not poll order %s for fill: %s", order_id, e)
-                return None
+                return None, 'unknown'
 
             status = _status_str(getattr(order, 'status', None))
             last_status = status
             filled_price = getattr(order, 'filled_avg_price', None)
             if status == 'filled' and filled_price is not None:
                 try:
-                    return float(filled_price)
+                    return float(filled_price), status
                 except (TypeError, ValueError):
-                    return None
+                    return None, status
 
             if status in _TERMINAL_ORDER_STATUSES:
                 # Cancelled/expired/rejected — it will never fill.
                 logger.warning(
                     "Close order %s reached terminal status '%s' without a fill",
                     order_id, status)
-                return None
+                return None, status
 
             time.sleep(poll_interval)
 
@@ -1747,7 +1874,7 @@ class TradingEngine:
             "Close order %s not filled within %.0fs (last status=%s); "
             "falling back to estimated exit price",
             order_id, timeout, last_status)
-        return None
+        return None, last_status or 'unknown'
 
     def _wait_for_entry_fill(self, order_id: Optional[str],
                              timeout: float = 5.0,
@@ -1794,6 +1921,27 @@ class TradingEngine:
             time.sleep(poll_interval)
 
         return None, None, last_status
+
+    def _requery_entry_fill(
+            self, order_id: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
+        """Re-read an entry order after a cancel; return ``(avg_price, filled_qty)``.
+
+        Returns ``(None, None)`` when nothing filled or the order cannot be
+        read.
+        """
+        if not order_id or self.trading_client is None or self.dry_run:
+            return None, None
+        try:
+            order = self.trading_client.get_order_by_id(order_id)
+            qty = float(getattr(order, 'filled_qty', None) or 0)
+            price = getattr(order, 'filled_avg_price', None)
+            if qty > 0 and price is not None:
+                return float(price), qty
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Could not re-query entry order %s after cancel: %s",
+                order_id, e)
+        return None, None
 
     def _cancel_entry_order(self, order_id: Optional[str]) -> None:
         """Best-effort cancel of an entry order that did not fill in time."""
@@ -1978,6 +2126,16 @@ class TradingEngine:
         # Calculate position sizes (new entries only)
         position_allocations = sizing_fn(entry_opportunities)
 
+        # Off-hours entry queue: entries cannot be submitted outside regular
+        # trading hours (see the RTH guard in _place_order). Instead of
+        # dropping the signals, persist them for submission at the next open.
+        if position_allocations and self._off_hours_queue_enabled():
+            if self._queue_entries(
+                    session_summary, position_allocations, direction):
+                return session_summary
+            # Persistence failed — fall through to placement so the RTH
+            # guard records per-order failures as before.
+
         if position_allocations:
             logger.info("%s Found %d new %s opportunities:",
                         arrow, len(position_allocations), noun)
@@ -2005,6 +2163,246 @@ class TradingEngine:
                 else:
                     self._record_order_failure(session_summary, opportunity.symbol)
         return session_summary
+
+    # -- off-hours entry queue -----------------------------------------------
+
+    def _off_hours_queue_enabled(self) -> bool:
+        """True when entries should be queued instead of silently dropped.
+
+        Queueing applies only to non-dry-run cycles outside regular trading
+        hours when both RTH enforcement and the queue flag are on.
+        """
+        return (
+            self.enforce_rth_entries
+            and bool(getattr(globalConfig, 'QUEUE_OFF_HOURS_ENTRIES', True))
+            and not self.dry_run
+            and not is_regular_trading_hours()
+        )
+
+    def _queue_entries(
+        self,
+        session_summary: Dict[str, Any],
+        position_allocations: List[Tuple[TradingOpportunity, int]],
+        direction: str,
+    ) -> bool:
+        """Persist sized entry opportunities for submission at the next open.
+
+        Only the opportunity is queued — at flush time the entry is re-priced,
+        re-sized and re-checked against current positions/budgets, so the
+        stored share count is informational.
+
+        If persistence fails, falls back to the previous behaviour (attempting
+        the placement, which the RTH guard rejects per-order).
+        """
+        entry_action = "SHORT" if direction == "short" else "BUY"
+        seen: set = set()
+        signals: List[Dict[str, Any]] = []
+        for opportunity, shares in position_allocations:
+            key = (opportunity.symbol, direction)
+            if key in seen:
+                continue
+            seen.add(key)
+            signals.append({
+                'symbol': opportunity.symbol,
+                'direction': direction,
+                'strategy_name': opportunity.strategy_name,
+                'queued_shares': shares,
+                'opportunity': asdict(opportunity),
+            })
+
+        saved = storage.save_pending_signals(signals)
+        if not saved:
+            logger.warning(
+                "Could not persist %d off-hours entry signals — signals will "
+                "not be queued for the next open", len(signals))
+            return False
+
+        logger.info(
+            "⏳ Queued %d off-hours entry signal(s) for submission at the "
+            "next market open: %s", len(signals),
+            ", ".join(f"{s['symbol']}({s['direction']})" for s in signals))
+        session_summary['entries_queued'] = (
+            session_summary.get('entries_queued', 0) + len(signals))
+        for sig in signals:
+            self._record_order(
+                session_summary, symbol=sig['symbol'],
+                action=entry_action, shares=sig['queued_shares'],
+                order_type='queued', strategy=sig['strategy_name'],
+                reason='queued_for_next_open')
+        return True
+
+    @staticmethod
+    def _signal_is_stale(queued_at: datetime, now: datetime,
+                         max_sessions: int) -> bool:
+        """True if more than ``max_sessions`` trading sessions have opened
+        strictly after ``queued_at`` up to and including ``now``."""
+        queued_utc = ensure_utc(queued_at)
+        now_utc = ensure_utc(now)
+        day = queued_utc.astimezone(US_EASTERN).date()
+        end_day = now_utc.astimezone(US_EASTERN).date()
+        opened = 0
+        while day <= end_day:
+            session = get_session(day)
+            if session is not None:
+                open_dt = US_EASTERN.localize(
+                    datetime.combine(day, session[0]))
+                if queued_utc < open_dt.astimezone(timezone.utc) <= now_utc:
+                    opened += 1
+                    if opened > max_sessions:
+                        return True
+            day += timedelta(days=1)
+        return False
+
+    def flush_queued_entries(self, as_of: Optional[datetime] = None) -> Dict[str, Any]:
+        """Submit queued off-hours entries during regular trading hours.
+
+        Called from the daily session and the bar-loop worker on the first RTH
+        tick of the day. Each queued signal is re-priced from the live quote
+        (SL/TP scaled to the new price), re-sized and re-checked by the normal
+        entry flow. Submitted signals are marked 'submitted'; signals that
+        failed submission or are stale are marked 'expired' so they are not
+        retried indefinitely.
+
+        Returns a summary mirroring the session-summary shape.
+        """
+        summary: Dict[str, Any] = {
+            'flushed': 0, 'submitted': 0, 'expired': 0, 'skipped_stale': 0,
+        }
+        if self.dry_run:
+            return summary
+        if not self.enforce_rth_entries:
+            return summary
+        if not is_regular_trading_hours(as_of):
+            return summary
+
+        signals = storage.load_pending_signals('queued')
+        if not signals:
+            return summary
+
+        logger.info("⏳ Flushing %d queued off-hours signal(s) at market open",
+                    len(signals))
+
+        max_age_days = int(
+            getattr(globalConfig, 'PENDING_SIGNAL_MAX_AGE_DAYS', 1))
+        now = datetime.now(timezone.utc)
+        stale_ids: List[int] = []
+        live_signals: List[Dict[str, Any]] = []
+        for sig in signals:
+            queued_at = _parse_queued_at(sig.get('queued_at'))
+            if queued_at is not None and self._signal_is_stale(
+                    queued_at, now, max_age_days):
+                stale_ids.append(sig['id'])
+                summary['skipped_stale'] += 1
+                logger.warning(
+                    "Dropping stale queued signal %s (%s) — queued %s",
+                    sig['symbol'], sig['direction'], queued_at)
+                continue
+            live_signals.append(sig)
+
+        if stale_ids:
+            storage.resolve_pending_signals(
+                stale_ids, 'expired', reason='stale')
+
+        flush_summary: Dict[str, Any] = {
+            'timestamp': utc_now(),
+            'opportunities_found': 0,
+            'new_positions': 0,
+            'orders_placed': 0,
+            'positions_exited': 0,
+            'errors': [],
+            'dry_run': self.dry_run,
+            'orders': [],
+        }
+
+        queued_pairs: List[Tuple[Dict[str, Any], TradingOpportunity]] = []
+        for direction in ('long', 'short'):
+            direction_signals = [
+                s for s in live_signals if s.get('direction') == direction]
+            if not direction_signals:
+                continue
+            opportunities: List[TradingOpportunity] = []
+            for sig in direction_signals:
+                opp = self._reconstruct_opportunity(sig)
+                if opp is None:
+                    storage.resolve_pending_signals(
+                        [sig['id']], 'expired', reason='no_live_price')
+                    summary['expired'] += 1
+                    continue
+                opportunities.append(opp)
+                queued_pairs.append((sig, opp))
+            if not opportunities:
+                continue
+            flush_summary['opportunities_found'] += len(opportunities)
+            if direction == 'long':
+                self._execute_purchases(flush_summary, opportunities)
+            else:
+                self._execute_shorts(flush_summary, opportunities)
+
+        # Resolve queue rows from the outcome: a signal is 'submitted' when an
+        # order event was recorded for it during the flush; anything queued
+        # but not submitted failed at the open (or was filtered out) and is
+        # expired rather than retried.
+        submitted_symbols = {
+            o['symbol'] for o in flush_summary.get('orders', [])
+            if o.get('type') == 'entry'
+        }
+        submitted_ids: List[int] = []
+        expired_ids: List[int] = []
+        for sig, _opp in queued_pairs:
+            if sig['symbol'] in submitted_symbols:
+                submitted_ids.append(sig['id'])
+                summary['submitted'] += 1
+            else:
+                expired_ids.append(sig['id'])
+                summary['expired'] += 1
+        if submitted_ids:
+            storage.resolve_pending_signals(
+                submitted_ids, 'submitted', reason='flushed_at_open')
+        if expired_ids:
+            storage.resolve_pending_signals(
+                expired_ids, 'expired', reason='flush_failed')
+
+        summary['flushed'] = len(signals)
+        logger.info("⏳ Queue flush complete: %s", summary)
+        return summary
+
+    def _reconstruct_opportunity(
+        self, sig: Dict[str, Any]
+    ) -> Optional[TradingOpportunity]:
+        """Rebuild a queued TradingOpportunity with a fresh entry price."""
+        data = sig.get('opportunity') or {}
+        try:
+            opp = TradingOpportunity(**{
+                k: v for k, v in data.items()
+                if k in _OPPORTUNITY_FIELDS
+            })
+        except (TypeError, ValueError) as e:
+            logger.error(
+                "Cannot reconstruct queued opportunity for %s: %s",
+                sig.get('symbol'), e)
+            return None
+
+        # Force a fresh quote: a cached close from the previous evening must
+        # not be used to re-price an open-time entry.
+        self._ohlcv_cache.pop(opp.symbol, None)
+        self._ohlcv_meta.pop(opp.symbol, None)
+        current_price = self._get_current_price(opp.symbol)
+        if current_price is None:
+            logger.warning(
+                "No live price for queued signal %s — expiring", opp.symbol)
+            return None
+
+        new_price = round(float(current_price), 2)
+        if new_price > 0 and opp.entry_price > 0:
+            scale = new_price / opp.entry_price
+        else:
+            scale = 1.0
+        opp.entry_price = new_price
+        if opp.stop_loss_price is not None:
+            opp.stop_loss_price = round(opp.stop_loss_price * scale, 2)
+        if opp.take_profit_price is not None:
+            opp.take_profit_price = round(opp.take_profit_price * scale, 2)
+        return opp
 
     def identify_and_execute_shorts(self, session_summary: Dict[str, Any], backtest_results: List[BacktestResult]) -> Dict[str, Any]:
         """
@@ -2090,6 +2488,10 @@ class TradingEngine:
 
         try:
             logger.info("Starting trading session...")
+            # Submit any entries queued during off-hours cycles before
+            # processing this session's own opportunities.
+            if self.enforce_rth_entries:
+                self.flush_queued_entries()
             # Begin a new persistence session so every save this session (the
             # immediate save on each open plus the end-of-session save) upserts
             # into one snapshot.
@@ -2235,9 +2637,13 @@ class TradingEngine:
         )
         return base
 
+    # Cached OHLCV older than this is refetched (the bar loop runs all day).
+    OHLCV_CACHE_TTL_SECONDS = 300.0
+
     def _clear_ohlcv_cache(self) -> None:
         """Clear the per-cycle OHLCV cache. Call at the start of each run cycle."""
         self._ohlcv_cache.clear()
+        self._ohlcv_meta.clear()
 
     def _fetch_ohlcv_once(self, symbol: str, min_lookback_days: int) -> pd.DataFrame:
         """Fetch OHLCV data for a symbol, caching per cycle.
@@ -2253,18 +2659,25 @@ class TradingEngine:
         Returns:
             DataFrame with OHLCV data (may be empty on failure)
         """
-        cached = self._ohlcv_cache.get(symbol)
-        if cached is not None and len(cached) >= 3:
-            return cached
-
         end_date = datetime.now() - timedelta(minutes=20)
         start_date = end_date - timedelta(days=max(min_lookback_days, 14))
+
+        cached = self._ohlcv_cache.get(symbol)
+        meta = self._ohlcv_meta.get(symbol)
+        if cached is not None and len(cached) >= 3 and meta is not None:
+            cached_start, fetched_at = meta
+            fresh = (time.monotonic() - fetched_at) < self.OHLCV_CACHE_TTL_SECONDS
+            # 1-day slack: `start_date` drifts forward with the clock.
+            covers = cached_start <= start_date + timedelta(days=1)
+            if fresh and covers:
+                return cached
 
         try:
             data = data_provider.get_single_stock_bars(
                 symbol, start_date, end_date)
             if not data.empty:
                 self._ohlcv_cache[symbol] = data
+                self._ohlcv_meta[symbol] = (start_date, time.monotonic())
             return data
         except Exception as e:
             logger.error("Error fetching OHLCV for %s: %s", symbol, e)

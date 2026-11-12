@@ -840,8 +840,8 @@ class PositionsManager:
         """Determine exit price/date/reason for a cloud-only closed position.
 
         Resolution order:
-          0. Exact fill matched by client_order_id (deterministic).
-          1. Filled close order from Alpaca history -> oco_stop_loss /
+          1. Filled close-side order from Alpaca history (first one after the
+             entry fill when the entry client_order_id is known) -> oco_stop_loss /
              oco_take_profit / oco_filled; no entry order ever -> failed_to_open.
           2. OCO approximation (nearest of stop/TP to current price),
              falling back to current price, entry price, then 0.0.
@@ -852,45 +852,23 @@ class PositionsManager:
         exit_date_val = None
         exit_reason_val = None
 
-        # --- Step 0: exact fill by client_order_id/order_id ---
-        matched = self._find_fill_by_client_order_id(
-            symbol, client_order_id)
-        if matched is not None and matched[0] and matched[0] > 0:
-            exit_price_val = matched[0]
-            filled_at = matched[2]
-            if pd.notna(filled_at):
-                exit_date_val = filled_at if isinstance(
-                    filled_at, datetime) else datetime.fromisoformat(str(filled_at))
-                if exit_date_val.tzinfo is not None:
-                    exit_date_val = exit_date_val.replace(
-                        tzinfo=None)
-            exit_reason_val = "matched_by_client_order_id"
-            logger.info(
-                "Reconcile %s: matched fill by client_order_id=%s at $%.2f",
-                symbol, client_order_id, exit_price_val
-            )
-
         # --- Step 1: Check Alpaca order history for a real fill ---
+        # NOTE: client_order_id on a Position is the ENTRY order's id, so it is
+        # only used to anchor in time: the exit is the first close-side fill
+        # after the entry fill (never the entry order itself).
         try:
             orders_df = self.data_provider.get_filled_orders_for_symbol(
                 symbol, limit=20)
             if not orders_df.empty and 'side' in orders_df.columns:
-                # Check for a FILLED close order
-                close_orders = orders_df[
-                    (orders_df['side'] == close_order_side) &
-                    (orders_df['filled_qty'] > 0)
-                ]
-                if exit_price_val is None and not close_orders.empty:
-                    latest_close = close_orders.iloc[0]
+                latest_close = self._select_close_order(
+                    orders_df, close_order_side, entry_order_side,
+                    client_order_id)
+                if exit_price_val is None and latest_close is not None:
                     filled_price = float(
                         latest_close['filled_avg_price'])
-                    filled_at = latest_close.get('submitted_at')
-                    if pd.notna(filled_at):
-                        exit_date_val = filled_at if isinstance(
-                            filled_at, datetime) else datetime.fromisoformat(str(filled_at))
-                        if exit_date_val.tzinfo is not None:
-                            exit_date_val = exit_date_val.replace(
-                                tzinfo=None)
+                    filled_at = self._order_time(latest_close)
+                    if filled_at is not None:
+                        exit_date_val = filled_at
                     exit_price_val = filled_price
 
                     # Determine whether it hit stop_loss or take_profit
@@ -954,10 +932,82 @@ class PositionsManager:
             exit_reason_val = 'broker_closed'
         return exit_price_val, exit_date_val, exit_reason_val
 
+    @staticmethod
+    def _order_time(row) -> Optional[datetime]:
+        """Naive-UTC time of an order row: filled_at, else submitted_at."""
+        for col in ('filled_at', 'submitted_at'):
+            try:
+                val = row.get(col)
+            except AttributeError:
+                val = None
+            if val is None or not pd.notna(val):
+                continue
+            try:
+                ts = pd.Timestamp(val)
+            except (TypeError, ValueError):
+                continue
+            if ts.tzinfo is not None:
+                ts = ts.tz_convert('UTC').tz_localize(None)
+            return ts.to_pydatetime()
+        return None
+
+    def _select_close_order(
+        self,
+        orders_df: pd.DataFrame,
+        close_order_side: str,
+        entry_order_side: str,
+        entry_client_order_id: Optional[str],
+    ):
+        """Pick the filled close-side order that closed the current position.
+
+        Position.client_order_id is the ENTRY order's id.  When that entry
+        fill is found in history, return the earliest close-side fill at or
+        after it (skipping closes from earlier round-trips on the symbol).
+        Otherwise fall back to the most recent filled close-side order.
+        Returns a row (Series) or None.
+        """
+        close_orders = orders_df[
+            (orders_df['side'] == close_order_side) &
+            (orders_df['filled_qty'] > 0)
+        ]
+        if close_orders.empty:
+            return None
+
+        entry_time = None
+        if entry_client_order_id:
+            entry = self._find_fill_by_client_order_id(
+                None, entry_client_order_id, side=entry_order_side,
+                orders_df=orders_df)
+            if entry is not None:
+                entry_time = self._order_time({'filled_at': entry[2]})
+
+        rows = [(self._order_time(r), i)
+                for i, (_, r) in enumerate(close_orders.iterrows())]
+        if entry_time is not None:
+            after = [(t, i) for t, i in rows if t is not None and t >= entry_time]
+            if after:
+                # Earliest close after entry = the fill that closed it.
+                return close_orders.iloc[min(after)[1]]
+            # Entry known but no close after it: do not borrow an older
+            # round-trip's exit.
+            return None
+        # No anchor: most recent close (orders arrive newest-first, but sort
+        # by time defensively; untimed rows keep their original order).
+        timed = [(t, i) for t, i in rows if t is not None]
+        if timed:
+            return close_orders.iloc[max(timed)[1]]
+        return close_orders.iloc[0]
+
     def _find_fill_by_client_order_id(
-        self, symbol: str, client_order_id: Optional[str]
+        self, symbol: str, client_order_id: Optional[str],
+        side: Optional[str] = None,
+        orders_df: Optional[pd.DataFrame] = None,
     ) -> Optional[tuple]:
         """Find a filled order by client_order_id (fallback: order_id).
+
+        If ``side`` is given, only orders on that side are considered.  A
+        Position's client_order_id identifies its ENTRY order, so callers
+        looking for the entry fill must pass the entry side.
 
         Returns (filled_avg_price, filled_qty, filled_at) or None.
         Used to deterministically match a position to its close fill instead
@@ -965,12 +1015,22 @@ class PositionsManager:
         """
         if not client_order_id:
             return None
-        try:
-            orders_df = self.data_provider.get_filled_orders_for_symbol(
-                symbol, limit=50)
-        except Exception:  # pylint: disable=broad-exception-caught
-            return None
+        if orders_df is None:
+            try:
+                orders_df = self.data_provider.get_filled_orders_for_symbol(
+                    symbol, limit=50)
+            except Exception:  # pylint: disable=broad-exception-caught
+                return None
         if orders_df.empty or 'client_order_id' not in orders_df.columns:
+            return None
+
+        if side is not None:
+            if 'side' not in orders_df.columns:
+                return None
+            orders_df = orders_df[orders_df['side'] == side]
+        if 'filled_qty' in orders_df.columns:
+            orders_df = orders_df[orders_df['filled_qty'] > 0]
+        if orders_df.empty:
             return None
 
         cid = str(client_order_id)
@@ -1043,29 +1103,18 @@ class PositionsManager:
             except (TypeError, ValueError):
                 filled_exit_price = None
 
-        matched = None
-        if filled_exit_price is None:
-            matched = self._find_fill_by_client_order_id(
-                symbol, getattr(target_position, 'client_order_id', None))
-        if matched is not None and matched[0] and matched[0] > 0:
-            filled_exit_price = matched[0]
-            logger.info(
-                "Found close fill for %s by client_order_id=%s: price=%.2f, qty=%s",
-                symbol, getattr(target_position, 'client_order_id', None),
-                filled_exit_price, matched[1]
-            )
-
         if filled_exit_price is None:
             try:
                 orders_df = self.data_provider.get_filled_orders_for_symbol(
                     symbol, limit=50)
                 if not orders_df.empty and 'side' in orders_df.columns:
-                    close_orders = orders_df[orders_df['side']
-                                             == close_order_side]
-                    close_orders = close_orders[close_orders['filled_qty'] > 0]
-                    if not close_orders.empty:
-                        latest_close = close_orders.iloc[0]
-                        filled_exit_price = latest_close['filled_avg_price']
+                    entry_side = "buy" if position_side == "long" else "sell"
+                    latest_close = self._select_close_order(
+                        orders_df, close_order_side, entry_side,
+                        getattr(target_position, 'client_order_id', None))
+                    if latest_close is not None:
+                        filled_exit_price = float(
+                            latest_close['filled_avg_price'])
                         logger.info(
                             "Found filled close order for %s (side=%s): price=%.2f, qty=%.2f",
                             symbol, close_order_side, filled_exit_price,

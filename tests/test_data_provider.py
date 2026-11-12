@@ -819,6 +819,19 @@ class TestTechnicalIndicators(unittest.TestCase):
         valid_rsi = rsi.dropna()
         self.assertTrue(all(0 <= val <= 100 for val in valid_rsi))
 
+    def test_calculate_rsi_pure_uptrend_is_100(self):
+        df = pd.DataFrame({'close': [float(100 + i) for i in range(30)]})
+        rsi = TechnicalIndicators.calculate_rsi(df, period=14)
+        self.assertEqual(rsi.iloc[-1], 100.0)
+        self.assertEqual(rsi.iloc[5], 100.0)
+        self.assertEqual(rsi.iloc[0], 50.0)  # warmup: no change yet
+
+    def test_calculate_rsi_flat_is_50_and_pure_downtrend_is_0(self):
+        flat = pd.DataFrame({'close': [100.0] * 30})
+        self.assertTrue((TechnicalIndicators.calculate_rsi(flat, 14) == 50).all())
+        down = pd.DataFrame({'close': [float(200 - i) for i in range(30)]})
+        self.assertAlmostEqual(TechnicalIndicators.calculate_rsi(down, 14).iloc[-1], 0.0)
+
     def test_calculate_rsi_insufficient_data(self):
         """Test RSI calculation with insufficient data."""
         prices = pd.Series([100, 105, 103])  # Only 3 data points

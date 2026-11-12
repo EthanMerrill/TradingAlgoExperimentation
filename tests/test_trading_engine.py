@@ -215,6 +215,10 @@ class TestTradingEngine(unittest.TestCase):
 
         with patch.object(self.engine, '_make_unique_client_order_id',
                           return_value="AAPL-BUY-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(100.0, 5.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True), \
                 patch('trading_engine.storage.save_orders') as mock_save_orders:
             result = self.engine.place_buy_order(opp, 5)
 
@@ -287,12 +291,71 @@ class TestTradingEngine(unittest.TestCase):
                 patch.object(self.engine, '_cancel_entry_order') as mock_cancel, \
                 patch.object(self.engine, 'place_oco_close_order') as mock_oco, \
                 patch('trading_engine.storage.save_orders'):
+            self.engine.trading_client.get_order_by_id.return_value = \
+                SimpleNamespace(status='canceled', filled_qty='0',
+                                filled_avg_price=None)
             result = self.engine.place_buy_order(opp, 5)
 
-        # Position is still recorded (D2), but never left bracketed.
-        self.assertTrue(result)
+        # Unconfirmed + nothing filled after the cancel: no phantom position.
+        self.assertFalse(result)
         mock_cancel.assert_called_once_with("order_1")
         mock_oco.assert_not_called()
+        self.engine._positions_manager.open_position.assert_not_called()
+
+    def test_place_buy_order_fill_races_cancel_records_actual_fill(self):
+        """Entry that filled (partially) before the cancel settled is recorded
+        with the actual filled qty/price and protected for that qty."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = SimpleNamespace(
+            id="order_1")
+        self.engine.trading_client.get_order_by_id.return_value = SimpleNamespace(
+            status='canceled', filled_qty='3', filled_avg_price='100.25')
+        opp = TradingOpportunity(
+            symbol="AAPL", current_rsi=25.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=95.0, take_profit_price=110.0, num_trades=10,
+        )
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-BUY-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(None, None, 'partially_filled')), \
+                patch.object(self.engine, '_cancel_entry_order'), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True) as mock_oco, \
+                patch('trading_engine.storage.save_orders') as mock_save:
+            result = self.engine.place_buy_order(opp, 5)
+
+        self.assertTrue(result)
+        created = self.engine._positions_manager.open_position.call_args[0][0]
+        self.assertEqual(created.quantity, 3.0)
+        self.assertEqual(created.entry_price, 100.25)
+        mock_oco.assert_called_once_with("AAPL", 3.0, 95.0, 110.0, side="long")
+        self.assertEqual(mock_save.call_args[0][0][0].qty, 3.0)
+
+    def test_place_buy_order_records_actual_filled_qty_on_partial_fill(self):
+        """A confirmed fill with filled_qty < requested records filled_qty."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        self.engine.trading_client.submit_order.return_value = SimpleNamespace(
+            id="order_1")
+        opp = TradingOpportunity(
+            symbol="AAPL", current_rsi=25.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=95.0, take_profit_price=110.0, num_trades=10,
+        )
+        with patch.object(self.engine, '_make_unique_client_order_id',
+                          return_value="AAPL-BUY-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(100.0, 4.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True), \
+                patch('trading_engine.storage.save_orders'):
+            self.assertTrue(self.engine.place_buy_order(opp, 5))
+        created = self.engine._positions_manager.open_position.call_args[0][0]
+        self.assertEqual(created.quantity, 4.0)
 
     def test_place_buy_order_rejected_records_no_position(self):
         """A terminally rejected entry must not create a phantom position."""
@@ -358,6 +421,113 @@ class TestTradingEngine(unittest.TestCase):
             "AAPL", 10, 95.0, 110.0, side="long")
 
         self.assertTrue(result)
+
+    def test_oco_stop_leg_is_plain_stop(self):
+        """Protective stop must be a plain stop (no limit) so gaps still fill."""
+        self.engine.set_dry_run_mode(False)
+        self.engine.trading_client = Mock()
+        with patch.object(self.engine, '_cancel_open_orders_for_symbol',
+                          return_value=[]), \
+                patch.object(self.engine, '_wait_for_position_qty_available',
+                             return_value=True), \
+                patch.object(self.engine, '_make_unique_client_order_id',
+                             return_value="cid"), \
+                patch.object(self.engine, '_submit_oco_with_retry',
+                             return_value=SimpleNamespace(id="oco1")) as sub, \
+                patch('trading_engine.storage'):
+            self.engine.place_oco_close_order(
+                "AAPL", 10, 95.0, 110.0, side="long")
+        req = sub.call_args[0][0]
+        self.assertEqual(req.stop_loss.stop_price, 95.0)
+        self.assertIsNone(req.stop_loss.limit_price)
+
+    def test_ohlcv_cache_refetches_when_lookback_not_covered(self):
+        """A 14-day cached fetch must not satisfy a later 60-day request."""
+        df = pd.DataFrame({'close': [1.0, 2.0, 3.0, 4.0]})
+        with patch('trading_engine.data_provider') as dp:
+            dp.get_single_stock_bars.return_value = df
+            self.engine._fetch_ohlcv_once("AAPL", 7)
+            self.engine._fetch_ohlcv_once("AAPL", 7)
+            self.assertEqual(dp.get_single_stock_bars.call_count, 1)
+            self.engine._fetch_ohlcv_once("AAPL", 60)
+            self.assertEqual(dp.get_single_stock_bars.call_count, 2)
+            # Now the long fetch covers the short request too.
+            self.engine._fetch_ohlcv_once("AAPL", 7)
+            self.assertEqual(dp.get_single_stock_bars.call_count, 2)
+
+    def test_ohlcv_cache_expires_after_ttl(self):
+        df = pd.DataFrame({'close': [1.0, 2.0, 3.0, 4.0]})
+        with patch('trading_engine.data_provider') as dp:
+            dp.get_single_stock_bars.return_value = df
+            self.engine._fetch_ohlcv_once("AAPL", 7)
+            start, fetched_at = self.engine._ohlcv_meta["AAPL"]
+            self.engine._ohlcv_meta["AAPL"] = (
+                start, fetched_at - self.engine.OHLCV_CACHE_TTL_SECONDS - 1)
+            self.engine._fetch_ohlcv_once("AAPL", 7)
+            self.assertEqual(dp.get_single_stock_bars.call_count, 2)
+
+    def test_new_positions_remaining_counts_today_open_and_closed(self):
+        from utils import utc_now
+        today_open = self._position("A", days_ago=0)
+        today_open.entry_date = utc_now()
+        today_closed = self._position("B", days_ago=0)
+        today_closed.entry_date = utc_now()
+        today_closed.closed = True
+        old = self._position("C", days_ago=5)
+        self.engine._positions_manager.positions = [
+            today_open, today_closed, old]
+        with patch('trading_engine.globalConfig') as cfg:
+            cfg.MAX_NEW_POSITIONS_PER_DAY = 3
+            self.assertEqual(self.engine._new_positions_remaining_today(), 1)
+            cfg.MAX_NEW_POSITIONS_PER_DAY = 2
+            self.assertEqual(self.engine._new_positions_remaining_today(), 0)
+
+    @patch('trading_engine.data_provider')
+    def test_position_sizes_respect_daily_cap_already_used(self, mock_dp):
+        from utils import utc_now
+        mock_dp.get_account_info.return_value = {
+            'cash': 50000.0, 'equity': 100000.0, 'buying_power': 100000.0}
+        opened = self._position("MSFT", days_ago=0)
+        opened.entry_date = utc_now()
+        self.engine._positions_manager.positions = [opened]
+        opp = TradingOpportunity(
+            symbol="AAPL", current_rsi=25.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=100.0,
+            stop_loss_price=95.0, take_profit_price=110.0, num_trades=10)
+        with patch('trading_engine.globalConfig') as cfg:
+            cfg.POSITION_SIZE_PCT = 0.1
+            cfg.MAX_SHORT_LONG_RATIO = 0.30
+            cfg.MAX_NEW_POSITIONS_PER_DAY = 1
+            cfg.MAX_POSITIONS = 10
+            cfg.MIN_CASH_PCT = 0.1
+            self.assertEqual(self.engine.calculate_position_sizes([opp]), [])
+
+    @patch('trading_engine.data_provider')
+    def test_short_sizing_requires_buying_power(self, mock_dp):
+        mock_dp.get_account_info.return_value = {
+            'cash': 0.0, 'equity': 100000.0, 'buying_power': 0.0}
+        self.engine._positions_manager.positions = []
+        opp = TradingOpportunity(
+            symbol="AAPL", current_rsi=75.0, target_rsi_lower=30,
+            target_rsi_upper=70, rsi_period=14, backtest_return=0.15,
+            alpha=0.05, win_rate=0.9, entry_price=200.0,
+            stop_loss_price=210.0, take_profit_price=170.0, num_trades=10,
+            direction="short")
+        with patch('trading_engine.globalConfig') as cfg:
+            cfg.POSITION_SIZE_PCT = 0.1
+            cfg.MAX_SHORT_LONG_RATIO = 0.30
+            cfg.MAX_NEW_POSITIONS_PER_DAY = 2
+            cfg.MAX_POSITIONS = 10
+            cfg.MIN_CASH_PCT = 0.1
+            self.assertEqual(
+                self.engine.calculate_short_position_sizes([opp]), [])
+            # Buying power only just above the buffer caps notional to it.
+            mock_dp.get_account_info.return_value = {
+                'cash': 50000.0, 'equity': 100000.0, 'buying_power': 10400.0}
+            allocs = self.engine.calculate_short_position_sizes([opp])
+        # cap = 10400 - 10000 = 400 -> 2 shares @ 200
+        self.assertEqual(allocs[0][1], 2)
 
     def test_place_market_sell_order_dry_run(self):
         self.engine.set_dry_run_mode(True)
@@ -491,6 +661,7 @@ class TestTradingEngine(unittest.TestCase):
             mock_cfg.MAX_SHORT_LONG_RATIO = 0.30
             mock_cfg.MAX_NEW_POSITIONS_PER_DAY = 2
             mock_cfg.MAX_POSITIONS = 10
+            mock_cfg.MIN_CASH_PCT = 0.1
 
             allocations = self.engine.calculate_short_position_sizes([opp])
 
@@ -623,6 +794,10 @@ class TestTradingEngine(unittest.TestCase):
 
         with patch.object(self.engine, '_make_unique_client_order_id',
                           return_value="AAPL-SELL-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(200.0, 5.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True), \
                 patch('trading_engine.storage.save_orders') as mock_save_orders:
             result = self.engine.place_short_order(opp, 5)
 
@@ -1389,8 +1564,8 @@ class TestExitFillAccuracy(unittest.TestCase):
         pos = self._position()
         with patch.object(self.engine, 'place_market_close_order',
                           return_value='ord-1'), \
-                patch.object(self.engine, '_wait_for_order_fill',
-                             return_value=14.19):
+                patch.object(self.engine, '_wait_for_order_fill_status',
+                             return_value=(14.19, 'filled')):
             self.engine.close_position_at_market(pos, "stop_loss_breached")
 
         # The real fill (14.19) must be handed to close_position, NOT a
@@ -1404,12 +1579,27 @@ class TestExitFillAccuracy(unittest.TestCase):
         pos = self._position()
         with patch.object(self.engine, 'place_market_close_order',
                           return_value='ord-1'), \
-                patch.object(self.engine, '_wait_for_order_fill',
-                             return_value=None):
-            self.engine.close_position_at_market(pos, "stop_loss_breached")
+                patch.object(self.engine, '_wait_for_order_fill_status',
+                             return_value=(None, 'new')):
+            ok = self.engine.close_position_at_market(pos, "stop_loss_breached")
 
+        self.assertTrue(ok)
         self.engine._positions_manager.close_position.assert_called_once_with(
             "CRCO")
+
+    def test_close_not_marked_closed_when_order_rejected(self):
+        """A rejected/canceled close leaves the position open."""
+        for status in ('rejected', 'canceled', 'expired'):
+            pos = self._position()
+            self.engine._positions_manager.close_position.reset_mock()
+            with patch.object(self.engine, 'place_market_close_order',
+                              return_value='ord-1'), \
+                    patch.object(self.engine, '_wait_for_order_fill_status',
+                                 return_value=(None, status)):
+                ok = self.engine.close_position_at_market(
+                    pos, "stop_loss_breached")
+            self.assertFalse(ok, status)
+            self.engine._positions_manager.close_position.assert_not_called()
 
     def test_close_returns_false_when_order_not_placed(self):
         pos = self._position()
@@ -1604,10 +1794,13 @@ class TestAuditFixes(unittest.TestCase):
                 patch.object(self.engine, '_wait_for_entry_fill',
                              return_value=(None, None, 'new')), \
                 patch('trading_engine.storage'):
-            self.assertTrue(self.engine.place_buy_order(op, 10))
+            self.engine.trading_client.get_order_by_id.return_value = \
+                SimpleNamespace(status='canceled', filled_qty='0',
+                                filled_avg_price=None)
+            # Unconfirmed and unfilled: nothing is recorded at the estimate.
+            self.assertFalse(self.engine.place_buy_order(op, 10))
 
-        recorded = self.engine._positions_manager.open_position.call_args[0][0]
-        self.assertEqual(recorded.entry_price, 100.0)
+        self.engine._positions_manager.open_position.assert_not_called()
 
     def test_entry_position_entry_date_is_tz_aware(self):
         """entry_date feeds a TIMESTAMPTZ column; naive local time shifts it."""
@@ -1617,7 +1810,9 @@ class TestAuditFixes(unittest.TestCase):
         with patch.object(self.engine, '_make_unique_client_order_id',
                           return_value="cid-1"), \
                 patch.object(self.engine, '_wait_for_entry_fill',
-                             return_value=(None, None, 'new')), \
+                             return_value=(100.0, 10.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True), \
                 patch('trading_engine.storage'):
             self.engine.place_buy_order(self._opp(), 10)
 

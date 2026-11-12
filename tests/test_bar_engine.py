@@ -265,6 +265,54 @@ class TestBarLoopEngine(unittest.TestCase):
         self.positions_manager.persist_positions.assert_not_called()
 
 
+class TestIntradayExit(unittest.TestCase):
+    def setUp(self):
+        self.cfg = SimpleNamespace(INTRADAY_EXIT_TIME="15:55",
+                                   STRATEGIES_ENABLED=[])
+        p = patch("bar_engine.globalConfig", self.cfg)
+        p.start()
+        self.addCleanup(p.stop)
+        self.engine = Mock()
+        self.pm = Mock()
+        self.be = BarLoopEngine(self.engine, self.pm)
+
+    def _pos(self, sym="AAA", qty=-10.0):
+        pos = Mock(closed=False, intraday=True, symbol=sym, quantity=qty)
+        return pos
+
+    def test_exit_due_before_close_only_during_rth(self):
+        from utils.calendar import US_EASTERN
+        wed = lambda h, m: US_EASTERN.localize(datetime(2026, 9, 2, h, m))
+        self.assertFalse(self.be.intraday_exit_due(wed(15, 54)))
+        self.assertTrue(self.be.intraday_exit_due(wed(15, 55)))
+        self.assertFalse(self.be.intraday_exit_due(wed(16, 30)))  # post close
+
+    def test_exit_due_before_early_close(self):
+        # Day after Thanksgiving 2026 closes at 13:00 ET → cutoff 12:55.
+        from utils.calendar import US_EASTERN
+        fri = lambda h, m: US_EASTERN.localize(datetime(2026, 11, 27, h, m))
+        self.assertFalse(self.be.intraday_exit_due(fri(12, 54)))
+        self.assertTrue(self.be.intraday_exit_due(fri(12, 55)))
+        self.assertFalse(self.be.intraday_exit_due(fri(13, 30)))  # post close
+
+    def test_release_called_before_close_with_abs_qty(self):
+        order = Mock()
+        order.attach_mock(self.engine._release_shares_for_exit, "release")
+        order.attach_mock(self.engine.close_position_at_market, "close")
+        self.engine.close_position_at_market.return_value = True
+        self.pm.positions = [self._pos("AAA", -10.0)]
+        self.be.close_intraday_positions()
+        self.assertEqual([c[0] for c in order.mock_calls], ["release", "close"])
+        self.engine._release_shares_for_exit.assert_called_once_with("AAA", 10.0)
+
+    def test_failed_close_reported(self):
+        self.engine.close_position_at_market.return_value = False
+        self.pm.positions = [self._pos()]
+        summary = self.be.close_intraday_positions()
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["positions_exited"], 0)
+
+
 class TestUpdatePortfolioOrdersSkipsIntraday(unittest.TestCase):
     def test_intraday_positions_skipped(self):
         with patch("trading_engine.data_provider"):

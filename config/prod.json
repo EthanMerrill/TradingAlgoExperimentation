@@ -10,7 +10,12 @@
 		"max_hold_days": 30,
 		"min_win_rate": 0.7,
 		"enable_short_selling": false,
-		"max_short_long_ratio": 0.3
+		"max_short_long_ratio": 0.3,
+		"max_daily_loss_pct": 0.03,
+		"max_drawdown_halt_pct": 0.15,
+		"halted": false,
+		"intraday_exit_time": "15:55",
+		"intraday_exit_lead_minutes": 5
 	},
 	"backtesting": {
 		"init_cash": 10000,

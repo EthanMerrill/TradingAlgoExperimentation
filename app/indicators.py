@@ -63,12 +63,14 @@ class TechnicalIndicators:
             rUp = up.ewm(com=period - 1, adjust=False).mean()
             rDown = down.ewm(com=period - 1, adjust=False).mean()
 
-            # Avoid division by zero
-            rDown = rDown.replace(0, np.nan)
-            rs = rUp / rDown
+            # Zero average loss: RSI is 100 if there were gains, and the
+            # neutral 50 only when both averages are 0 (flat / warmup).
+            rs = rUp / rDown.replace(0, np.nan)
             rsi = 100 - (100 / (1 + rs))
+            rsi = rsi.mask((rDown == 0) & (rUp > 0), 100.0)
+            rsi = rsi.mask((rDown == 0) & (rUp == 0), 50.0)
 
-            return rsi.fillna(50)  # Fill NaN with neutral RSI value
+            return rsi.fillna(50)  # Remaining NaN (bad input) -> neutral
 
         except Exception as e:
             logger.error("Error calculating RSI: %s", e)

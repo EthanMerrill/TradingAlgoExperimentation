@@ -55,6 +55,7 @@ from strategies.leveraged_single_stock_etfs import (
     underlyings,
 )
 from config import globalConfig  # type: ignore
+from utils.calendar import to_eastern
 
 logger = logging.getLogger(__name__)
 
@@ -224,9 +225,9 @@ class LeveragedFlowPortfolioStrategy(Strategy):
     def _et_now(self, as_of: Optional[datetime]) -> datetime:
         if as_of is None:
             as_of = datetime.now()
-        if as_of.tzinfo is None:
-            as_of = as_of.replace(tzinfo=pytz.UTC)
-        return as_of.astimezone(US_EASTERN)
+        # Naive values are wall-clock "now" (datetime.now() == process-local
+        # time), not UTC -- same convention as utils.calendar.to_eastern.
+        return to_eastern(as_of)
 
     def _fetch_features(self, ctx: StrategyContext, symbol: str):
         """Features for ``symbol``'s recent intraday bars (provider-cached)."""

@@ -97,6 +97,21 @@ class TestBacktest(unittest.TestCase):
 class TestLiveSignals(unittest.TestCase):
     """evaluate_live_signals: dedupe, timing, selection, and price safety."""
 
+    def setUp(self):
+        # Prod runs with TZ=America/New_York; naive as_of is process-local.
+        import time
+        self._old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+
+    def tearDown(self):
+        import time
+        if self._old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = self._old_tz
+        time.tzset()
+
     def _bars_map(self, up_rets=(0.02, 0.03, 0.02, 0.03, 0.02, 0.03)):
         # One strongly up underlying + ETF bars matching the map's funds.
         from strategies.leveraged_single_stock_etfs import (
@@ -113,13 +128,22 @@ class TestLiveSignals(unittest.TestCase):
     def test_no_signal_before_decision_time(self):
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
         # 14:00 ET < 15:20 decision time.
-        as_of = datetime(2026, 9, 16, 18, 0)   # 14:00 ET (UTC-4)
+        as_of = datetime(2026, 9, 16, 14, 0)   # 14:00 ET
         signals = strategy.evaluate_live_signals(_ctx(as_of, self._bars_map()))
         self.assertEqual(signals, [])
 
+    def test_naive_local_1521_opens_gate(self):
+        # Regression: naive local 15:21 was read as UTC (=11:21 ET) so the
+        # 15:20 gate never opened during RTH.
+        strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
+        as_of = datetime(2026, 9, 16, 15, 21)
+        self.assertEqual(strategy._et_now(as_of).strftime("%H:%M"), "15:21")
+        signals = strategy.evaluate_live_signals(_ctx(as_of, self._bars_map()))
+        self.assertGreater(len(signals), 0)
+
     def test_signal_emitted_at_decision_time(self):
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
-        as_of = datetime(2026, 9, 16, 19, 30)  # 15:30 ET
+        as_of = datetime(2026, 9, 16, 15, 30)  # 15:30 ET
         signals = strategy.evaluate_live_signals(_ctx(as_of, self._bars_map()))
         self.assertGreater(len(signals), 0)
         signal = signals[0]
@@ -135,7 +159,7 @@ class TestLiveSignals(unittest.TestCase):
     def test_dedupe_per_session(self):
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
         bars_map = self._bars_map()
-        as_of = datetime(2026, 9, 16, 19, 30)
+        as_of = datetime(2026, 9, 16, 15, 30)
         first = strategy.evaluate_live_signals(_ctx(as_of, bars_map))
         second = strategy.evaluate_live_signals(_ctx(as_of, bars_map))
         self.assertGreater(len(first), 0)
@@ -144,8 +168,8 @@ class TestLiveSignals(unittest.TestCase):
     def test_next_session_signals_again(self):
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
         bars_map = self._bars_map()
-        day1 = datetime(2026, 9, 16, 19, 30)
-        day2 = datetime(2026, 9, 17, 19, 30)
+        day1 = datetime(2026, 9, 16, 15, 30)
+        day2 = datetime(2026, 9, 17, 15, 30)
         self.assertGreater(
             len(strategy.evaluate_live_signals(_ctx(day1, bars_map))), 0)
         self.assertGreater(
@@ -153,14 +177,14 @@ class TestLiveSignals(unittest.TestCase):
 
     def test_weekend_no_signals(self):
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
-        saturday = datetime(2026, 9, 19, 19, 30)
+        saturday = datetime(2026, 9, 19, 15, 30)
         self.assertEqual(
             strategy.evaluate_live_signals(_ctx(saturday, self._bars_map())),
             [])
 
     def test_no_data_no_signals(self):
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
-        as_of = datetime(2026, 9, 16, 19, 30)
+        as_of = datetime(2026, 9, 16, 15, 30)
         signals = strategy.evaluate_live_signals(_ctx(as_of, {}))
         self.assertEqual(signals, [])
 

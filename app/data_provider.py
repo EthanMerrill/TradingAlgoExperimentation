@@ -483,7 +483,20 @@ class DataProvider:
             short_market_value = getattr(account, 'short_market_value', 0)
             buying_power = getattr(account, 'buying_power', 0)
 
+            last_equity = getattr(account, 'last_equity', None)
+            try:
+                last_equity = float(last_equity) if last_equity else None
+            except (TypeError, ValueError):
+                last_equity = None
+
+            def _flag(name):
+                return getattr(account, name, False) is True
+
             return {
+                'last_equity': last_equity,
+                'trading_blocked': _flag('trading_blocked'),
+                'account_blocked': _flag('account_blocked'),
+                'trade_suspended_by_user': _flag('trade_suspended_by_user'),
                 'cash': float(cash) if cash else 0.0,
                 'equity': float(equity) if equity else 0.0,
                 'long_market_value': float(long_market_value) if long_market_value else 0.0,

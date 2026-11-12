@@ -278,10 +278,29 @@ CREATE INDEX IF NOT EXISTS idx_sdp_date
     ON strategy_daily_performance (environment, snapshot_date);
 """
 
+_DDL_PENDING_SIGNALS = """
+CREATE TABLE IF NOT EXISTS pending_signals (
+    id              SERIAL PRIMARY KEY,
+    environment     TEXT        NOT NULL,
+    symbol          TEXT        NOT NULL,
+    direction       TEXT        NOT NULL DEFAULT 'long',
+    strategy_name   TEXT        DEFAULT 'rsi_mean_reversion',
+    opportunity     JSONB       NOT NULL,
+    status          TEXT        NOT NULL DEFAULT 'queued',
+    reason          TEXT,
+    queued_at       TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at     TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_pending_env_symbol_dir UNIQUE (environment, symbol, direction)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_env_status
+    ON pending_signals (environment, status);
+"""
+
 _ALL_DDL = (
     _DDL_BACKTEST_RESULTS + _DDL_POSITION_SNAPSHOTS
     + _DDL_SESSION_METADATA + _DDL_ORDERS
-    + _DDL_STRATEGY_PERFORMANCE
+    + _DDL_STRATEGY_PERFORMANCE + _DDL_PENDING_SIGNALS
 )
 
 # ---------------------------------------------------------------------------
@@ -932,6 +951,150 @@ class PostgresStorage(StorageBackend):
                 "metadata": _deserialize_metadata(d.get("metadata")),
             })
         return out
+
+    # -- pending_signals (off-hours entry queue) ------------------------------
+
+    def save_pending_signals(
+        self, signals: List[Dict[str, Any]]
+    ) -> bool:
+        """Queue (or refresh) pending entry signals for the next market open.
+
+        Upserts by (environment, symbol, direction): re-queueing the same
+        symbol/direction refreshes the stored opportunity instead of
+        duplicating it.
+
+        Each signal dict needs: ``symbol``, ``direction``, ``opportunity``
+        (JSON-serializable dict). Optional: ``strategy_name``, ``queued_at``
+        (ISO string).
+        """
+        if not self._connected:
+            logger.error("Postgres not connected — cannot save pending signals")
+            return False
+
+        if not signals:
+            return True
+
+        sql = (
+            "INSERT INTO pending_signals "
+            "(environment, symbol, direction, strategy_name, opportunity, "
+            "status, reason, queued_at) "
+            "VALUES ($1, $2, $3, $4, $5, 'queued', NULL, $6) "
+            "ON CONFLICT (environment, symbol, direction) DO UPDATE SET "
+            "strategy_name = EXCLUDED.strategy_name, "
+            "opportunity = EXCLUDED.opportunity, "
+            "status = 'queued', reason = NULL, queued_at = EXCLUDED.queued_at"
+        )
+
+        rows: List[tuple] = []
+        for sig in signals:
+            try:
+                opp_json = json.dumps(
+                    sig["opportunity"], default=_json_default)
+            except (TypeError, ValueError) as exc:
+                logger.error(
+                    "Cannot serialize opportunity for %s: %s",
+                    sig.get("symbol"), exc)
+                continue
+            queued_at = sig.get("queued_at")
+            if isinstance(queued_at, str):
+                try:
+                    queued_at = datetime.fromisoformat(
+                        queued_at.replace('Z', '+00:00'))
+                except ValueError:
+                    queued_at = None
+            if queued_at is None:
+                queued_at = datetime.now(timezone.utc)
+            rows.append((
+                self._env, sig["symbol"], sig.get("direction", "long"),
+                sig.get("strategy_name"), opp_json,
+                queued_at,
+            ))
+
+        if not rows:
+            return False
+
+        try:
+            _sync(self._execute_many(sql, rows))
+            logger.info("Saved %d pending signals to Postgres", len(rows))
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error saving pending signals to Postgres: %s", exc)
+            return False
+
+    def load_pending_signals(
+        self, status: str = "queued"
+    ) -> List[Dict[str, Any]]:
+        """Load pending signals for this environment with the given status."""
+        if not self._connected:
+            return []
+
+        try:
+            rows = _sync(self._fetch(
+                "SELECT id, symbol, direction, strategy_name, opportunity, "
+                "status, reason, queued_at FROM pending_signals "
+                "WHERE environment = $1 AND status = $2 "
+                "ORDER BY queued_at ASC",
+                self._env, status,
+            ))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Error loading pending signals from Postgres: %s", exc)
+            return []
+
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            queued_at = d.get("queued_at")
+            if hasattr(queued_at, "isoformat"):
+                queued_at = queued_at.isoformat()
+            out.append({
+                "id": d.get("id"),
+                "symbol": d.get("symbol"),
+                "direction": d.get("direction", "long"),
+                "strategy_name": d.get("strategy_name"),
+                "opportunity": _deserialize_metadata(d.get("opportunity")),
+                "status": d.get("status"),
+                "reason": d.get("reason"),
+                "queued_at": queued_at,
+            })
+        return out
+
+    def resolve_pending_signals(
+        self, ids: List[int], status: str, reason: Optional[str] = None
+    ) -> bool:
+        """Mark pending signals resolved (e.g. 'submitted' or 'expired')."""
+        if not self._connected:
+            logger.error(
+                "Postgres not connected — cannot resolve pending signals")
+            return False
+
+        clean_ids = []
+        for sig_id in ids:
+            try:
+                clean_ids.append(int(sig_id))
+            except (TypeError, ValueError):
+                continue
+        if not clean_ids:
+            return True
+
+        placeholders = ", ".join(
+            f"${i}" for i in range(4, 4 + len(clean_ids)))
+        args = [self._env, status, reason, *clean_ids]
+        try:
+            _sync(self._execute(
+                f"UPDATE pending_signals SET status = $2, reason = $3, "
+                f"resolved_at = NOW() "
+                f"WHERE environment = $1 AND id IN ({placeholders})",
+                *args,
+            ))
+            logger.info(
+                "Resolved %d pending signals as '%s'",
+                len(clean_ids), status)
+            return True
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error(
+                "Error resolving pending signals in Postgres: %s", exc)
+            return False
 
     # -- list_backtest_files -------------------------------------------------
 

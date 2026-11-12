@@ -10,14 +10,15 @@ Reuses TradingEngine for order placement/sizing and PositionsManager for state,
 so dry-run and position tagging behave identically to the daily path.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, time as dtime, timedelta
 from typing import Any, Dict, List, Optional
 
 from config import globalConfig  # type: ignore
 from data_provider import data_provider
 from strategies.base import Strategy, StrategyContext
 from strategies.registry import get_strategy
-from utils.calendar import is_regular_trading_hours, is_session_ended  # type: ignore
+from utils.calendar import is_regular_trading_hours, is_session_ended, to_eastern  # type: ignore
+from utils.datetime_ import get_session  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,37 @@ class BarLoopEngine:
     def session_ended(self, as_of: Optional[datetime] = None) -> bool:
         """True when RTH has ended for the day (weekday after 16:00 ET)."""
         return is_session_ended(as_of)
+
+    def intraday_exit_due(self, as_of: Optional[datetime] = None) -> bool:
+        """True during RTH once the configurable pre-close exit cutoff passes.
+
+        Cutoff is ``INTRADAY_EXIT_TIME`` (HH:MM ET, default 15:55). A DAY market
+        order placed after 16:00 would not execute until the next open, so
+        intraday positions must be closed *before* the bell.
+
+        On early-close days (e.g. 13:00 ET) the cutoff is pulled forward to
+        ``INTRADAY_EXIT_LEAD_MINUTES`` (default 5) before the actual close, so
+        the configured 15:55 never lands after the bell.
+        """
+        if not self.is_rth(as_of):
+            return False
+        raw = str(getattr(globalConfig, "INTRADAY_EXIT_TIME", "15:55") or "15:55")
+        try:
+            hh, mm = raw.split(":")
+            cutoff = dtime(int(hh), int(mm))
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid INTRADAY_EXIT_TIME %r - using 15:55", raw)
+            cutoff = dtime(15, 55)
+
+        now_et = to_eastern(as_of)
+        session = get_session(now_et.date())
+        if session is not None:
+            lead = int(getattr(globalConfig, "INTRADAY_EXIT_LEAD_MINUTES", 5) or 5)
+            close_dt = datetime.combine(now_et.date(), session[1])
+            latest = (close_dt - timedelta(minutes=lead)).time()
+            cutoff = min(cutoff, latest)
+        return now_et.time() >= cutoff
 
     # ------------------------------------------------------------------
     # Entry cycle
@@ -182,12 +214,17 @@ class BarLoopEngine:
         Returns:
             Summary dict with positions_exited / errors.
         """
-        summary: Dict[str, Any] = {'positions_exited': 0, 'errors': []}
+        summary: Dict[str, Any] = {
+            'positions_exited': 0, 'failed': 0, 'errors': []}
         positions = list(self.positions_manager.positions or [])
         for pos in positions:
             if getattr(pos, "closed", False) or not getattr(pos, "intraday", False):
                 continue
             try:
+                # The GTC OCO protective order reserves the shares; the broker
+                # rejects a market close (40310000) until it is cancelled.
+                self.trading_engine._release_shares_for_exit(
+                    pos.symbol, abs(pos.quantity))
                 # Places the market close, waits for the fill, and records the
                 # exit (incl. the real fill price) in one step.
                 placed = self.trading_engine.close_position_at_market(
@@ -200,6 +237,7 @@ class BarLoopEngine:
             if placed:
                 summary['positions_exited'] += 1
             else:
+                summary['failed'] += 1
                 logger.error(
                     "🕓 Failed to close intraday position %s", pos.symbol)
 

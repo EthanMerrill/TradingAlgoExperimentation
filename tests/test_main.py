@@ -5,6 +5,7 @@ Unit tests for the main module.
 import os
 import sys
 import unittest
+from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch, MagicMock
 
 # Add the app directory to Python path
@@ -401,3 +402,152 @@ class TestStrategyPerformanceSnapshot(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class _StopLoop(BaseException):
+    pass
+
+
+class TestConcurrencyAndDryRun(unittest.IsolatedAsyncioTestCase):
+    def _algo(self):
+        from main import TradingAlgorithm
+        algo = TradingAlgorithm.__new__(TradingAlgorithm)
+        import threading
+        algo.trading_lock = threading.RLock()
+        algo.trading_engine = Mock()
+        algo.trading_engine.dry_run = False
+        algo.trading_engine.set_dry_run_mode.side_effect = (
+            lambda v: setattr(algo.trading_engine, 'dry_run', v))
+        algo.positions_manager = Mock()
+        algo.positions_manager.get_and_reconcile_positions.return_value = []
+        algo.positions_manager.positions = []
+        algo.trading_calendar = Mock()
+        algo.trading_calendar.is_trading_day.return_value = True
+        algo.session_metadata = {}
+        algo._last_backtest_results = []
+        algo._save_session_results = AsyncMock()
+        return algo
+
+    async def test_dry_run_restored_and_backtest_outside_lock(self):
+        algo = self._algo()
+        held = {}
+
+        async def fake_bt(*a, **k):
+            # the slow backtest must not hold the trading lock
+            import threading
+            res = []
+
+            def probe():
+                got = algo.trading_lock.acquire(blocking=False)
+                res.append(got)
+                if got:
+                    algo.trading_lock.release()
+            t = threading.Thread(target=probe)
+            t.start()
+            t.join()
+            held['free'] = res[0]
+            return []
+        algo._get_backtest_results = fake_bt
+        seen = []
+        algo.trading_engine.execute_trading_session.side_effect = (
+            lambda r: seen.append(algo.trading_engine.dry_run) or {})
+        with patch('main.data_provider') as dp:
+            dp.get_account_info.return_value = {'buying_power': 100}
+            res = await algo.run_full_cycle(dry_run=True)
+        self.assertEqual(res['status'], 'success')
+        self.assertEqual(seen, [True])           # cycle ran in dry-run
+        self.assertFalse(algo.trading_engine.dry_run)  # restored afterwards
+        self.assertTrue(held['free'])
+
+    async def test_dry_run_restored_on_market_closed(self):
+        algo = self._algo()
+        algo.trading_calendar.is_trading_day.return_value = False
+        algo.trading_engine.dry_run = False
+        res = await algo.run_full_cycle(dry_run=False)
+        self.assertEqual(res['status'], 'market_closed')
+        self.assertFalse(algo.trading_engine.dry_run)
+        self.assertTrue(algo.trading_lock.acquire(blocking=False))
+
+    def _run_worker(self, algo, shared, bar_engine, now, ticks=1):
+        import main
+        n = {'i': 0}
+
+        def fake_sleep(_):
+            n['i'] += 1
+            if n['i'] > ticks:
+                raise _StopLoop()
+        with patch('bar_engine.BarLoopEngine', return_value=bar_engine), \
+                patch('time.sleep', fake_sleep), \
+                patch('main.datetime') as dt:
+            dt.now.return_value = now
+            with self.assertRaises(_StopLoop):
+                main._bar_loop_worker(algo, shared)
+
+    def _bar(self, rth=True, exit_due=False, ended=False, open_pos=True):
+        b = Mock()
+        b.is_rth.return_value = rth
+        b.intraday_exit_due.return_value = exit_due
+        b.session_ended.return_value = ended
+        b.has_open_intraday_positions.return_value = open_pos
+        b.run_intraday_cycle.return_value = {}
+        b.close_intraday_positions.return_value = {
+            'positions_exited': 1, 'failed': 0, 'errors': []}
+        return b
+
+    def test_bar_loop_applies_process_dry_run_and_skips_when_locked(self):
+        import threading
+        algo = self._algo()
+        algo.trading_engine.flush_queued_entries.return_value = {}
+        algo.trading_engine.dry_run = False  # as left by a dashboard cycle
+        bar = self._bar()
+        shared = {'dry_run': True}
+        now = datetime(2026, 9, 2, 12, 0)
+        self._run_worker(algo, shared, bar, now)
+        algo.trading_engine.set_dry_run_mode.assert_called_with(True)
+        bar.set_dry_run_mode.assert_called_with(True)
+        bar.run_intraday_cycle.assert_called_once()
+
+        # A cycle holding the lock (other thread) -> tick skipped.
+        bar2 = self._bar()
+        ev, done = threading.Event(), threading.Event()
+
+        def hold():
+            with algo.trading_lock:
+                ev.set()
+                done.wait(5)
+        t = threading.Thread(target=hold)
+        t.start()
+        ev.wait(5)
+        try:
+            self._run_worker(algo, shared, bar2, now)
+        finally:
+            done.set()
+            t.join()
+        bar2.run_intraday_cycle.assert_not_called()
+
+    def test_flush_runs_once_per_day_under_lock(self):
+        algo = self._algo()
+        algo.trading_engine.flush_queued_entries.return_value = {}
+        self._run_worker(algo, {}, self._bar(), datetime(2026, 9, 2, 10, 0),
+                         ticks=3)
+        algo.trading_engine.flush_queued_entries.assert_called_once()
+
+    def test_close_before_bell_and_done_only_on_success(self):
+        algo = self._algo()
+        algo.trading_engine.flush_queued_entries.return_value = {}
+        bar = self._bar(exit_due=True)
+        bar.close_intraday_positions.side_effect = [
+            {'positions_exited': 0, 'failed': 1, 'errors': []},
+            {'positions_exited': 1, 'failed': 0, 'errors': []},
+        ]
+        # 3 ticks during RTH: fail, success, then done for the day.
+        self._run_worker(algo, {}, bar, datetime(2026, 9, 2, 15, 56), ticks=3)
+        self.assertEqual(bar.close_intraday_positions.call_count, 2)
+        # no new entries after the cutoff, even once the day's exit is done
+        bar.run_intraday_cycle.assert_not_called()
+
+    def test_post_close_fallback(self):
+        algo = self._algo()
+        bar = self._bar(rth=False, ended=True)
+        self._run_worker(algo, {}, bar, datetime(2026, 9, 2, 16, 30))
+        bar.close_intraday_positions.assert_called_once()

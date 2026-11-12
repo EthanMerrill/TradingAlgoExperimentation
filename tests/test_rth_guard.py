@@ -104,6 +104,10 @@ class TestEntryRthGuard(unittest.TestCase):
                    return_value=True), \
                 patch.object(self.engine, '_make_unique_client_order_id',
                              return_value="AAPL-BUY-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(100.0, 5.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True), \
                 patch('trading_engine.storage.save_orders'):
             result = self.engine.place_buy_order(_opportunity(), 5)
         self.assertTrue(result)
@@ -115,6 +119,10 @@ class TestEntryRthGuard(unittest.TestCase):
                    return_value=False), \
                 patch.object(self.engine, '_make_unique_client_order_id',
                              return_value="AAPL-BUY-TEST"), \
+                patch.object(self.engine, '_wait_for_entry_fill',
+                             return_value=(100.0, 5.0, 'filled')), \
+                patch.object(self.engine, 'place_oco_close_order',
+                             return_value=True), \
                 patch('trading_engine.storage.save_orders'):
             result = self.engine.place_buy_order(_opportunity(), 5)
         self.assertTrue(result)

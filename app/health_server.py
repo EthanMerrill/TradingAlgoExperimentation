@@ -11,6 +11,7 @@ Uses Waitress (production WSGI) so it runs safely in a daemon thread
 without the signal-handler limitations of Flask's dev server.
 """
 
+import hmac
 import logging
 import os
 from datetime import datetime
@@ -40,7 +41,12 @@ def _check_auth(username: str, password: str) -> bool:
     dashboard_password = os.getenv('DASHBOARD_PASSWORD', '')
     if not dashboard_password:
         return False
-    return username == 'admin' and password == dashboard_password
+    # Constant-time comparison of both fields (no short-circuit between them).
+    user_ok = hmac.compare_digest(
+        (username or '').encode('utf-8'), b'admin')
+    pass_ok = hmac.compare_digest(
+        (password or '').encode('utf-8'), dashboard_password.encode('utf-8'))
+    return user_ok and pass_ok
 
 
 def _auth_required(f):
