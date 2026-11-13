@@ -25,3 +25,6 @@ logs/*
 # Profiler output
 *.out
 *.prof
+
+# Research run outputs
+app/research/logs/

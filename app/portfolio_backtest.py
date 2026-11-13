@@ -471,8 +471,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(real.trades_skipped["reason"].value_counts().to_string())
 
     if a.placebo > 0:
-        p = placebo_test(list(data), data, factory, is_m, oos_m, step_m, a.cash, a.placebo,
-                         a.seed, globalConfig, prices, real=real)
+        # Keywords, not positions: `prices` was landing in the `direction` slot,
+        # so placebo runs were unmarked (and mis-directed) while `real` was marked.
+        p = placebo_test(list(data), data, factory, is_m, oos_m, step_m,
+                         initial_cash=a.cash, n_runs=a.placebo, seed=a.seed,
+                         config=globalConfig, prices=prices, real=real)
         print(f"\nPlacebo ({a.placebo} runs, seed={a.seed}): real Sharpe {p['real_sharpe']:.2f} is at "
               f"percentile {p['sharpe_percentile']:.0f}; real CAGR {p['real_cagr']:.1%} at "
               f"percentile {p['cagr_percentile']:.0f}. Placebo Sharpe mean "
