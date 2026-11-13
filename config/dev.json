@@ -61,10 +61,9 @@
 		"backtest_results_days": 30
 	},
 	"strategies": {
-		"enabled": ["rsi_mean_reversion", "leveraged_flow_portfolio"],
+		"enabled": ["rsi_mean_reversion"],
 		"allocation": {
-			"rsi_mean_reversion": 0.85,
-			"leveraged_flow_portfolio": 0.15
+			"rsi_mean_reversion": 0.85
 		}
 	},
 	"walk_forward": {
