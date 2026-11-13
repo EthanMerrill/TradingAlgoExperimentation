@@ -97,6 +97,25 @@ def _is_insufficient_qty_error(exc: Exception) -> bool:
     return 'insufficient qty' in text or '40310000' in text
 
 
+def _strategy_is_portfolio(strategy_name: Optional[str]) -> bool:
+    """True if a registered strategy rebalances a ranked basket (``portfolio``).
+
+    Such positions are owned by the strategy's rebalance: no SL/TP brackets,
+    no MAX_HOLD_DAYS, and they do not count against the per-symbol strategies'
+    MAX_POSITIONS / MAX_NEW_POSITIONS_PER_DAY (their own budget caps them).
+    """
+    if not strategy_name:
+        return False
+    try:
+        return get_strategy(strategy_name).execution_style == "portfolio"
+    except ValueError:
+        return False
+
+
+def _fmt_price(value: Any) -> str:
+    return "none" if value is None else f"${float(value):.2f}"
+
+
 def _strategy_is_bar_loop(strategy_name: str) -> bool:
     """True if a registered strategy runs on the bar loop (intraday)."""
     try:
@@ -504,6 +523,8 @@ class TradingEngine:
             entry = getattr(pos, 'entry_date', None)
             if entry is None:
                 continue
+            if _strategy_is_portfolio(getattr(pos, 'strategy_name', None)):
+                continue
             try:
                 if ensure_utc(entry).astimezone(US_EASTERN).date() == today:
                     opened_today += 1
@@ -542,8 +563,11 @@ class TradingEngine:
                 logger.info("Insufficient buying power available")
                 return []
 
-            # Calculate how many new positions we can take
-            current_position_count = len(current_positions)
+            # Calculate how many new positions we can take (portfolio-strategy
+            # positions have their own budget and slot count).
+            current_position_count = sum(
+                1 for p in current_positions
+                if not _strategy_is_portfolio(getattr(p, 'strategy_name', None)))
             max_new_positions = min(
                 self._new_positions_remaining_today(),
                 globalConfig.MAX_POSITIONS - current_position_count
@@ -679,7 +703,9 @@ class TradingEngine:
                 return []
 
             # Calculate how many new short positions we can take
-            current_position_count = len(current_positions)
+            current_position_count = sum(
+                1 for p in current_positions
+                if not _strategy_is_portfolio(getattr(p, 'strategy_name', None)))
             max_new_positions = min(
                 self._new_positions_remaining_today(),
                 globalConfig.MAX_POSITIONS - current_position_count
@@ -770,8 +796,9 @@ class TradingEngine:
             if self.dry_run:
                 logger.info("🔍 DRY RUN: Would place %s order for %d shares of %s at $%.2f",
                             label, shares, opportunity.symbol, opportunity.entry_price)
-                logger.info("🔍 DRY RUN: Stop loss: $%.2f, %s: $%.2f",
-                            opportunity.stop_loss_price, profit_label, opportunity.take_profit_price)
+                logger.info("🔍 DRY RUN: Stop loss: %s, %s: %s",
+                            _fmt_price(opportunity.stop_loss_price), profit_label,
+                            _fmt_price(opportunity.take_profit_price))
                 logger.info("🔍 DRY RUN: Position value: $%.2f",
                             shares * opportunity.entry_price)
                 return True
@@ -837,8 +864,9 @@ class TradingEngine:
                 logger.info("Order placed successfully: %s", placed_order_id)
                 logger.info("%s order for %d shares of %s at $%.2f",
                             label.title(), shares, opportunity.symbol, opportunity.entry_price)
-                logger.info("Stop loss: $%.2f, %s: $%.2f",
-                            opportunity.stop_loss_price, profit_label, opportunity.take_profit_price)
+                logger.info("Stop loss: %s, %s: %s",
+                            _fmt_price(opportunity.stop_loss_price), profit_label,
+                            _fmt_price(opportunity.take_profit_price))
 
                 order_success = True
 
@@ -954,7 +982,14 @@ class TradingEngine:
 
     def _arm_entry_protection(self, opportunity: TradingOpportunity,
                               filled_qty: float, quantity_sign: int) -> bool:
-        """Arm the protective OCO for actually-filled entry shares."""
+        """Arm the protective OCO for actually-filled entry shares.
+
+        Entries with neither a stop nor a target (portfolio strategies) get no
+        protective order by design.
+        """
+        if (opportunity.stop_loss_price is None
+                and opportunity.take_profit_price is None):
+            return True
         protected = self.place_oco_close_order(
             opportunity.symbol,
             float(filled_qty),
@@ -2182,8 +2217,12 @@ class TradingEngine:
         # First pass: force-close positions that have exceeded max hold days.
         # This matches the backtest's max-hold-day exit for backtest/live parity.
         # Intraday positions are excluded — their exits are bar-engine-managed.
+        # Portfolio-strategy positions are excluded too — their exits are the
+        # strategy's rebalance (no max hold, no SL/TP).
         daily_positions = [
-            p for p in current_positions if not getattr(p, 'intraday', False)]
+            p for p in current_positions
+            if not getattr(p, 'intraday', False)
+            and not _strategy_is_portfolio(getattr(p, 'strategy_name', None))]
         now = datetime.now(timezone.utc)
         positions_to_close = []
         for position in daily_positions:
@@ -2255,6 +2294,104 @@ class TradingEngine:
                     "not succeed (intended stop $%.2f, take $%.2f)",
                     position.symbol, float(new_stop), float(new_take))
         return session_summary
+
+    def execute_rebalance_plan(self, plan: Any) -> Dict[str, Any]:
+        """Carry out a ``portfolio`` strategy's RebalancePlan (RTH only).
+
+        1. Sell ``plan.exits`` that this strategy holds, at market.
+        2. Buy ``plan.entries`` in order until the strategy holds
+           ``plan.slots`` positions. Each buy is
+           ``budget * (1 - plan.min_cash_pct) / plan.slots``, capped by the
+           strategy's remaining budget and the account's cash above
+           MIN_CASH_PCT. No stop-loss/take-profit is attached.
+        Symbols held by any strategy are never bought (one position per symbol).
+        """
+        name = plan.strategy_name
+        summary: Dict[str, Any] = {
+            'timestamp': utc_now(), 'strategy': name, 'new_positions': 0,
+            'orders_placed': 0, 'positions_exited': 0, 'errors': [],
+            'dry_run': self.dry_run, 'orders': [],
+        }
+        try:
+            positions = self._positions_manager.get_and_reconcile_positions()
+        except PositionsFetchError as e:
+            summary['errors'].append(f"positions unavailable: {e}")
+            logger.error("Rebalance %s skipped — broker positions unavailable: %s", name, e)
+            return summary
+        open_pos = [p for p in (positions or []) if not p.closed]
+
+        # 1) exits
+        for symbol, reason in plan.exits:
+            pos = next((p for p in open_pos if p.symbol == symbol
+                        and getattr(p, 'strategy_name', None) == name), None)
+            if pos is None:
+                continue
+            if self._force_close_position(summary, pos, reason):
+                logger.info("🔁 %s: sold %s (%s)", name, symbol, reason)
+            else:
+                summary['errors'].append(f"{symbol}: exit failed ({reason})")
+
+        # 2) entries
+        account = data_provider.get_account_info() or {}
+        equity = float(account.get('equity', 0) or 0)
+        cash = float(account.get('cash', 0) or 0)
+        if equity <= 0:
+            summary['errors'].append("account equity unavailable")
+            return summary
+        budget = self._strategy_budgets(equity).get(name, 0.0)
+        used = self._strategy_notional_used().get(name, 0.0)
+        min_cash_pct = getattr(globalConfig, 'MIN_CASH_PCT', 0.0) or 0.0
+        investable = max(0.0, cash - equity * min_cash_pct)
+        target = budget * (1.0 - plan.min_cash_pct) / max(plan.slots, 1)
+        open_now = [p for p in self._positions_manager.positions if not p.closed]
+        held_any = {p.symbol for p in open_now}
+        held_mine = sum(1 for p in open_now if getattr(p, 'strategy_name', None) == name)
+        logger.info(
+            "🔁 %s rebalance: budget $%.2f, used $%.2f, %d/%d held, target/position $%.2f",
+            name, budget, used, held_mine, plan.slots, target)
+
+        for sig in plan.entries:
+            if held_mine >= plan.slots:
+                break
+            if sig.symbol in held_any:
+                continue
+            price = None
+            try:
+                price = self._get_current_price(sig.symbol)
+            except Exception:  # pylint: disable=broad-exception-caught
+                price = None
+            price = float(price or sig.entry_price or 0)
+            value = min(target, budget - used, investable)
+            shares = int(value // price) if price > 0 else 0
+            if shares < 1:
+                logger.info("🔁 %s: no room for %s (value $%.2f, price $%.2f)",
+                            name, sig.symbol, value, price)
+                break
+            opportunity = TradingOpportunity(
+                symbol=sig.symbol, backtest_return=0.0, alpha=0.0, win_rate=0.0,
+                entry_price=price, stop_loss_price=None, take_profit_price=None,
+                composite_score=float(getattr(sig, 'composite_score', 0.0) or 0.0),
+                direction="long", strategy_name=name, intraday=False)
+            if self.place_buy_order(opportunity, shares):
+                held_mine += 1
+                held_any.add(sig.symbol)
+                used += shares * price
+                investable -= shares * price
+                summary['new_positions'] += 1
+                summary['orders_placed'] += 1
+                self._record_order(
+                    summary, symbol=sig.symbol, action='BUY', shares=shares,
+                    order_type='market', strategy=name,
+                    reason=f"rank_{(sig.extra or {}).get('rank', '?')}")
+            else:
+                summary['errors'].append(
+                    f"{sig.symbol}: entry failed ({self._last_order_error})")
+
+        if not self.dry_run:
+            self._positions_manager.persist_positions()
+        logger.info("🔁 %s rebalance done: %s", name, {
+            k: summary[k] for k in ('positions_exited', 'new_positions', 'errors')})
+        return summary
 
     def identify_purchases(self, session_summary: Dict[str, Any], backtest_results: List[BacktestResult]) -> Dict[str, Any]:
         """

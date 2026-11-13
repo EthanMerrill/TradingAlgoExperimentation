@@ -79,6 +79,23 @@ class StrategyContext:
     strategy_results: List["BacktestResult"] = field(default_factory=list)
 
 
+@dataclass
+class RebalancePlan:
+    """Target changes from a ``portfolio`` strategy (see ``execution_style``).
+
+    The engine sells ``exits`` (symbol, reason) first, then buys ``entries``
+    in order until ``slots`` positions are held, each sized at
+    ``budget * (1 - min_cash_pct) / slots``. Entries carry no stop/take-profit:
+    portfolio strategies manage their own exits at rebalance.
+    """
+    strategy_name: str
+    exits: List[tuple] = field(default_factory=list)
+    entries: List[LiveSignal] = field(default_factory=list)
+    slots: int = 5
+    min_cash_pct: float = 0.10
+    notes: Dict[str, Any] = field(default_factory=dict)
+
+
 class Strategy(ABC):
     """Base class for all trading strategies.
 
@@ -90,7 +107,9 @@ class Strategy(ABC):
 
     # Registry key (must be unique, stable, and config-friendly).
     name: str = "base"
-    # "session" (daily) | "bar_loop" (intraday, Phase D).
+    # "session" (daily) | "bar_loop" (intraday, Phase D) | "portfolio"
+    # (periodic rebalance of a ranked basket: see ``rebalance_plan``; executed
+    # on the first RTH tick, exempt from SL/TP brackets and MAX_HOLD_DAYS).
     execution_style: str = "session"
     # Bar timeframe for bar_loop strategies, e.g. "5m".
     bar_size: Optional[str] = None
@@ -219,6 +238,14 @@ class Strategy(ABC):
     def evaluate_live_signals(self, ctx: StrategyContext) -> List[LiveSignal]:
         """Evaluate live signals (Phase C engine hook). Default: no signals."""
         return []
+
+    def is_rebalance_due(self, as_of: Any) -> bool:
+        """``portfolio`` strategies: True when ``as_of`` is a rebalance session."""
+        return False
+
+    def rebalance_plan(self, ctx: StrategyContext) -> Optional[RebalancePlan]:
+        """``portfolio`` strategies: exits/entries for this rebalance. Default: none."""
+        return None
 
     def placebo_p_value(
         self,

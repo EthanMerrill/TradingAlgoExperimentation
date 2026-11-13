@@ -57,10 +57,8 @@
 		"backtest_results_days": 30
 	},
 	"strategies": {
-		"enabled": ["rsi_mean_reversion"],
-		"allocation": {
-			"rsi_mean_reversion": 0.85
-		}
+		"enabled": ["rsi_mean_reversion", "momentum_rank"],
+		"allocation": {"rsi_mean_reversion": 0.75, "momentum_rank": 0.25}
 	},
 	"walk_forward": {
 		"enabled": false,

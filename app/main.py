@@ -305,6 +305,12 @@ class TradingAlgorithm:
                 logger.error("Unknown strategy '%s' in config — skipping. %s",
                              strategy_name, e)
                 continue
+            if getattr(strategy_cls, "execution_style", "session") == "portfolio":
+                logger.info(
+                    "Strategy '%s' is a portfolio rebalance — no per-symbol "
+                    "backtests; it ranks live on its rebalance session",
+                    strategy_name)
+                continue
             strategy = strategy_cls.create()
             optimizer = StrategyOptimizer(strategy=strategy)
 
@@ -718,6 +724,7 @@ def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
     bar_engine.set_dry_run_mode(bool(shared_state.get('dry_run', False)))
     last_close_date: Optional[str] = None
     last_flush_date: Optional[str] = None
+    rebalanced: Dict[str, str] = {}
     lock = algorithm.trading_lock
     logger.info("📈 Bar-loop worker started for intraday strategies")
 
@@ -767,6 +774,9 @@ def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
                             logger.info(
                                 "⏳ Queued-entry flush: %s", flush_summary)
                         last_flush_date = today
+                    # Weekly/periodic portfolio strategies trade at the open
+                    # of their rebalance session (decided on the prior close).
+                    _run_portfolio_rebalances(algorithm, now, rebalanced)
                     if close_window:
                         # Flat-at-close: exit BEFORE the bell (a DAY market
                         # order after 16:00 would sit until the next open).
@@ -791,6 +801,60 @@ def _bar_loop_worker(algorithm: 'TradingAlgorithm', shared_state: dict):
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("Bar-loop worker error: %s", e)
             _time.sleep(60)
+
+
+# Portfolio rebalances are retried each RTH tick until this ET time (data
+# not ready, broker hiccup); after it the session's rebalance is skipped.
+PORTFOLIO_REBALANCE_DEADLINE = (12, 0)
+
+
+def _run_portfolio_rebalances(algorithm: 'TradingAlgorithm', now: datetime,
+                              done: Dict[str, str]) -> None:
+    """Run each enabled ``portfolio`` strategy's rebalance once per session.
+
+    ``done`` maps strategy name -> ET date already handled (mutated). A plan
+    that cannot be built (bars for the previous close not available yet) is
+    retried on later ticks until PORTFOLIO_REBALANCE_DEADLINE.
+    """
+    from strategies.base import StrategyContext  # pylint: disable=import-outside-toplevel
+    from utils.calendar import to_eastern  # pylint: disable=import-outside-toplevel
+    now_et = to_eastern(now)
+    today = now_et.date().isoformat()
+    for name in (globalConfig.STRATEGIES_ENABLED or []):
+        try:
+            cls = get_strategy(name)
+        except ValueError:
+            continue
+        if getattr(cls, "execution_style", "session") != "portfolio" or done.get(name) == today:
+            continue
+        strategy = cls.create()
+        if not strategy.is_rebalance_due(now):
+            done[name] = today
+            continue
+        if (now_et.hour, now_et.minute) >= PORTFOLIO_REBALANCE_DEADLINE:
+            logger.error("🔁 %s: rebalance not completed by %02d:%02d ET — skipped "
+                         "this session", name, *PORTFOLIO_REBALANCE_DEADLINE)
+            done[name] = today
+            continue
+        engine = algorithm.trading_engine
+        ctx = StrategyContext(
+            data_provider=data_provider, positions_manager=algorithm.positions_manager,
+            config=globalConfig, as_of=now, ohlcv_cache=engine._ohlcv_cache)  # pylint: disable=protected-access
+        try:
+            plan = strategy.rebalance_plan(ctx)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error("🔁 %s: rebalance plan failed: %s — will retry", name, e)
+            continue
+        if plan is None:
+            logger.warning("🔁 %s: no rebalance plan yet — will retry next tick", name)
+            continue
+        summary = engine.execute_rebalance_plan(plan)
+        exit_errors = [e for e in summary.get('errors', []) if 'exit failed' in e
+                       or 'unavailable' in e]
+        if exit_errors:
+            logger.error("🔁 %s: rebalance exits incomplete (%s) — will retry", name, exit_errors)
+            continue
+        done[name] = today
 
 
 def _close_intraday(bar_engine, now, today: str, last_close_date: Optional[str]) -> Optional[str]:

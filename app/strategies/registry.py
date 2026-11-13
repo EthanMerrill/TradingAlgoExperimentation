@@ -47,6 +47,9 @@ from strategies.leveraged_flow_portfolio_strategy import (  # noqa: E402,F401  p
     LeveragedFlowPortfolioStrategy,
 )
 
+from strategies.momentum_rank import MomentumRankStrategy  # noqa: E402,F401  pylint: disable=wrong-import-position,unused-import
+
 register(RSIStrategy)
 register(LeveragedRebalanceStrategy)
 register(LeveragedFlowPortfolioStrategy)
+register(MomentumRankStrategy)
