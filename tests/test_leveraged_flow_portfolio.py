@@ -62,7 +62,7 @@ class TestEtfFlowEstimates(unittest.TestCase):
         real_etf = next(iter(LEVERAGED_SINGLE_STOCK_ETFS))
         return real_etf, {real_etf: prepare_features(_bars(rets=rets))}
 
-    def test_notional_is_leverage_times_aum_times_return(self):
+    def test_notional_is_leverage_minus_one_times_aum_times_fund_return(self):
         from strategies.leveraged_single_stock_etfs import (
             LEVERAGED_SINGLE_STOCK_ETFS)
 
@@ -73,7 +73,8 @@ class TestEtfFlowEstimates(unittest.TestCase):
 
         flows = etf_flow_estimates(feats, asof_tod=asof_tod)
         self.assertFalse(flows.empty)
-        expected = fund.leverage * aum * 0.01
+        # Rebalance = A*(L-1)*R_fund  (= A*L*(L-1)*r_underlying).
+        expected = (fund.leverage - 1.0) * aum * 0.01
         self.assertAlmostEqual(
             flows["notional"].iloc[0], expected, delta=abs(expected) * 1e-9)
 
@@ -207,6 +208,125 @@ class TestPlacebo(unittest.TestCase):
             flows, {}, entry_tod=920, top_k=1, direction_filter="both",
             cost_bps=0.0, min_abs_notional=0.0, observed_mean=0.1, n_draws=50)
         self.assertIsNone(test["p_value"])
+
+
+
+def _rth_session(_day):
+    from datetime import time as _t
+    return (_t(9, 30), _t(16, 0))
+
+
+class TestFixes(unittest.TestCase):
+    """Regressions for the RTH / formula / exit / placebo fixes."""
+
+    def test_rebalance_multiplier(self):
+        from strategies.leveraged_single_stock_etfs import rebalance_multiplier
+        self.assertEqual(rebalance_multiplier(2.0), 2.0)
+        self.assertEqual(rebalance_multiplier(-1.0), 2.0)   # inverse BUYS up
+        self.assertEqual(rebalance_multiplier(-2.0), 6.0)
+        self.assertEqual(rebalance_multiplier(1.0), 0.0)
+
+    def test_inverse_fund_flow_is_positive_on_up_day(self):
+        from strategies.leveraged_single_stock_etfs import (
+            LEVERAGED_SINGLE_STOCK_ETFS)
+        inverse = next(e for e, f in LEVERAGED_SINGLE_STOCK_ETFS.items()
+                       if f.leverage == -1.0)
+        # Underlying +2% => a 1x inverse fund is down 2%.
+        feats = {inverse: prepare_features(_bars(rets=[-0.02] * 5))}
+        flows = etf_flow_estimates(feats, asof_tod=920)
+        self.assertTrue((flows["notional"] > 0).all())
+
+    def test_rth_only_drops_extended_hours(self):
+        days = pd.bdate_range("2026-06-01", periods=2)
+        frames = []
+        for i, day in enumerate(days):
+            idx = pd.date_range(
+                pd.Timestamp(day).tz_localize("US/Eastern")
+                + pd.Timedelta(hours=4), periods=192, freq="5min")
+            close = np.full(len(idx), 100.0 + i)
+            tod = idx.hour * 60 + idx.minute
+            close[tod >= 16 * 60] = 150.0  # after-hours spike
+            frames.append(pd.DataFrame({
+                "open": close, "high": close, "low": close, "close": close,
+                "volume": np.full(len(idx), 10.0)}, index=idx))
+        bars = pd.concat(frames)
+        full = prepare_features(bars)
+        rth = prepare_features(bars, rth_only=True, session_lookup=_rth_session)
+        self.assertEqual(full["tod"].max(), 19 * 60 + 55)
+        self.assertEqual(rth["tod"].min(), 9 * 60 + 30)
+        self.assertEqual(rth["tod"].max(), 15 * 60 + 55)
+        # Prior close is the RTH close (100), not the after-hours 150.
+        day2 = rth[rth["date"] == days[1].date()]
+        self.assertTrue((day2["prior_close"] == 100.0).all())
+
+    def test_rth_only_respects_early_close_and_holidays(self):
+        from datetime import time as _t
+        bars = _bars(days=2)
+        first = bars.index[0].tz_convert("US/Eastern").date()
+
+        def lookup(day):
+            return (_t(9, 30), _t(13, 0)) if day == first else None
+        rth = prepare_features(bars, rth_only=True, session_lookup=lookup)
+        self.assertEqual(set(rth["date"]), {first})
+        self.assertEqual(rth["tod"].max(), 12 * 60 + 55)
+
+    def test_flow_uses_last_bar_at_or_before_asof(self):
+        from strategies.leveraged_single_stock_etfs import (
+            LEVERAGED_SINGLE_STOCK_ETFS)
+        etf = next(iter(LEVERAGED_SINGLE_STOCK_ETFS))
+        feats = prepare_features(_bars(rets=[0.01] * 5))
+        # Sparse fund: no print at 15:20 (or later) on any day.
+        sparse = feats[feats["tod"] < 920]
+        flows = etf_flow_estimates({etf: sparse}, asof_tod=920)
+        self.assertEqual(len(flows), 29)  # 30 sessions; first has no prior close
+
+    def test_exit_tod_uses_open_of_exit_bar(self):
+        from strategies.leveraged_flow_portfolio import _price_tables
+        feats = prepare_features(_bars(rets=[0.0] * 3))
+        feats.loc[feats["tod"] == 955, "open"] = 123.0
+        _, close_px = _price_tables({"AAA": feats}, 920, exit_tod=955)
+        _, last_px = _price_tables({"AAA": feats}, 920)
+        day = feats["date"].iloc[-1]
+        self.assertEqual(close_px[("AAA", day)], 123.0)
+        self.assertNotEqual(last_px[("AAA", day)], 123.0)
+
+    def test_eligible_placebo_only_draws_qualifying_names(self):
+        """With one eligible name per session the null equals the strategy."""
+        dates = pd.bdate_range("2026-06-01", periods=30)
+        features = {
+            "WIN": prepare_features(_bars(rets=[0.0] * 30)),
+            "LOSE": prepare_features(_bars(rets=[0.0] * 30)),
+        }
+        rows = []
+        for d in dates:
+            rows.append({"date": d.date(), "underlying": "WIN",
+                         "notional": 1e8, "abs_notional": 1e8, "n_funds": 1})
+            rows.append({"date": d.date(), "underlying": "LOSE",
+                         "notional": -1e8, "abs_notional": 1e8, "n_funds": 1})
+        flows = pd.DataFrame(rows)
+        returns, _ = portfolio_session_returns(
+            flows, features, entry_tod=920, top_k=1,
+            direction_filter="long", cost_bps=1.0, min_abs_notional=1e7)
+        test = placebo_portfolio_test(
+            flows, features, entry_tod=920, top_k=1, direction_filter="long",
+            cost_bps=1.0, min_abs_notional=1e7,
+            observed_mean=float(returns.mean()), n_draws=50)
+        self.assertAlmostEqual(test["null_mean"], float(returns.mean()))
+        self.assertGreater(test["p_value"], 0.5)
+
+    def test_adv_score(self):
+        from strategies.leveraged_flow_portfolio import add_adv_score
+        dates = pd.bdate_range("2026-06-01", periods=30)
+        features = {"AAA": prepare_features(_bars(rets=[0.0] * 30))}
+        flows = pd.DataFrame([
+            {"date": d.date(), "underlying": "AAA", "notional": 1e6,
+             "abs_notional": 1e6, "n_funds": 1} for d in dates])
+        scored = add_adv_score(flows, features, lookback_days=4)
+        # 78 bars × $100 × 1000 shares = $7.8M/day.
+        self.assertAlmostEqual(scored["adv_usd"].iloc[-1], 7.8e6)
+        self.assertAlmostEqual(scored["rank_score"].iloc[-1], 1e6 / 7.8e6)
+        # First session has no history: dropped, never filled from the future.
+        self.assertNotIn(dates[0].date(), set(scored["date"]))
 
 
 if __name__ == "__main__":

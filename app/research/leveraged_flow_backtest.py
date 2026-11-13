@@ -13,14 +13,19 @@ K-name portfolios from the same session pool).
 
 Read-only diagnostic: places no orders, writes no storage.
 
-    python app/leveraged_flow_backtest.py --start 2025-07-18 --end 2026-09-18
-    python app/leveraged_flow_backtest.py --entry-starts 15:20 14:30 --top-ks 3 5
+    python app/research/leveraged_flow_backtest.py --start 2025-07-18 --end 2026-09-18
+    python app/research/leveraged_flow_backtest.py --entry-starts 15:20 --top-ks 3 \
+        --direction long --exits close 15:55
+
+Bars are restricted to the regular session (RTH). Earlier runs used the full
+04:00-20:00 bar set, so their "close" exit was the ~19:55 after-hours print.
 """
 import argparse
 import logging
 import os
 import sys
 from datetime import datetime, timedelta
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -33,12 +38,13 @@ from data_provider import data_provider  # noqa: E402
 from strategies.leveraged_flow_portfolio import (  # noqa: E402
     beta_vs_market,
     direction_breakdown,
+    add_adv_score,
     etf_flow_estimates,
-    flow_magnitude_buckets,
     momentum_scores,
     placebo_portfolio_test,
     portfolio_session_returns,
     portfolio_stats,
+    proxy_flow_estimates,
     split_half_stability,
 )
 from strategies.leveraged_rebalance_signal import (  # noqa: E402
@@ -49,6 +55,8 @@ from strategies.leveraged_single_stock_etfs import (  # noqa: E402
     LEVERAGED_SINGLE_STOCK_ETFS,
     underlyings,
 )
+
+EXIT_CLOSE = "close"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,6 +87,17 @@ def _parse_args() -> argparse.Namespace:
                              "(default: $10m). 0 disables.")
     parser.add_argument("--placebo-draws", type=int, default=1000,
                         help="Placebo draws (default: 1000; 0 disables).")
+    parser.add_argument("--placebo-pool", choices=("eligible", "all"),
+                        default="eligible",
+                        help="Null pool: 'eligible' = same sessions and only "
+                             "names passing the same filters (default); "
+                             "'all' = legacy, every name every session.")
+    parser.add_argument("--exits", nargs="+", default=[EXIT_CLOSE, "15:55"],
+                        help="Exit conventions: 'close' (last RTH bar close) "
+                             "and/or HH:MM (open of that bar, = live "
+                             "INTRADAY_EXIT_TIME). Default: close 15:55.")
+    parser.add_argument("--adv-lookback", type=int, default=20,
+                        help="Sessions for the flow/ADV ranking (default 20).")
     parser.add_argument("--symbols", nargs="+", default=None,
                         help="Restrict the underlying universe.")
     parser.add_argument("--skip-etf-data", action="store_true",
@@ -104,6 +123,11 @@ def _fetch(symbol: str, start: datetime, end: datetime, timeframe: str):
     return bars
 
 
+def _features(bars):
+    """RTH-only features (drops pre/post-market bars)."""
+    return prepare_features(bars, rth_only=True)
+
+
 def _flow_inputs(args, symbols, start, end):
     """Fetch bars and build the flow source + underlying features."""
     universe = underlyings() if not args.symbols else [
@@ -114,23 +138,13 @@ def _flow_inputs(args, symbols, start, end):
         bars = _fetch(symbol, start, end, args.timeframe)
         if bars is None or bars.empty:
             continue
-        underlying_features[symbol] = prepare_features(bars)
+        underlying_features[symbol] = _features(bars)
     logger.info("Underlying data ready for %d/%d symbols.",
                 len(underlying_features), len(universe))
 
     if args.skip_etf_data:
-        # Proxy flows: use the underlying's own return-so-far scaled by the
-        # aggregated leverage x AUM of the funds tracking it. Cheaper (no ETF
-        # fetches) and close in spirit, but it is NOT the fund return.
-        leverage: dict = {}
-        for fund in LEVERAGED_SINGLE_STOCK_ETFS.values():
-            if fund.underlying in underlyings():
-                aum = fund.aum_usd or 500_000_000.0
-                prev = leverage.get(fund.underlying, (0.0, 0.0))
-                leverage[fund.underlying] = (
-                    prev[0] + fund.leverage * aum, prev[1] + 1)
-        logger.info("Proxy mode: flows = Σ(leverage×AUM) × underlying move.")
-        return underlying_features, None, leverage
+        logger.info("Proxy mode: flows = Σ L(L-1)×AUM × underlying move.")
+        return underlying_features, None
 
     etf_symbols = list(LEVERAGED_SINGLE_STOCK_ETFS)
     logger.info("Fetching ETF bars for %d funds…", len(etf_symbols))
@@ -139,24 +153,56 @@ def _flow_inputs(args, symbols, start, end):
         bars = _fetch(etf, start, end, args.timeframe)
         if bars is None or bars.empty:
             continue
-        features = prepare_features(bars)
+        features = _features(bars)
         if not features.empty:
             etf_features[etf] = features
     logger.info("ETF data ready for %d/%d funds.",
                 len(etf_features), len(etf_symbols))
-    return underlying_features, etf_features, None
+    return underlying_features, etf_features
+
+
+def _exit_tod(exit_label: str):
+    return None if exit_label == EXIT_CLOSE else parse_hhmm(exit_label)
+
+
+def _market_returns(underlying_features, entry_tod, exit_tod) -> pd.Series:
+    """Equal-weight mean of every universe name's decision->exit return.
+
+    This is the same holding window the portfolio trades, so the beta
+    regression compares like with like. (It previously used prior close ->
+    decision bar, a different and non-overlapping window.)
+    """
+    by_date: Dict[object, List[float]] = {}
+    for feats in underlying_features.values():
+        entries = feats[feats["tod"] == entry_tod].set_index("date")["close"]
+        if exit_tod is None:
+            exits = feats.groupby("date")["close"].last()
+        else:
+            exits = feats[feats["tod"] >= exit_tod].groupby("date")["open"].first()
+        ret = (exits / entries - 1.0).dropna()
+        for date, value in ret.items():
+            if np.isfinite(value):
+                by_date.setdefault(date, []).append(float(value))
+    series = pd.Series(
+        {d: float(np.mean(v)) for d, v in sorted(by_date.items())},
+        dtype=np.float64)
+    series.index.name = "date"
+    return series
 
 
 def _evaluate_config(
     ranking_name, flows, underlying_features, entry_tod, args,
     placebo_draws, market_returns,
 ) -> dict:
-    """Evaluate one (ranking rule, entry time, top_k) configuration."""
+    """Evaluate one (ranking rule, entry, exit, top_k) configuration."""
+    rank_col = "rank_score" if "rank_score" in flows.columns else "abs_notional"
+    exit_tod = _exit_tod(args.exit)
     returns, decisions = portfolio_session_returns(
         flows, underlying_features, entry_tod=entry_tod,
         top_k=args.top_k, direction_filter=args.direction,
         cost_bps=args.cost_bps,
-        min_abs_notional=float(args.min_flow_usd))
+        min_abs_notional=float(args.min_flow_usd),
+        exit_tod=exit_tod, rank_col=rank_col)
     stats = portfolio_stats(returns)
     stability = split_half_stability(returns)
     breakdown = direction_breakdown(returns, decisions)
@@ -168,9 +214,11 @@ def _evaluate_config(
             flows, underlying_features, entry_tod,
             top_k=args.top_k, direction_filter=args.direction,
             cost_bps=args.cost_bps, min_abs_notional=float(args.min_flow_usd),
-            observed_mean=stats["mean"], n_draws=placebo_draws)
+            observed_mean=stats["mean"], n_draws=placebo_draws,
+            exit_tod=exit_tod, pool=args.placebo_pool)
     return {
-        "ranking": ranking_name, "entry": args.entry, "top_k": args.top_k,
+        "ranking": ranking_name, "entry": args.entry, "exit": args.exit,
+        "top_k": args.top_k,
         "stats": stats, "stability": stability,
         "breakdown": breakdown, "beta": beta, "placebo": placebo,
         "decisions": decisions, "returns": returns,
@@ -191,26 +239,14 @@ def main() -> int:
     print(f"  Costs      : {args.cost_bps:.1f} bps/side "
           f"({2*args.cost_bps:.0f} bps round trip)")
     print(f"  Min |flow| : ${args.min_flow_usd:,.0f}")
+    print(f"  Exits      : {', '.join(args.exits)}  (bars: RTH only)")
+    print(f"  Placebo    : pool={args.placebo_pool}")
     print("=" * 78)
 
-    underlying_features, etf_features, proxy_leverage = _flow_inputs(
-        args, None, start, end)
+    underlying_features, etf_features = _flow_inputs(args, None, start, end)
     if not underlying_features:
         print("No underlying data available.")
         return 1
-
-    # Market proxy: equal-weight mean of ALL universe names' session returns
-    # (close of the decision bar -> session close). This is what the beta
-    # regression compares against; uncorrelated return = positive alpha_daily.
-    market_by_date: Dict[object, List[float]] = {}
-    for symbol, feats in underlying_features.items():
-        bars = feats[feats["tod"] == parse_hhmm(args.entry_starts[0])]
-        for row in bars.itertuples(index=False):
-            market_by_date.setdefault(row.date, []).append(float(row.cum_ret))
-    market_returns = pd.Series(
-        {d: float(np.nanmean(v)) for d, v in sorted(market_by_date.items())},
-        dtype=np.float64).dropna()
-    market_returns.index.name = "date"
 
     results = []
     for entry in args.entry_starts:
@@ -218,31 +254,16 @@ def main() -> int:
 
         # Build BOTH ranking frames for this entry time (A/B).
         ranking_frames: Dict[str, pd.DataFrame] = {}
-        if etf_features:
-            flows = etf_flow_estimates(etf_features, asof_tod=entry_tod)
-            if not flows.empty:
-                ranking_frames["flow"] = flows
-        else:
-            rows = []
-            for symbol, feats in underlying_features.items():
-                lev_aum, _n = proxy_leverage.get(symbol, (0.0, 0))
-                if not lev_aum:
-                    continue
-                bars = feats[feats["tod"] == entry_tod]
-                for row in bars.itertuples(index=False):
-                    if row.cum_ret is None or not pd.notna(row.cum_ret):
-                        continue
-                    notional = lev_aum * float(row.cum_ret)
-                    rows.append({
-                        "date": row.date,
-                        "underlying": symbol,
-                        "notional": notional,
-                        "abs_notional": abs(notional),
-                        "n_funds": 1,
-                    })
-            if rows:
-                ranking_frames["flow"] = pd.DataFrame(rows).sort_values(
-                    ["date", "abs_notional"], ascending=[True, False])
+        flows = (etf_flow_estimates(etf_features, asof_tod=entry_tod)
+                 if etf_features
+                 else proxy_flow_estimates(underlying_features, entry_tod))
+        if not flows.empty:
+            ranking_frames["flow"] = flows
+            # Same flows and $ floor, ranked by |flow| / ADV instead of $.
+            adv_ranked = add_adv_score(
+                flows, underlying_features, lookback_days=args.adv_lookback)
+            if not adv_ranked.empty:
+                ranking_frames["flow/adv"] = adv_ranked
         # The momentum control uses the SAME machinery, ranked by raw |day ret|.
         momentum = momentum_scores(underlying_features, asof_tod=entry_tod)
         if not momentum.empty:
@@ -252,12 +273,15 @@ def main() -> int:
             print(f"\n[{entry}] no ranking data")
             continue
 
-        for ranking_name, flows in ranking_frames.items():
-            for top_k in args.top_ks:
-                args.entry, args.top_k = entry, top_k
-                results.append(_evaluate_config(
-                    ranking_name, flows, underlying_features, entry_tod, args,
-                    args.placebo_draws, market_returns))
+        for exit_label in args.exits:
+            market_returns = _market_returns(
+                underlying_features, entry_tod, _exit_tod(exit_label))
+            for ranking_name, frame in ranking_frames.items():
+                for top_k in args.top_ks:
+                    args.entry, args.exit, args.top_k = entry, exit_label, top_k
+                    results.append(_evaluate_config(
+                        ranking_name, frame, underlying_features, entry_tod,
+                        args, args.placebo_draws, market_returns))
 
     if not results:
         print("\nNo configurations evaluated.")
@@ -276,6 +300,7 @@ def main() -> int:
         rows.append({
             "ranking": cfg["ranking"],
             "entry": cfg["entry"],
+            "exit": cfg["exit"],
             "top_k": cfg["top_k"],
             "n_sess": s["n_sessions"],
             "mean/sess": s["mean"],
@@ -317,7 +342,8 @@ def main() -> int:
 
     best = results[int(table.index[0])]
     print("\n--- Best config sample decisions "
-          f"({best['entry']}, top_k={best['top_k']}) ---")
+          f"({best['ranking']}, {best['entry']}->{best['exit']}, "
+          f"top_k={best['top_k']}) ---")
     for dec in best["decisions"][-8:]:
         picks = ", ".join(
             f"{s}{'+' if d == 'long' else '-'}(${abs(n)/1e6:.0f}m)"

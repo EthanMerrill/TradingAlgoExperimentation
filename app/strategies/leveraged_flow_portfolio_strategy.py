@@ -24,15 +24,23 @@ Live mechanics (bar_loop)
 -------------------------
 ``execution_style = "bar_loop"`` so the BarLoopEngine evaluates during RTH:
 
-* at/after the decision time each session, emit one LiveSignal per selected
-  underlying (deduplicated per session date),
+* once the decision bar is COMPLETE (``entry_time`` + one bar, e.g. 15:25
+  for the 15:20 bar) and today's data includes it, emit one LiveSignal per
+  selected underlying (deduplicated per session date). If today's decision
+  bar is not available yet, nothing is emitted and the next tick retries;
+  past ``entry_time + bar + max_entry_delay_minutes`` the session is skipped.
+  There is deliberately NO fallback to an earlier session's flows.
 * entries are day-TIF bracket orders placed by the engine,
-* the engine force-closes all ``intraday`` positions at the session close,
-  which reproduces the backtest's flat-at-close exit exactly.
+* the engine force-closes all ``intraday`` positions at
+  ``INTRADAY_EXIT_TIME`` (default 15:55 ET) with market orders. That is
+  BEFORE the 16:00 closing auction; the research runner reports both exits
+  (``--exits close 15:55``) so the live convention can be checked.
 
 Lookahead safety: the flow is computed from the funds' bars **up to the
-decision bar only** (``etf_flow_estimates`` filters ``tod == asof``), and the
-entry price is the underlying's close of that same bar.
+decision bar only** (``etf_flow_estimates`` uses the last bar at/before T),
+and the entry price is the underlying's close of that same bar. Features are
+built from regular-session bars only (``rth_only=True``) so ``prior_close``
+is the 16:00 close the funds rebalance against.
 """
 import logging
 from datetime import datetime, timedelta
@@ -52,6 +60,7 @@ from strategies.leveraged_rebalance_signal import (
 )
 from strategies.leveraged_single_stock_etfs import (
     LEVERAGED_SINGLE_STOCK_ETFS,
+    rebalance_multiplier,
     underlyings,
 )
 from config import globalConfig  # type: ignore
@@ -64,6 +73,11 @@ US_EASTERN = pytz.timezone("US/Eastern")
 # Lookback for intraday bar fetches: enough sessions for the flow's cum_ret
 # (needs only the prior close) plus a buffer for half-days/holidays.
 _LIVE_FETCH_SESSIONS = 4
+
+# Width of one decision bar in minutes (data_timeframe "5m"). The bar stamped
+# T covers [T, T+5) and is only complete -- and identical to what the
+# backtest used -- from T+5.
+_BAR_MINUTES = 5
 
 
 class LeveragedFlowPortfolioStrategy(Strategy):
@@ -84,9 +98,13 @@ class LeveragedFlowPortfolioStrategy(Strategy):
         min_abs_notional: float = 10_000_000.0,
         stop_loss_pct: Optional[float] = None,
         take_profit_pct: Optional[float] = None,
+        max_entry_delay_minutes: int = 15,
     ):
         self.entry_time = entry_time
         self.entry_tod = parse_hhmm(entry_time)
+        # Give up on the session if the decision bar has not arrived this
+        # long after it completed: a late entry is a different trade.
+        self.max_entry_delay_minutes = int(max_entry_delay_minutes)
         self.top_k = int(top_k)
         self.min_abs_notional = float(min_abs_notional)
         # Bracket orders require stop/TP levels; intraday positions are closed
@@ -149,14 +167,16 @@ class LeveragedFlowPortfolioStrategy(Strategy):
         min_abs = float(params.get("min_abs_notional", self.min_abs_notional))
 
         features = prepared if (
-            isinstance(prepared, dict) and "cum_ret" in getattr(
-                prepared, "columns", [])) else prepare_features(data)
+            prepared is not None and "cum_ret" in getattr(
+                prepared, "columns", [])) else prepare_features(
+                    data, rth_only=True)
 
-        # Aggregate leverage×AUM for the funds tracking this symbol.
+        # Aggregate rebalance weight L*(L-1)*AUM for the funds on this symbol.
         lev_aum = 0.0
         for fund in LEVERAGED_SINGLE_STOCK_ETFS.values():
             if fund.underlying == symbol:
-                lev_aum += fund.leverage * (fund.aum_usd or DEFAULT_AUM_USD)
+                lev_aum += rebalance_multiplier(fund.leverage) * (
+                    fund.aum_usd or DEFAULT_AUM_USD)
 
         if features.empty or lev_aum <= 0:
             return self._null_result(symbol, entry_tod, top_k, min_abs)
@@ -230,14 +250,19 @@ class LeveragedFlowPortfolioStrategy(Strategy):
         return to_eastern(as_of)
 
     def _fetch_features(self, ctx: StrategyContext, symbol: str):
-        """Features for ``symbol``'s recent intraday bars (provider-cached)."""
+        """Features for ``symbol``'s recent RTH intraday bars.
+
+        Cached per (symbol, session date) and ONLY once the frame contains
+        today's decision bar; an incomplete fetch is retried on the next tick
+        instead of being frozen in the cache for the rest of the day.
+        """
         provider = ctx.data_provider
         cache = ctx.ohlcv_cache if ctx.ohlcv_cache is not None else {}
-        key = f"{symbol}@{self.entry_tod}"
+        end = self._et_now(ctx.as_of)
+        key = f"flowpf:{symbol}@{end.date()}@{self.entry_tod}"
         cached = cache.get(key)
         if cached is not None:
             return cached
-        end = self._et_now(ctx.as_of)
         start = end - timedelta(days=_LIVE_FETCH_SESSIONS + 2)
         try:
             bars = provider.get_single_stock_bars(
@@ -249,20 +274,37 @@ class LeveragedFlowPortfolioStrategy(Strategy):
             return None
         if bars is None or bars.empty:
             return None
-        features = prepare_features(bars)
-        cache[key] = features
+        features = prepare_features(bars, rth_only=True)
+        if self._has_decision_bar(features, end.date()):
+            cache[key] = features
         return features
+
+    def _has_decision_bar(self, features, day) -> bool:
+        if features is None or features.empty:
+            return False
+        return bool(((features["date"] == day)
+                     & (features["tod"] == self.entry_tod)).any())
 
     def evaluate_live_signals(
             self, ctx: StrategyContext) -> List[LiveSignal]:
         """Emit the day's top-K positive-flow long signals, once per session."""
         now_et = self._et_now(ctx.as_of)
+        today = now_et.date()
         if now_et.weekday() >= 5:
             return []
-        if now_et.hour * 60 + now_et.minute < self.entry_tod:
-            return []  # decision time not reached yet
-        if self._last_signal_date == now_et.date():
-            return []  # already emitted today
+        if self._last_signal_date == today:
+            return []  # already emitted (or gave up) today
+        now_min = now_et.hour * 60 + now_et.minute
+        ready_at = self.entry_tod + _BAR_MINUTES
+        if now_min < ready_at:
+            return []  # decision bar not complete yet
+        if now_min > ready_at + self.max_entry_delay_minutes:
+            logger.warning(
+                "Flow portfolio: decision bar %s not usable by %s ET — "
+                "skipping session %s", self.entry_time,
+                now_et.strftime("%H:%M"), today)
+            self._last_signal_date = today
+            return []
 
         # Underlying features (entry prices + date alignment).
         underlying_features: Dict[str, Any] = {}
@@ -286,30 +328,41 @@ class LeveragedFlowPortfolioStrategy(Strategy):
             return []
 
         flows = etf_flow_estimates(etf_features, asof_tod=self.entry_tod)
-        if flows.empty:
-            self._last_signal_date = now_et.date()
-            return []
+        day_flows = (flows[flows["date"] == today]
+                     if not flows.empty else flows)
 
-        # Decision bar for entry prices: the underlying's close at entry_tod.
-        entry_px: Dict[Any, Dict[str, float]] = {}
+        # Entry prices: the underlying's close of TODAY's decision bar only.
+        prices_today: Dict[str, float] = {}
         for symbol, features in underlying_features.items():
-            bars = features[features["tod"] == self.entry_tod]
-            for row in bars.itertuples(index=False):
-                entry_px.setdefault(row.date, {})[symbol] = float(row.close)
+            bars = features[(features["date"] == today)
+                            & (features["tod"] == self.entry_tod)]
+            if not bars.empty:
+                prices_today[symbol] = float(bars["close"].iloc[-1])
 
-        today = now_et.date()
-        day_flows = flows[flows["date"] == today]
-        if day_flows.empty:
-            # Partial day / holiday: fall back to the latest available date.
-            day_flows = flows.tail(len(flows))
-            if not day_flows.empty:
-                today = day_flows["date"].iloc[-1]
-        prices_today = entry_px.get(today, {})
+        if day_flows.empty or not prices_today:
+            # Today's decision bar has not arrived (data lag). NEVER fall back
+            # to an earlier session's flows/prices -- retry next tick.
+            logger.info(
+                "Flow portfolio: today's %s bar not available yet "
+                "(flows=%d, prices=%d) — will retry", self.entry_time,
+                len(day_flows), len(prices_today))
+            return []
 
         candidates = day_flows[
             (day_flows["abs_notional"] >= self.min_abs_notional)
             & (day_flows["notional"] > 0.0)                      # long-only
         ].sort_values("abs_notional", ascending=False)
+
+        # A top-ranked name whose decision bar is still in flight must not be
+        # silently replaced by a lower-ranked one: retry until the last tick
+        # before the deadline, then trade what is available.
+        top = candidates["underlying"].head(self.top_k)
+        missing = [u for u in top if u not in prices_today]
+        if missing and now_min < ready_at + self.max_entry_delay_minutes:
+            logger.info(
+                "Flow portfolio: waiting for %s bar of %s — will retry",
+                self.entry_time, ", ".join(missing))
+            return []
 
         signals: List[LiveSignal] = []
         for row in candidates.itertuples(index=False):
@@ -335,7 +388,7 @@ class LeveragedFlowPortfolioStrategy(Strategy):
                 },
             ))
 
-        self._last_signal_date = now_et.date()
+        self._last_signal_date = today
         logger.info(
             "Flow portfolio: %d long signal(s) at %s (%s)",
             len(signals), now_et.strftime("%H:%M"), self.entry_time)

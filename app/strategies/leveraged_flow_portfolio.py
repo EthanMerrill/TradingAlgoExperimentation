@@ -8,7 +8,11 @@ per-symbol strategy (``leveraged_rebalance.py``) in three structural ways.
    underlying. For each single-stock leveraged/inverse ETF the dealer's
    required daily hedge is approximately
 
-       hedge_notional = leverage * AUM * day_return_of_the_fund
+       hedge_notional = (leverage - 1) * AUM * day_return_of_the_fund
+                      = leverage * (leverage - 1) * AUM * underlying_return
+
+   (see ``leveraged_single_stock_etfs.rebalance_multiplier``). Bull AND
+   inverse funds both buy into an up-move.
 
    where ``day_return_of_the_fund`` is the fund's own move from the prior
    session close. Crucially, as of any intraday time T the return-so-far is
@@ -35,8 +39,13 @@ Nothing here may use information from after the decision time T:
 
 * the fund return used in the flow estimate is measured **up to T**,
 * the entry price is the underlying's close of the bar AT T,
-* the session close exit price is the ONLY forward-looking value, and it is
-  the trade itself (that is the bet), not an input to the decision.
+* the exit price (session close, or the open of the ``exit_tod`` bar) is the
+  ONLY forward-looking value, and it is the trade itself (that is the bet),
+  not an input to the decision.
+
+Features must be built with ``prepare_features(..., rth_only=True)``: Alpaca
+intraday bars include pre/post-market, and without the filter the "session
+close" is the ~19:55 after-hours print.
 
 AUM caveats
 -----------
@@ -54,12 +63,15 @@ import pandas as pd
 
 from strategies.leveraged_single_stock_etfs import (
     LEVERAGED_SINGLE_STOCK_ETFS,
+    rebalance_multiplier,
 )
 
 __all__ = [
     "DEFAULT_AUM_USD",
     "FlowDecision",
     "etf_flow_estimates",
+    "proxy_flow_estimates",
+    "add_adv_score",
     "momentum_scores",
     "portfolio_session_returns",
     "portfolio_stats",
@@ -92,18 +104,39 @@ def _effective_aum(etf: str) -> float:
     return float(fund.aum_usd) if fund.aum_usd else DEFAULT_AUM_USD
 
 
+_EMPTY_FLOW_COLUMNS = ["date", "underlying", "notional", "abs_notional",
+                       "n_funds"]
+
+
+def _asof_rows(features: pd.DataFrame, asof_tod: int) -> pd.DataFrame:
+    """Per session, the LAST bar at or before ``asof_tod``.
+
+    Thinly traded funds often have no print in a given 5-minute bar (Alpaca
+    only emits bars with trades). Requiring ``tod == asof`` silently dropped
+    those funds; the latest bar at/before T is the freshest lookahead-safe
+    value. Bars after T are never used.
+    """
+    upto = features[features["tod"] <= asof_tod]
+    if upto.empty:
+        return upto
+    return upto.groupby("date", sort=True).tail(1)
+
+
 def etf_flow_estimates(
     etf_features: Dict[str, pd.DataFrame],
     asof_tod: int,
 ) -> pd.DataFrame:
     """Estimate the dealer hedge notional per underlying, per session.
 
+    Per fund: ``(leverage - 1) * AUM * fund_return_so_far``, which equals
+    ``leverage * (leverage - 1) * AUM * underlying_return``.
+
     Args:
         etf_features: Map of ETF ticker -> features frame (output of
             ``leveraged_rebalance_signal.prepare_features``) for the ETF's OWN
             bars. Must contain ``date``, ``tod``, ``cum_ret``.
         asof_tod: Minutes-since-ET-midnight of the decision time (e.g. 920 for
-            15:20). Only data up to this bar is used.
+            15:20). Per session, the last bar at or before this time is used.
 
     Returns:
         DataFrame indexed by session date with columns ``underlying``,
@@ -115,14 +148,15 @@ def etf_flow_estimates(
         fund = LEVERAGED_SINGLE_STOCK_ETFS.get(etf_symbol)
         if fund is None or features is None or features.empty:
             continue
-        bar = features[features["tod"] == asof_tod]
+        bar = _asof_rows(features, asof_tod)
         for row in bar.itertuples(index=False):
             if row.cum_ret is None or not np.isfinite(row.cum_ret):
                 continue
             aum = _effective_aum(etf_symbol)
             # Signed hedge notional the dealer must trade by the close:
-            # positive => buy the underlying, negative => sell.
-            notional = fund.leverage * aum * float(row.cum_ret)
+            # positive => buy the underlying, negative => sell. In terms of
+            # the fund's own return R = L*r the trade is A*(L-1)*R.
+            notional = (fund.leverage - 1.0) * aum * float(row.cum_ret)
             rows.append({
                 "date": row.date,
                 "underlying": fund.underlying,
@@ -131,8 +165,7 @@ def etf_flow_estimates(
             })
 
     if not rows:
-        return pd.DataFrame(
-            columns=["underlying", "notional", "abs_notional", "n_funds"])
+        return pd.DataFrame(columns=_EMPTY_FLOW_COLUMNS)
 
     frame = pd.DataFrame(rows)
     aggregated = (
@@ -144,8 +177,90 @@ def etf_flow_estimates(
                                   ascending=[True, False]).reset_index(drop=True)
 
 
-def _price_tables(features_by_symbol: Dict[str, pd.DataFrame], entry_tod: int):
-    """Entry (at ``entry_tod``) and session-close price tables per symbol."""
+def proxy_flow_estimates(
+    underlying_features: Dict[str, pd.DataFrame],
+    asof_tod: int,
+) -> pd.DataFrame:
+    """Flow estimate from the UNDERLYING's own move (no ETF bars needed).
+
+    ``Σ_funds leverage*(leverage-1)*AUM × underlying_return_so_far``. Cheaper
+    than :func:`etf_flow_estimates` and nearly identical when the funds track
+    well; it ignores tracking error and fund-level data gaps.
+    """
+    weight: Dict[str, float] = {}
+    count: Dict[str, int] = {}
+    for fund in LEVERAGED_SINGLE_STOCK_ETFS.values():
+        aum = float(fund.aum_usd) if fund.aum_usd else DEFAULT_AUM_USD
+        weight[fund.underlying] = (weight.get(fund.underlying, 0.0)
+                                   + rebalance_multiplier(fund.leverage) * aum)
+        count[fund.underlying] = count.get(fund.underlying, 0) + 1
+
+    rows: List[dict] = []
+    for symbol, features in underlying_features.items():
+        lev_aum = weight.get(symbol, 0.0)
+        if not lev_aum or features is None or features.empty:
+            continue
+        for row in _asof_rows(features, asof_tod).itertuples(index=False):
+            if row.cum_ret is None or not np.isfinite(row.cum_ret):
+                continue
+            notional = lev_aum * float(row.cum_ret)
+            rows.append({
+                "date": row.date, "underlying": symbol,
+                "notional": notional, "abs_notional": abs(notional),
+                "n_funds": count.get(symbol, 0),
+            })
+    if not rows:
+        return pd.DataFrame(columns=_EMPTY_FLOW_COLUMNS)
+    return pd.DataFrame(rows).sort_values(
+        ["date", "abs_notional"], ascending=[True, False]).reset_index(drop=True)
+
+
+def add_adv_score(
+    flows: pd.DataFrame,
+    underlying_features: Dict[str, pd.DataFrame],
+    lookback_days: int = 20,
+) -> pd.DataFrame:
+    """Add ``adv_usd`` and ``rank_score`` = |flow| / average daily $ volume.
+
+    Price impact scales with flow relative to normal liquidity, not with raw
+    dollars: $1B of NVDA hedging is a few percent of a day's volume, while
+    $50M in a small name can be a large share. ADV is the mean of the PRIOR
+    ``lookback_days`` sessions' Σ(close×volume) (shifted, so no lookahead).
+    On the IEX feed volumes are a fraction of consolidated volume; the ratio
+    is then inflated by a roughly common factor, which preserves ranking.
+    """
+    adv: Dict[Tuple[str, object], float] = {}
+    for symbol, features in underlying_features.items():
+        if features is None or features.empty:
+            continue
+        dollar = (features["close"] * features["volume"]).groupby(
+            features["date"]).sum()
+        rolling = dollar.rolling(
+            lookback_days, min_periods=max(1, lookback_days // 2)).mean().shift(1)
+        for date, value in rolling.items():
+            if np.isfinite(value) and value > 0:
+                adv[(symbol, date)] = float(value)
+    out = flows.copy()
+    out["adv_usd"] = [adv.get((u, d), np.nan)
+                      for u, d in zip(out["underlying"], out["date"])]
+    out["rank_score"] = out["abs_notional"] / out["adv_usd"]
+    return out[np.isfinite(out["rank_score"])].reset_index(drop=True)
+
+
+def _price_tables(
+    features_by_symbol: Dict[str, pd.DataFrame],
+    entry_tod: int,
+    exit_tod: Optional[int] = None,
+):
+    """Entry (close of the ``entry_tod`` bar) and exit price tables.
+
+    Exit is the last regular-session bar's close when ``exit_tod`` is None
+    (≈ the 16:00 print, pre-auction), otherwise the OPEN of the first bar at
+    or after ``exit_tod`` — what a market order sent at that time would see
+    (the live engine sells intraday positions at INTRADAY_EXIT_TIME, 15:55).
+    Sessions with no bar at/after ``exit_tod`` (early closes) fall back to
+    the session's last close.
+    """
     entry_px: Dict[Tuple[str, object], float] = {}
     close_px: Dict[Tuple[str, object], float] = {}
     for symbol, features in features_by_symbol.items():
@@ -153,13 +268,30 @@ def _price_tables(features_by_symbol: Dict[str, pd.DataFrame], entry_tod: int):
             continue
         entries = features[features["tod"] == entry_tod]
         closes = features.groupby("date")["close"].last()
+        exits = {}
+        if exit_tod is not None:
+            after = features[features["tod"] >= exit_tod]
+            exits = after.groupby("date")["open"].first().to_dict()
         for row in entries.itertuples(index=False):
             if np.isfinite(row.close) and row.close > 0:
                 entry_px[(symbol, row.date)] = float(row.close)
         for date, close in closes.items():
-            if np.isfinite(close) and close > 0:
-                close_px[(symbol, date)] = float(close)
+            price = exits.get(date, close)
+            if price is not None and np.isfinite(price) and price > 0:
+                close_px[(symbol, date)] = float(price)
     return entry_px, close_px
+
+
+def _eligible(day_flows: pd.DataFrame, min_abs_notional: float,
+              direction_filter: str) -> pd.DataFrame:
+    """Candidates passing the size floor and the direction filter."""
+    mask = ((day_flows["abs_notional"] >= float(min_abs_notional))
+            & (day_flows["abs_notional"] > 0.0))
+    if direction_filter == "long":
+        mask &= day_flows["notional"] > 0.0
+    elif direction_filter == "short":
+        mask &= day_flows["notional"] < 0.0
+    return day_flows[mask]
 
 
 def momentum_scores(
@@ -269,6 +401,7 @@ def flow_magnitude_buckets(
     cost_bps: float = 2.0,
     direction_filter: str = "short",
     buckets: int = 4,
+    exit_tod: Optional[int] = None,
 ) -> pd.DataFrame:
     """Per-position returns bucketed by the position's |flow| rank/magnitude.
 
@@ -286,7 +419,7 @@ def flow_magnitude_buckets(
         DataFrame with per-bucket stats: ``bucket``, ``n``, ``mean``, ``t``,
         ``hit_rate``, ``total``, ``median_abs_notional``.
     """
-    entry_px, close_px = _price_tables(underlying_features, entry_tod)
+    entry_px, close_px = _price_tables(underlying_features, entry_tod, exit_tod)
     round_trip = 2.0 * float(cost_bps) / 10_000.0
 
     records = []
@@ -402,6 +535,8 @@ def portfolio_session_returns(
     direction_filter: str = "both",
     cost_bps: float = 2.0,
     min_abs_notional: float = 0.0,
+    exit_tod: Optional[int] = None,
+    rank_col: str = "abs_notional",
 ) -> Tuple[pd.Series, List[FlowDecision]]:
     """Form the cross-sectional portfolio each session and return its P&L.
 
@@ -423,23 +558,28 @@ def portfolio_session_returns(
         top_k: Number of underlyings to hold per session.
         direction_filter: ``"long"``, ``"short"`` or ``"both"``.
         cost_bps: Per-side cost; a round trip (2×) is charged per position.
-        min_abs_notional: Skip sessions whose best |notional| is below this.
+        min_abs_notional: Per-candidate floor on ``abs_notional`` (USD);
+            names below it are never held. A session with no candidate above
+            the floor is not traded.
+        exit_tod: Exit time (see :func:`_price_tables`); None = session close.
+        rank_col: Column to rank eligible candidates by (descending).
+            ``"abs_notional"`` (raw $) or ``"rank_score"`` (|flow|/ADV, from
+            :func:`add_adv_score`). Eligibility always uses the $ floor.
 
     Returns:
         ``(daily_returns, decisions)`` — a Series of portfolio returns indexed
         by session date, and the per-session decision detail.
     """
-    entry_px, close_px = _price_tables(underlying_features, entry_tod)
+    entry_px, close_px = _price_tables(underlying_features, entry_tod, exit_tod)
     round_trip = 2.0 * float(cost_bps) / 10_000.0
 
     daily_returns: Dict[object, float] = {}
     decisions: List[FlowDecision] = []
 
     for date, day_flows in flows.groupby("date"):
-        candidates = day_flows[
-            (day_flows["abs_notional"] >= float(min_abs_notional))
-            & (day_flows["abs_notional"] > 0.0)
-        ].sort_values("abs_notional", ascending=False)
+        candidates = _eligible(
+            day_flows, min_abs_notional, direction_filter,
+        ).sort_values(rank_col, ascending=False)
         if candidates.empty:
             continue
 
@@ -536,42 +676,66 @@ def placebo_portfolio_test(
     observed_mean: float,
     n_draws: int = 2000,
     seed: int = 0,
+    exit_tod: Optional[int] = None,
+    pool: str = "eligible",
 ) -> dict:
-    """Permutation null: random K-name portfolios from the same session pool.
+    """Permutation null: random K-name portfolios from a matched pool.
 
-    Each draw shuffles, per session, which underlyings are held and (for the
-    direction-null variant) the trade direction, then computes the same
-    equal-weighted portfolio mean. Because the draws use the same sessions,
-    entry/exit convention and costs, drift and timing cancel — the p-value
-    isolates whether the FLOW RANKING carries information.
+    Each draw picks, per session, random underlyings (and for the "both"
+    direction null, random directions) and computes the same equal-weighted
+    portfolio mean, with the same entry/exit convention and costs.
+
+    ``pool`` selects what the observed portfolio is compared against:
+
+    * ``"eligible"`` (default) — only the sessions the strategy actually
+      trades, and only names passing the SAME size floor and direction
+      filter, held in the flow's direction. The p-value then answers "does
+      ranking by flow beat a random pick among names that qualify?" This is
+      the honest null: in long-only mode the strategy trades mostly up days
+      and large-AUM names, and comparing that against random names on all
+      days credits the strategy for session/universe selection (i.e. plain
+      intraday momentum and the sample's winners).
+    * ``"all"`` — legacy: every tradable name on every session, random sign
+      per ``direction_filter``. Overstates significance (see above).
 
     Args:
         observed_mean: The real portfolio's mean daily return.
         n_draws: Number of random portfolios in the null distribution.
         seed: RNG seed for reproducibility.
+        exit_tod: Exit time (see :func:`_price_tables`).
+        pool: ``"eligible"`` or ``"all"``.
 
     Returns:
         Dict with ``p_value``, ``null_mean``, ``null_p95``, ``n_draws``,
         ``n_sessions`` and ``percentile`` of the observed mean.
     """
-    entry_px, close_px = _price_tables(underlying_features, entry_tod)
+    if pool not in ("eligible", "all"):
+        raise ValueError(f"pool must be 'eligible' or 'all', got {pool!r}")
+    entry_px, close_px = _price_tables(underlying_features, entry_tod, exit_tod)
     round_trip = 2.0 * float(cost_bps) / 10_000.0
 
-    # Pool of (date -> list of (symbol, raw long-return)) for every tradable
-    # name on that date, regardless of the flow ranking.
-    pool: Dict[object, List[Tuple[str, float]]] = {}
+    # date -> list of (symbol, signed return before costs). In "eligible"
+    # mode the sign is the flow's own direction (fixed); in "all" mode it is
+    # the raw long return and the sign is randomized per draw below.
+    options_by_date: Dict[object, List[Tuple[str, float]]] = {}
     for date, day_flows in flows.groupby("date"):
+        if pool == "eligible":
+            day_flows = _eligible(day_flows, min_abs_notional, direction_filter)
         options = []
-        for symbol in day_flows["underlying"]:
+        for row in day_flows.itertuples(index=False):
+            symbol = row.underlying
             entry = entry_px.get((symbol, date))
             exit_ = close_px.get((symbol, date))
             if entry is None or exit_ is None:
                 continue
-            options.append((symbol, exit_ / entry - 1.0))
+            raw = exit_ / entry - 1.0
+            if pool == "eligible":
+                raw *= 1.0 if row.notional >= 0 else -1.0
+            options.append((symbol, raw))
         if options:
-            pool[date] = options
+            options_by_date[date] = options
 
-    dates = sorted(pool)
+    dates = sorted(options_by_date)
     result = {
         "p_value": None, "null_mean": None, "null_p95": None,
         "n_draws": 0, "n_sessions": len(dates), "percentile": None,
@@ -579,18 +743,20 @@ def placebo_portfolio_test(
     if len(dates) < 5:
         return result
 
-    if direction_filter == "both":
+    if pool == "eligible":
+        signs = [1.0]  # direction already applied per option
+    elif direction_filter == "both":
         signs = [1.0, -1.0]
     else:
         signs = [1.0 if direction_filter == "long" else -1.0]
 
     rng = np.random.default_rng(seed)
-    k = max(1, min(int(top_k), max(len(pool[d]) for d in dates)))
+    k = max(1, min(int(top_k), max(len(options_by_date[d]) for d in dates)))
     draws = np.empty(int(n_draws), dtype=np.float64)
     for i in range(int(n_draws)):
         session_means = []
         for date in dates:
-            options = pool[date]
+            options = options_by_date[date]
             chosen = rng.choice(len(options), size=min(k, len(options)),
                                 replace=False)
             rets = []

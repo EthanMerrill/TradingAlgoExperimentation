@@ -136,8 +136,8 @@ class TestLiveSignals(unittest.TestCase):
         # Regression: naive local 15:21 was read as UTC (=11:21 ET) so the
         # 15:20 gate never opened during RTH.
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
-        as_of = datetime(2026, 9, 16, 15, 21)
-        self.assertEqual(strategy._et_now(as_of).strftime("%H:%M"), "15:21")
+        as_of = datetime(2026, 9, 16, 15, 26)
+        self.assertEqual(strategy._et_now(as_of).strftime("%H:%M"), "15:26")
         signals = strategy.evaluate_live_signals(_ctx(as_of, self._bars_map()))
         self.assertGreater(len(signals), 0)
 
@@ -174,6 +174,83 @@ class TestLiveSignals(unittest.TestCase):
             len(strategy.evaluate_live_signals(_ctx(day1, bars_map))), 0)
         self.assertGreater(
             len(strategy.evaluate_live_signals(_ctx(day2, bars_map))), 0)
+
+    def _truncate_today(self, bars_map, day, from_tod):
+        out = {}
+        for sym, bars in bars_map.items():
+            idx = bars.index.tz_convert("US/Eastern")
+            tod = idx.hour * 60 + idx.minute
+            drop = (idx.date == day) & (tod >= from_tod)
+            out[sym] = bars[~drop]
+        return out
+
+    def test_no_stale_fallback_when_todays_bar_missing(self):
+        """Regression: a missing 15:20 bar used to trade an EARLIER day's
+        flows at that day's prices, then lock the session out."""
+        from datetime import date as _date
+        bars_map = self._bars_map(up_rets=(0.0, 0.03, -0.02, 0.0, 0.0, 0.0))
+        today = _date(2026, 9, 16)  # the -2% day (session 3)
+        partial = self._truncate_today(bars_map, today, 920)
+        strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
+        self.assertEqual(strategy.evaluate_live_signals(
+            _ctx(datetime(2026, 9, 16, 15, 26), partial)), [])
+        # Not locked out: the next tick with complete data is evaluated, and
+        # a down day yields no long signals.
+        self.assertIsNone(strategy._last_signal_date)
+        self.assertEqual(strategy.evaluate_live_signals(
+            _ctx(datetime(2026, 9, 16, 15, 27), bars_map)), [])
+        self.assertEqual(strategy._last_signal_date, today)
+
+    def test_retries_until_bar_arrives_then_signals(self):
+        from datetime import date as _date
+        bars_map = self._bars_map()
+        today = _date(2026, 9, 16)
+        partial = self._truncate_today(bars_map, today, 920)
+        strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
+        cache = {}
+        ctx1 = _ctx(datetime(2026, 9, 16, 15, 26), partial)
+        ctx1.ohlcv_cache = cache
+        self.assertEqual(strategy.evaluate_live_signals(ctx1), [])
+        # Incomplete frames must not be cached for the rest of the day.
+        ctx2 = _ctx(datetime(2026, 9, 16, 15, 27), bars_map)
+        ctx2.ohlcv_cache = cache
+        signals = strategy.evaluate_live_signals(ctx2)
+        self.assertGreater(len(signals), 0)
+        today_close = bars_map["TSLA"].tz_convert("US/Eastern")
+        today_close = today_close[today_close.index.date == today]["close"]
+        self.assertAlmostEqual(signals[0].entry_price,
+                               round(float(today_close.iloc[0]), 2))
+
+    def test_waits_for_top_ranked_name_with_lagging_bar(self):
+        """Fund bars arrived but TSLA's own 15:20 bar has not: do not skip
+        the top-ranked name for a lower one; retry instead."""
+        from datetime import date as _date
+        bars_map = self._bars_map()
+        lagging = dict(bars_map)
+        lagging["TSLA"] = self._truncate_today(
+            {"TSLA": bars_map["TSLA"]}, _date(2026, 9, 16), 920)["TSLA"]
+        lagging["AAPL"] = _bars(days=6, rets=[0.0] * 6)  # has today's bar
+        strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
+        self.assertEqual(strategy.evaluate_live_signals(
+            _ctx(datetime(2026, 9, 16, 15, 26), lagging)), [])
+        self.assertIsNone(strategy._last_signal_date)
+        signals = strategy.evaluate_live_signals(
+            _ctx(datetime(2026, 9, 16, 15, 27), bars_map))
+        self.assertEqual(signals[0].symbol, "TSLA")
+
+    def test_waits_for_decision_bar_to_complete(self):
+        strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")
+        self.assertEqual(strategy.evaluate_live_signals(
+            _ctx(datetime(2026, 9, 16, 15, 24), self._bars_map())), [])
+        self.assertIsNone(strategy._last_signal_date)
+
+    def test_gives_up_after_max_delay(self):
+        strategy = LeveragedFlowPortfolioStrategy(
+            entry_time="15:20", max_entry_delay_minutes=10)
+        late = datetime(2026, 9, 16, 15, 36)
+        self.assertEqual(
+            strategy.evaluate_live_signals(_ctx(late, self._bars_map())), [])
+        self.assertEqual(strategy._last_signal_date, late.date())
 
     def test_weekend_no_signals(self):
         strategy = LeveragedFlowPortfolioStrategy(entry_time="15:20")

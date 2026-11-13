@@ -85,9 +85,35 @@ def _to_eastern_index(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return index.tz_convert(US_EASTERN)
 
 
+def _rth_mask(idx_et: pd.DatetimeIndex, session_lookup=None) -> np.ndarray:
+    """Boolean mask of bars that START inside their date's regular session.
+
+    Alpaca intraday bars cover 04:00-20:00 ET and are stamped with the bar's
+    start time, so a bar belongs to the session when ``open <= start < close``.
+    Holidays (no session) drop entirely; early closes end at 13:00.
+    """
+    if session_lookup is None:
+        from utils.datetime_ import get_session  # pylint: disable=import-outside-toplevel
+        session_lookup = get_session
+    dates = np.array([ts.date() for ts in idx_et])
+    minutes = np.array([ts.hour * 60 + ts.minute for ts in idx_et])
+    mask = np.zeros(len(idx_et), dtype=bool)
+    for day in np.unique(dates):
+        session = session_lookup(day)
+        if session is None:
+            continue
+        open_min = session[0].hour * 60 + session[0].minute
+        close_min = session[1].hour * 60 + session[1].minute
+        on_day = dates == day
+        mask |= on_day & (minutes >= open_min) & (minutes < close_min)
+    return mask
+
+
 def prepare_features(
     bars: pd.DataFrame,
     rvol_lookback_days: int = DEFAULT_RVOL_LOOKBACK_DAYS,
+    rth_only: bool = False,
+    session_lookup=None,
 ) -> pd.DataFrame:
     """Compute per-bar RVOL / momentum features for one symbol.
 
@@ -96,6 +122,14 @@ def prepare_features(
             Must contain ``open``/``high``/``low``/``close``/``volume``.
         rvol_lookback_days: Number of prior sessions used for the same-time-of-day
             volume baseline.
+        rth_only: Drop pre/post-market bars before computing anything. Alpaca
+            intraday bars span 04:00-20:00 ET, so without this the "session
+            close" (last bar of the day) is the ~19:55 after-hours print and
+            ``prior_close`` is the previous day's after-hours price, not the
+            16:00 close that leveraged funds rebalance against.
+        session_lookup: ``date -> (open_time, close_time) | None`` used by
+            ``rth_only``. Defaults to the exchange calendar
+            (``utils.datetime_.get_session``: holiday/early-close aware).
 
     Returns:
         A copy of ``bars`` (sorted by time) with added columns:
@@ -107,6 +141,12 @@ def prepare_features(
 
     df = bars.sort_index().copy()
     idx_et = _to_eastern_index(df.index)
+    if rth_only:
+        keep = _rth_mask(idx_et, session_lookup)
+        df = df[keep]
+        idx_et = idx_et[keep]
+        if df.empty:
+            return pd.DataFrame(columns=_FEATURE_COLUMNS)
 
     df["date"] = [ts.date() for ts in idx_et]
     df["tod"] = [ts.hour * 60 + ts.minute for ts in idx_et]

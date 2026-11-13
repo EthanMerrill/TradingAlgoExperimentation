@@ -59,6 +59,7 @@ __all__ = [
     "underlyings",
     "etfs_for",
     "net_flow_direction",
+    "rebalance_multiplier",
     "available_etfs",
     "validate_available",
 ]
@@ -74,10 +75,12 @@ class LeveragedEtf:
     Attributes:
         etf: The ETF ticker (registry key of the map).
         underlying: The single stock the ETF tracks.
-        leverage: Signed daily leverage. Positive = long (dealer buys the
-            underlying when it rises), negative = inverse (dealer sells the
-            underlying when it rises). e.g. ``2.0`` for a 2x bull fund,
-            ``-2.0`` for a 2x bear fund, ``-1.0`` for a 1x inverse fund.
+        leverage: Signed daily leverage, e.g. ``2.0`` for a 2x bull fund,
+            ``-2.0`` for a 2x bear fund, ``-1.0`` for a 1x inverse fund. The
+            rebalance hedge is ``leverage × (leverage − 1)`` × AUM × move (see
+            :func:`rebalance_multiplier`), which is positive for BOTH bull
+            (L>1) and inverse (L<0) funds: every fund buys the underlying
+            into an up-move and sells into a down-move.
         family: Issuer / fund family (for grouping and diagnostics).
         name: Human-readable fund name.
         aum_usd: Point-in-time assets under management in USD, or ``None``.
@@ -512,6 +515,25 @@ LEVERAGED_SINGLE_STOCK_ETFS: Dict[str, LeveragedEtf] = {
 # Query helpers
 # ---------------------------------------------------------------------------
 
+def rebalance_multiplier(leverage: float) -> float:
+    """Hedge per unit of AUM per unit of UNDERLYING move: ``L × (L − 1)``.
+
+    A fund with NAV ``A`` holds exposure ``L·A``. After the underlying moves
+    ``r`` the exposure is ``L·A·(1+r)`` while the target is ``L·A·(1+L·r)``,
+    so the rebalance trade is ``A·r·L·(L−1)``:
+
+    * 2x bull  -> ``+2``  (buy 2·A·r)
+    * 1x bear  -> ``+2``  (inverse funds ALSO buy into an up-move)
+    * 2x bear  -> ``+6``
+    * 1x       -> ``0``   (no rebalance needed)
+
+    Equivalently, in terms of the fund's OWN return ``R = L·r`` the trade is
+    ``A·(L−1)·R`` (see ``leveraged_flow_portfolio.etf_flow_estimates``).
+    """
+    lev = float(leverage)
+    return lev * (lev - 1.0)
+
+
 def underlyings() -> List[str]:
     """Sorted, deduplicated list of underlying stock symbols.
 
@@ -561,8 +583,10 @@ def net_flow_direction(
     """Signed estimate of the dealer hedge notional for one underlying.
 
     Each fund's daily rebalance implies a hedge of roughly
-    ``leverage × AUM × underlying_return`` in the underlying (positive =
-    the dealer must BUY, negative = SELL). Summing over every mapped fund
+    ``leverage × (leverage − 1) × AUM × underlying_return`` in the underlying
+    (positive = the dealer must BUY, negative = SELL; see
+    :func:`rebalance_multiplier` — inverse funds hedge in the SAME direction
+    as bull funds). Summing over every mapped fund
     gives the net flow the strategy is trying to front-run.
 
     Args:
@@ -581,5 +605,5 @@ def net_flow_direction(
         weight = 1.0
         if use_aum and etf.aum_usd:
             weight = float(etf.aum_usd)
-        total += etf.leverage * weight * underlying_return
+        total += rebalance_multiplier(etf.leverage) * weight * underlying_return
     return total

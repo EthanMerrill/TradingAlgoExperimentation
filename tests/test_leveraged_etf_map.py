@@ -76,7 +76,8 @@ class TestLeveragedEtfMap(unittest.TestCase):
         underlying = "TSLA"
         move = 0.02
         expected = sum(
-            e.leverage * (e.aum_usd or 1.0) * move for e in etfs_for(underlying))
+            e.leverage * (e.leverage - 1.0) * (e.aum_usd or 1.0) * move
+            for e in etfs_for(underlying))
         self.assertAlmostEqual(
             net_flow_direction(underlying, move, use_aum=True), expected, places=6)
 
