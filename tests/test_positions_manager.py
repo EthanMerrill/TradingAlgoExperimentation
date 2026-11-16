@@ -746,5 +746,181 @@ class TestBrokerSlTp(_Base):
             ._broker_sl_tp_by_symbol(), {})
 
 
+class TestAttributionRecovery(_Base):
+    """A broker position whose metadata write failed at entry recovers its
+    strategy from the entry snapshot instead of staying 'unattributed'."""
+
+    SNAP = {"strategy_name": "rsi_mean_reversion",
+            "client_order_id": "APH-BUY-1", "order_id": "o-aph",
+            "rsi_period": 5, "rsi_lower": 20, "rsi_upper": 60, "alpha": 0.1,
+            "entry_date": datetime(2026, 11, 13, 17, 11, tzinfo=timezone.utc),
+            "intraday": False, "current_rsi": 18.0,
+            "stop_loss_price": 1.0, "take_profit_price": 2.0}
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+
+        def finder(symbol, side, entry_price):
+            self.calls.append((symbol, side, entry_price))
+            return dict(self.SNAP) if symbol == "APH" else None
+        self.store.find_snapshot_attribution = finder
+        self.data.get_open_orders.return_value = pd.DataFrame([
+            {"symbol": "APH", "leg_type": "stop_loss", "stop_price": 73.43},
+            {"symbol": "APH", "leg_type": "take_profit",
+             "limit_price": 80.14}])
+
+    def test_existing_unattributed_metadata_is_reattributed(self):
+        self.store.metadata["APH"] = _meta(
+            "APH", strategy_name=UNATTRIBUTED, entry_client_order_id=None,
+            entry_order_id=None, stop_loss_price=73.43,
+            take_profit_price=80.14, quantity=9.0, entry_price=77.26)
+        self.broker(("APH", 9.0, 77.26, 74.9))
+
+        (pos,) = self.manager.get_and_reconcile_positions()
+
+        self.assertEqual(pos.strategy_name, "rsi_mean_reversion")
+        self.assertEqual(pos.client_order_id, "APH-BUY-1")
+        self.assertEqual((pos.rsi_period, pos.rsi_lower, pos.rsi_upper),
+                         (5, 20, 60))
+        # live broker legs win over the snapshot's levels
+        self.assertEqual((pos.stop_loss_price, pos.take_profit_price),
+                         (73.43, 80.14))
+        self.assertEqual(self.store.metadata["APH"]["strategy_name"],
+                         "rsi_mean_reversion")
+        self.assertEqual(self.calls, [("APH", "long", 77.26)])
+
+    def test_new_broker_position_recovers_on_adoption(self):
+        self.broker(("APH", 9.0, 77.26, 74.9))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.strategy_name, "rsi_mean_reversion")
+        self.assertEqual((pos.stop_loss_price, pos.take_profit_price),
+                         (73.43, 80.14))
+
+    def test_no_match_stays_unattributed_and_is_not_requeried(self):
+        self.broker(("ZZZ", 3.0, 10.0, 10.0))
+        (pos,) = self.manager.get_and_reconcile_positions()
+        self.assertEqual(pos.strategy_name, UNATTRIBUTED)
+        self.manager.invalidate_reconciliation_cache()
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.calls, [("ZZZ", "long", 10.0)])
+
+    def test_attributed_metadata_is_not_looked_up(self):
+        self.store.metadata["APH"] = _meta("APH", entry_price=77.26,
+                                           quantity=9.0)
+        self.broker(("APH", 9.0, 77.26, 74.9))
+        self.manager.get_and_reconcile_positions()
+        self.assertEqual(self.calls, [])
+
+
+class TestRepairEstimatedExits(_Base):
+    """Legacy closed trades with no exit price get the broker's fill."""
+
+    def setUp(self):
+        super().setUp()
+        self.updates = []
+
+        def updater(key, price, when, rr, oid):
+            self.updates.append((key, price, when, rr, oid))
+            return True
+        self.store.update_closed_trade_exit = updater
+
+    @staticmethod
+    def _trade(symbol, entry, entry_date, cid=None, side="long", **kw):
+        t = {"symbol": symbol, "side": side, "quantity": 10.0,
+             "entry_price": entry, "exit_price": None,
+             "entry_date": entry_date, "exit_date": entry_date,
+             "realized_return": None, "exit_reason": "max_hold_days",
+             "exit_price_estimated": True, "strategy_name": "rsi",
+             "entry_client_order_id": cid, "exit_order_id": None}
+        t.update(kw)
+        return t
+
+    def _orders(self, *rows):
+        self.data.get_filled_orders_for_symbol.return_value = pd.DataFrame(
+            [_order(*r) for r in rows])
+
+    def test_uses_first_close_fill_after_entry(self):
+        d = datetime(2026, 9, 1, 14, tzinfo=timezone.utc)
+        self.store.closed = [self._trade("AAPL", 100.0, d, cid="AAPL-BUY-1")]
+        self._orders(
+            ("sell", 90.0, "old", d - timedelta(days=5), "o-old"),
+            ("buy", 100.0, "AAPL-BUY-1", d, "o-entry"),
+            ("sell", 110.0, "x1", d + timedelta(days=3), "o-exit"),
+            ("sell", 120.0, "x2", d + timedelta(days=9), "o-later"))
+
+        self.assertEqual(self.manager.repair_estimated_exits(), 1)
+
+        (key, price, when, rr, oid), = self.updates
+        self.assertEqual(key, "AAPL-BUY-1")
+        self.assertEqual((price, oid), (110.0, "o-exit"))
+        self.assertAlmostEqual(rr, 0.10)
+        self.assertEqual(when, d + timedelta(days=3))
+        self.data.get_filled_orders_for_symbol.assert_called_once_with(
+            "AAPL", limit=PositionsManager.EXIT_REPAIR_ORDER_LIMIT)
+
+    def test_sequential_trades_do_not_share_a_fill(self):
+        d = datetime(2026, 10, 1, 14, tzinfo=timezone.utc)
+        # legacy duplicate: same position recorded twice, one real exit
+        self.store.closed = [
+            self._trade("PLTR", 200.0, d),
+            self._trade("PLTR", 200.0, d + timedelta(days=2))]
+        self._orders(("sell", 190.0, "x", d + timedelta(days=8), "o-exit"))
+
+        self.assertEqual(self.manager.repair_estimated_exits(), 1)
+        # the exit belongs to the later trade; the earlier one stays estimated
+        (key, price, *_), = self.updates
+        self.assertEqual(key, "PLTR|long|2026-10-03T14:00:00")
+        self.assertEqual(price, 190.0)
+
+    def test_short_trade_uses_buy_fill(self):
+        d = datetime(2026, 9, 1, 14, tzinfo=timezone.utc)
+        self.store.closed = [self._trade("TSLA", 50.0, d, side="short")]
+        self._orders(("buy", 45.0, "x", d + timedelta(days=1), "o-cover"))
+        self.manager.repair_estimated_exits()
+        (_, price, _, rr, _), = self.updates
+        self.assertEqual(price, 45.0)
+        self.assertAlmostEqual(rr, 0.10)
+
+    def test_entry_never_filled_is_left_estimated(self):
+        d = datetime(2026, 9, 1, 14, tzinfo=timezone.utc)
+        self.store.closed = [self._trade("AAPL", 100.0, d, cid="AAPL-BUY-9")]
+        self._orders(("sell", 110.0, "x", d + timedelta(days=1), "o-exit"))
+        self.assertEqual(self.manager.repair_estimated_exits(), 0)
+        self.assertEqual(self.updates, [])
+
+    def test_confirmed_exit_fill_is_not_reused(self):
+        d = datetime(2026, 9, 1, 14, tzinfo=timezone.utc)
+        self.store.closed = [
+            self._trade("AAPL", 100.0, d, exit_price=105.0,
+                        exit_price_estimated=False, exit_order_id="o-1"),
+            self._trade("AAPL", 101.0, d + timedelta(hours=3))]
+        self._orders(("sell", 105.0, "x", d + timedelta(days=1), "o-1"))
+        self.assertEqual(self.manager.repair_estimated_exits(), 0)
+
+    def test_implausible_move_is_left_estimated(self):
+        """ETHA: entry recorded pre-split ($20.78), fills post-split (~$58)."""
+        d = datetime(2026, 10, 2, 13, tzinfo=timezone.utc)
+        self.store.closed = [self._trade("ETHA", 20.78, d, side="short")]
+        self._orders(("buy", 57.94, "x", d + timedelta(days=5), "o-cover"))
+        self.assertEqual(self.manager.repair_estimated_exits(), 0)
+        self.assertEqual(self.updates, [])
+
+    def test_each_symbol_fetched_once_per_process(self):
+        d = datetime(2026, 9, 1, 14, tzinfo=timezone.utc)
+        self.store.closed = [self._trade("AAPL", 100.0, d)]
+        self.manager.repair_estimated_exits()
+        self.manager.repair_estimated_exits()
+        self.assertEqual(
+            self.data.get_filled_orders_for_symbol.call_count, 1)
+
+    def test_backend_without_updater_is_a_noop(self):
+        del self.store.update_closed_trade_exit
+        self.store.closed = [self._trade(
+            "AAPL", 100.0, datetime(2026, 9, 1, tzinfo=timezone.utc))]
+        self.assertEqual(self.manager.repair_estimated_exits(), 0)
+        self.data.get_filled_orders_for_symbol.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

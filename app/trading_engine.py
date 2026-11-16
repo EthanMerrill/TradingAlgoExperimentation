@@ -860,7 +860,11 @@ class TradingEngine:
                 )
 
                 order = self.trading_client.submit_order(order_request)
-                placed_order_id = getattr(order, 'id', None)
+                # Alpaca returns a uuid.UUID; keep ids as str everywhere (a
+                # UUID object made every position_metadata write fail).
+                raw_order_id = getattr(order, 'id', None)
+                placed_order_id = (str(raw_order_id)
+                                   if raw_order_id is not None else None)
                 logger.info("Order placed successfully: %s", placed_order_id)
                 logger.info("%s order for %d shares of %s at $%.2f",
                             label.title(), shares, opportunity.symbol, opportunity.entry_price)
@@ -2860,6 +2864,14 @@ class TradingEngine:
                 logger.error(error_msg)
                 session_summary['errors'].append(error_msg)
                 return session_summary
+
+            # Best-effort: replace estimated exits in closed_trades with the
+            # broker's confirmed fills (each symbol checked once per process).
+            if not self.dry_run:
+                try:
+                    self._positions_manager.repair_estimated_exits()
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.warning("Closed-trade exit repair failed: %s", e)
 
             if not positions:
                 logger.info("No current positions found")

@@ -158,6 +158,10 @@ class PositionsManager:
         # a restart the metadata still exists, so reconcile either archives it
         # from order history or keeps it attached to a still-open position.)
         self._closing: Dict[str, dict] = {}
+        # Symbols already looked up this process (attribution recovery /
+        # exit repair), so a miss is not re-queried on every reconcile.
+        self._attribution_tried: set = set()
+        self._exit_repair_tried: set = set()
 
     # ------------------------------------------------------------------
     # Session / snapshots
@@ -289,6 +293,52 @@ class PositionsManager:
         return {"symbol": symbol, "strategy_name": UNATTRIBUTED,
                 "entry_date": entry_date, "stop_loss_price": sl,
                 "take_profit_price": tp}
+
+    def _recover_attribution(self, row) -> Optional[dict]:
+        """Metadata recovered from the position snapshot written when the
+        engine opened this broker position (same symbol, side and entry price).
+
+        Covers positions whose metadata write failed at entry.  Broker SL/TP
+        legs already in ``meta`` win; snapshot levels only fill gaps.  Looked
+        up at most once per symbol per process; None if nothing matches.
+        """
+        symbol = str(row["symbol"])
+        if symbol in self._attribution_tried:
+            return None
+        self._attribution_tried.add(symbol)
+        finder = getattr(self.storage_backend, 'find_snapshot_attribution', None)
+        qty = _num(row.get("qty"), 0.0)
+        entry_price = _num(row.get("avg_entry_price"), 0.0)
+        if finder is None or not entry_price:
+            return None
+        try:
+            snap = finder(symbol, "short" if qty < 0 else "long", entry_price)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning("Attribution lookup failed for %s: %s", symbol, exc)
+            return None
+        if not isinstance(snap, dict):
+            return None
+        strategy = _text(snap.get("strategy_name"))
+        if not strategy or strategy == UNATTRIBUTED:
+            return None
+        found = {
+            "strategy_name": strategy,
+            "entry_client_order_id": _text(snap.get("client_order_id")),
+            "entry_order_id": _text(snap.get("order_id")),
+            "entry_date": _aware(snap.get("entry_date")),
+            "rsi_period": snap.get("rsi_period"),
+            "rsi_lower": snap.get("rsi_lower"),
+            "rsi_upper": snap.get("rsi_upper"),
+            "alpha": snap.get("alpha"),
+            "current_rsi": snap.get("current_rsi"),
+            "intraday": bool(snap.get("intraday") or False),
+        }
+        found = {k: v for k, v in found.items() if v is not None}
+        logger.warning(
+            "%s: recovered attribution '%s' (entry order %s) from the entry "
+            "snapshot — its metadata had not been saved", symbol, strategy,
+            found.get("entry_client_order_id"))
+        return found
 
     # ------------------------------------------------------------------
     # Broker helpers
@@ -425,16 +475,20 @@ class PositionsManager:
             if symbol in held_out:
                 continue
             meta = stored.get(symbol)
-            if meta is None:
+            adopted = meta is None
+            if adopted:
                 if broker_levels is None:
                     broker_levels = self._broker_sl_tp_by_symbol()
                 meta = self._adopt(row, broker_levels)
-                adopted = True
-            else:
-                adopted = False
+            recovered = False
+            if (_text(meta.get("strategy_name")) or UNATTRIBUTED) == UNATTRIBUTED:
+                found = self._recover_attribution(row)
+                if found:
+                    meta = {**meta, **found}
+                    recovered = True
             pos = self._position_from_broker(row, meta)
             open_positions.append(pos)
-            if adopted or self._informational_changed(meta, pos):
+            if adopted or recovered or self._informational_changed(meta, pos):
                 to_save.append(pos)
         open_positions.extend(pending.values())
 
@@ -770,6 +824,133 @@ class PositionsManager:
         except Exception:  # pylint: disable=broad-exception-caught
             pass
         return entry_price
+
+    # Symbols whose order history is fetched per repair pass (API budget).
+    EXIT_REPAIR_MAX_SYMBOLS = 25
+    # Order-history depth for the repair; closed orders include every
+    # cancelled OCO refresh, so the default 50 does not reach far back.
+    EXIT_REPAIR_ORDER_LIMIT = 500
+    # A recorded entry_date can be slightly after the real fill.
+    EXIT_REPAIR_ENTRY_SLACK = pd.Timedelta(hours=1)
+    # A larger implied move means the recorded entry is not comparable to the
+    # fill (e.g. a split since entry: ETHA's 1-for-3) -- leave it estimated.
+    EXIT_REPAIR_MAX_ABS_RETURN = 0.5
+
+    @staticmethod
+    def _naive_utc(value) -> Optional[datetime]:
+        dt = _aware(value)
+        return None if dt is None else (
+            dt.astimezone(timezone.utc).replace(tzinfo=None))
+
+    def repair_estimated_exits(self) -> int:
+        """Replace estimated exits in closed_trades with the broker's fills.
+
+        For each trade flagged ``exit_price_estimated`` the exit is the
+        EARLIEST close-side fill at or after its entry (the entry fill when its
+        client order id is in history, else the recorded entry_date) and
+        before the next trade on the same symbol/side, never reusing a fill
+        already claimed by another trade.  Trades with no such fill (or whose
+        entry order never filled) stay estimated.  Each symbol's history is
+        fetched at most once per process.  Returns the number repaired.
+        """
+        updater = getattr(self.storage_backend, 'update_closed_trade_exit', None)
+        if updater is None:
+            return 0
+        rows = self.storage_backend.load_closed_trades(
+            self.CLOSED_TRADES_LOOKBACK)
+        if not isinstance(rows, list):
+            return 0
+        by_symbol: Dict[str, List[dict]] = {}
+        for r in rows:
+            by_symbol.setdefault(str(r.get("symbol")), []).append(r)
+        targets = [s for s, trades in by_symbol.items()
+                   if s not in self._exit_repair_tried
+                   and any(t.get("exit_price_estimated") for t in trades)]
+        repaired = 0
+        for symbol in targets[:self.EXIT_REPAIR_MAX_SYMBOLS]:
+            self._exit_repair_tried.add(symbol)
+            try:
+                orders = self.data_provider.get_filled_orders_for_symbol(
+                    symbol, limit=self.EXIT_REPAIR_ORDER_LIMIT)
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning("Exit repair: order history for %s failed: %s",
+                               symbol, exc)
+                continue
+            if (not isinstance(orders, pd.DataFrame) or orders.empty
+                    or 'side' not in orders.columns):
+                continue
+            repaired += self._repair_symbol_exits(by_symbol[symbol], orders,
+                                                  updater)
+        if repaired:
+            logger.info("Exit repair: %d closed trade(s) now use confirmed "
+                        "fills", repaired)
+        return repaired
+
+    def _repair_symbol_exits(self, trades: List[dict], orders: pd.DataFrame,
+                             updater) -> int:
+        used = {_text(t.get("exit_order_id")) for t in trades
+                if not t.get("exit_price_estimated")} - {None}
+        repaired = 0
+        for side in ("long", "short"):
+            seq = sorted(
+                (t for t in trades
+                 if (_text(t.get("side")) or "long") == side
+                 and self._naive_utc(t.get("entry_date")) is not None),
+                key=lambda t: self._naive_utc(t.get("entry_date")))
+            entry_side = "sell" if side == "short" else "buy"
+            close_side = "buy" if side == "short" else "sell"
+            fills = orders[(orders['side'] == close_side)
+                           & (orders['filled_qty'] > 0)]
+            timed = sorted(
+                ((self._order_time(r), r) for _, r in fills.iterrows()),
+                key=lambda x: (x[0] is None, x[0] or datetime.min))
+            for i, trade in enumerate(seq):
+                if not trade.get("exit_price_estimated"):
+                    continue
+                cid = _text(trade.get("entry_client_order_id"))
+                lower = self._naive_utc(trade.get("entry_date")) \
+                    - self.EXIT_REPAIR_ENTRY_SLACK
+                if cid:
+                    filled_at = self._find_fill_by_client_order_id(
+                        cid, entry_side, orders)
+                    if filled_at is None:
+                        continue          # entry never filled: leave it
+                    lower = self._order_time({'filled_at': filled_at}) or lower
+                upper = (self._naive_utc(seq[i + 1].get("entry_date"))
+                         if i + 1 < len(seq) else None)
+                match = next(
+                    ((t, r) for t, r in timed
+                     if t is not None and t >= lower
+                     and (upper is None or t < upper)
+                     and _text(r.get('order_id')) not in used), None)
+                if match is None:
+                    continue
+                when, fill = match
+                price = _num(fill.get('filled_avg_price'))
+                if not price or price <= 0:
+                    continue
+                oid = _text(fill.get('order_id'))
+                entry_price = _num(trade.get("entry_price"))
+                rr = _realized_return(side, entry_price, price)
+                if rr is not None and abs(rr) > self.EXIT_REPAIR_MAX_ABS_RETURN:
+                    logger.warning(
+                        "Exit repair: %s %s entry $%.2f vs fill $%.2f implies "
+                        "%+.0f%% — entry likely not comparable (split?); "
+                        "left estimated", trade.get("symbol"), side,
+                        entry_price, price, rr * 100)
+                    used.add(oid)     # still this trade's exit: don't reuse
+                    continue
+                ok = updater(
+                    closed_trade_key(trade), price,
+                    when.replace(tzinfo=timezone.utc), rr, oid)
+                if ok:
+                    used.add(oid)
+                    repaired += 1
+                    logger.info(
+                        "Exit repair: %s %s entry $%.2f -> exit $%.2f (order "
+                        "%s, %s)", trade.get("symbol"), side, entry_price or 0,
+                        price, oid, when)
+        return repaired
 
     def close_position(self, symbol: str, exit_price: Optional[float] = None):
         """Record the close of an open position (engine-initiated).

@@ -270,6 +270,31 @@ class TestApiPositionsEndpoint(unittest.TestCase):
         self.assertTrue(rows['TSLA']['exit_price_estimated'])
         self.assertEqual(rows['TSLA']['side'], 'short')
 
+    def test_closed_trade_without_exit_price_is_not_filled_from_entry(self):
+        """A closed trade with no recorded exit shows exit/current/return as
+        unknown, not entry = exit = current with a 0% return."""
+        from unittest.mock import Mock as _M
+        storage = _M()
+        storage.load_position_metadata.return_value = []
+        storage.load_closed_trades.return_value = [{
+            'symbol': 'BEDY', 'side': 'long', 'quantity': 27.0,
+            'entry_price': 29.63, 'exit_price': None,
+            'entry_date': pd.Timestamp('2026-09-09', tz='UTC'),
+            'exit_date': pd.Timestamp('2026-09-25', tz='UTC'),
+            'realized_return': None, 'exit_reason': 'max_hold_days',
+            'exit_price_estimated': True, 'strategy_name': 'x'}]
+        dp = _M()
+        dp.get_current_positions_df.return_value = pd.DataFrame()
+        client = create_app(storage_backend=storage,
+                            data_provider=dp).test_client()
+        (row,) = client.get('/api/positions',
+                            headers=self._auth_headers()).get_json()
+        self.assertEqual(row['entry_price'], 29.63)
+        self.assertIsNone(row['exit_price'])
+        self.assertIsNone(row['current_price'])
+        self.assertIsNone(row['realized_return'])
+        self.assertTrue(row['exit_price_estimated'])
+
     def test_positions_falls_back_to_snapshot_when_broker_fails(self):
         from unittest.mock import Mock as _M
         dp = _M()

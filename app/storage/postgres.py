@@ -32,7 +32,9 @@ from storage.backend import (
     POSITION_METADATA_FIELDS,
     CLOSED_TRADE_FIELDS,
     closed_trade_key,
+    _coerce_na_to_none,
     _safe_datetime,
+    _safe_str,
     ORDER_FIELDS,
     STRATEGY_PERFORMANCE_FIELDS,
 )
@@ -454,6 +456,36 @@ _BACKTEST_COLS = [
 # Postgres schema cannot drift from the shared serialization schema (previous
 # drift here silently dropped order_id/client_order_id).
 _POSITION_COLS = POSITION_FIELDS
+
+# Column types for position_metadata / closed_trades writes.  asyncpg is strict
+# about parameter types: Alpaca order ids arrive as ``uuid.UUID`` (rejected for
+# TEXT: "expected str, got UUID"), strategy params as numpy ints, and so on.
+# Every value is coerced to its column's native Python type before binding.
+_INT_COLS = frozenset({"rsi_period", "rsi_lower", "rsi_upper"})
+_FLOAT_COLS = frozenset({
+    "alpha", "composite_score", "stop_loss_price", "take_profit_price",
+    "current_rsi", "quantity", "entry_price", "exit_price",
+    "realized_return"})
+_BOOL_COLS = frozenset({"intraday", "exit_price_estimated"})
+_DATETIME_COLS = frozenset({"entry_date", "exit_date"})
+
+
+def _coerce_param(col: str, value: Any) -> Any:
+    """``value`` as the Python type asyncpg expects for column ``col``
+    (TEXT for anything not listed above); missing values become None."""
+    if col in _DATETIME_COLS:
+        return _safe_datetime(value)
+    if col in _BOOL_COLS:
+        return bool(_coerce_na_to_none(value))
+    value = _coerce_na_to_none(value)
+    if value is None:
+        return None
+    if col in _INT_COLS:
+        return int(value)
+    if col in _FLOAT_COLS:
+        out = float(value)
+        return out if math.isfinite(out) else None
+    return _safe_str(value)
 
 # ---------------------------------------------------------------------------
 # PostgresStorage
@@ -1342,12 +1374,8 @@ class PostgresStorage(StorageBackend):
         for r in rows:
             tup: tuple = (self._env,)
             for c in cols:
-                v = r.get(c)
-                if c == "entry_date":
-                    v = _safe_datetime(v)
-                elif c == "intraday":
-                    v = bool(v)
-                elif c == "strategy_name":
+                v = _coerce_param(c, r.get(c))
+                if c == "strategy_name":
                     v = v or "unattributed"
                 tup += (v,)
             tuples.append(tup)
@@ -1398,12 +1426,7 @@ class PostgresStorage(StorageBackend):
         )
         vals: tuple = (self._env, closed_trade_key(trade))
         for c in cols:
-            v = trade.get(c)
-            if c in ("entry_date", "exit_date"):
-                v = _safe_datetime(v)
-            elif c == "exit_price_estimated":
-                v = bool(v)
-            vals += (v,)
+            vals += (_coerce_param(c, trade.get(c)),)
         try:
             _sync(self._execute(sql, *vals))
             return True
@@ -1424,6 +1447,54 @@ class PostgresStorage(StorageBackend):
             logger.error("Error loading closed trades: %s", exc)
             return None
         return [dict(r) for r in rows]
+
+    def update_closed_trade_exit(self, dedup_key: str, exit_price: float,
+                                 exit_date: Any, realized_return: Optional[float],
+                                 exit_order_id: Optional[str]) -> bool:
+        if not self._connected:
+            return False
+        try:
+            status = _sync(self._execute(
+                "UPDATE closed_trades SET exit_price = $3, exit_date = $4, "
+                "realized_return = $5, exit_order_id = $6, "
+                "exit_price_estimated = FALSE "
+                "WHERE environment = $1 AND dedup_key = $2 "
+                "AND exit_price_estimated IS TRUE",
+                self._env, str(dedup_key),
+                _coerce_param("exit_price", exit_price),
+                _coerce_param("exit_date", exit_date),
+                _coerce_param("realized_return", realized_return),
+                _coerce_param("exit_order_id", exit_order_id)))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error updating closed trade %s: %s", dedup_key, exc)
+            return False
+        return str(status).strip().endswith(" 1")
+
+    def find_snapshot_attribution(self, symbol: str, side: str,
+                                  entry_price: float) -> Optional[Dict[str, Any]]:
+        if not self._connected:
+            return None
+        try:
+            rows = _sync(self._fetch(
+                "SELECT strategy_name, client_order_id, order_id, rsi_period, "
+                "rsi_lower, rsi_upper, alpha, entry_date, intraday, "
+                "current_rsi, stop_loss_price, take_profit_price "
+                "FROM position_snapshots "
+                "WHERE environment = $1 AND symbol = $2 "
+                "AND COALESCE(closed, FALSE) = FALSE "
+                "AND COALESCE(side, CASE WHEN shares < 0 THEN 'short' "
+                "    ELSE 'long' END) = $3 "
+                "AND ABS(entry_price - $4) < 0.01 "
+                "AND strategy_name IS NOT NULL "
+                "AND strategy_name NOT IN ('', 'unattributed') "
+                "AND created_at >= NOW() - INTERVAL '60 days' "
+                "ORDER BY snapshot_timestamp DESC, id DESC LIMIT 1",
+                self._env, str(symbol), str(side), float(entry_price)))
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.error("Error looking up snapshot attribution for %s: %s",
+                         symbol, exc)
+            return None
+        return dict(rows[0]) if rows else None
 
     # -- list_backtest_files -------------------------------------------------
 

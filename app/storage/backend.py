@@ -717,6 +717,23 @@ class StorageBackend(ABC):
         """Most recent closed trades (newest exit first); ``None`` on failure."""
         return None
 
+    def update_closed_trade_exit(self, dedup_key: str, exit_price: float,
+                                 exit_date: Any, realized_return: Optional[float],
+                                 exit_order_id: Optional[str]) -> bool:
+        """Replace an ESTIMATED exit with a confirmed fill (clears
+        ``exit_price_estimated``).  Rows with a confirmed exit are never
+        touched.  Returns True when a row was updated.  Default no-op."""
+        return False
+
+    def find_snapshot_attribution(self, symbol: str, side: str,
+                                  entry_price: float) -> Optional[Dict[str, Any]]:
+        """Most recent OPEN position_snapshots row for ``symbol`` with this side
+        and entry price (within a cent) and a real strategy name, or None.
+
+        Used only to recover attribution for a broker position whose metadata
+        write failed; snapshots never decide what is open.  Default no-op."""
+        return None
+
     def get_open_orders_stored(self, symbol: Optional[str] = None) -> List[Any]:
         """Load persisted orders that are not in a terminal status."""
         return [

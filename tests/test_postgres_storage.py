@@ -317,6 +317,65 @@ class TestPostgresStorage(unittest.TestCase):
         sidx = POSITION_METADATA_FIELDS.index("strategy_name") + 1
         self.assertEqual(rows[1][sidx], "unattributed")
 
+    def test_save_position_metadata_coerces_sdk_and_numpy_types(self):
+        """Regression: Alpaca order ids are uuid.UUID and strategy params can
+        be numpy scalars; asyncpg rejected the UUID ("expected str, got
+        UUID") so every engine-opened position lost its attribution."""
+        import uuid
+        import numpy as np
+        from storage.backend import POSITION_METADATA_FIELDS as F
+        oid = uuid.uuid4()
+        s = self._connected()
+        self.assertTrue(s.save_position_metadata([self._meta_row(
+            entry_order_id=oid, rsi_period=np.int64(5),
+            alpha=np.float32(0.25), intraday=np.bool_(True),
+            stop_loss_price=float("nan"), entry_client_order_id=None)]))
+        _, rows = self._conn.executemany.call_args[0]
+        row = rows[0]
+
+        def val(c):
+            return row[F.index(c) + 1]
+        self.assertEqual(val("entry_order_id"), str(oid))
+        self.assertIs(type(val("entry_order_id")), str)
+        self.assertIs(type(val("rsi_period")), int)
+        self.assertIs(type(val("alpha")), float)
+        self.assertIs(val("intraday"), True)
+        self.assertIsNone(val("stop_loss_price"))
+        self.assertIsNone(val("entry_client_order_id"))
+
+    def test_update_closed_trade_exit(self):
+        import uuid
+        s = self._connected(env="dev")
+        self._conn.execute = AsyncMock(return_value="UPDATE 1")
+        oid = uuid.uuid4()
+        self.assertTrue(s.update_closed_trade_exit(
+            "cid-1", 110.0, datetime(2026, 1, 5, 15), 0.1, oid))
+        args = self._conn.execute.call_args[0]
+        self.assertIn("UPDATE closed_trades", args[0])
+        self.assertIn("exit_price_estimated IS TRUE", args[0])
+        self.assertEqual(args[1:3], ("dev", "cid-1"))
+        self.assertIsNotNone(args[4].tzinfo)
+        self.assertEqual(args[6], str(oid))
+        self._conn.execute = AsyncMock(return_value="UPDATE 0")
+        self.assertFalse(s.update_closed_trade_exit("x", 1.0, None, None, None))
+        self.assertFalse(self._disconnected().update_closed_trade_exit(
+            "x", 1.0, None, None, None))
+
+    def test_find_snapshot_attribution(self):
+        self.assertIsNone(
+            self._disconnected().find_snapshot_attribution("A", "long", 1.0))
+        self._conn.fetch = AsyncMock(
+            return_value=[{"strategy_name": "rsi_mean_reversion"}])
+        s = self._connected(env="dev")
+        self.assertEqual(s.find_snapshot_attribution("APH", "long", 77.26),
+                         {"strategy_name": "rsi_mean_reversion"})
+        sql, *params = self._conn.fetch.call_args[0]
+        self.assertIn("FROM position_snapshots", sql)
+        self.assertIn("NOT IN ('', 'unattributed')", sql)
+        self.assertEqual(params, ["dev", "APH", "long", 77.26])
+        self._conn.fetch = AsyncMock(return_value=[])
+        self.assertIsNone(s.find_snapshot_attribution("APH", "long", 77.26))
+
     def test_load_position_metadata(self):
         self.assertIsNone(self._disconnected().load_position_metadata())
         self._conn.fetch = AsyncMock(return_value=[{"symbol": "AAPL"}])

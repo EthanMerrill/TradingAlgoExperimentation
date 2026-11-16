@@ -52,6 +52,8 @@ const STRATEGY_LABELS = {
     'rvol_orb': { label: 'RVOL ORB', cls: 'badge-strategy-rvol' },
     'leveraged_flow_portfolio': {
         label: 'Leveraged Flow', cls: 'badge-strategy-rvol' },
+    'momentum_rank': { label: 'Momentum Rank', cls: 'badge-strategy-momentum' },
+    'unattributed': { label: 'Unattributed', cls: 'badge-strategy-unattributed' },
 };
 
 function strategyInfo(name) {
@@ -383,7 +385,13 @@ function groupPositionRecord() {
             {
                 title: 'Exit $', field: 'exit_price',
                 sorter: 'number', hozAlign: 'right', width: 100,
-                formatter: function (cell) { return formatCurrency(cell.getValue()); },
+                formatter: function (cell) {
+                    var v = cell.getValue();
+                    var est = cell.getRow().getData().exit_price_estimated;
+                    if (v == null || !est) return formatCurrency(v);
+                    return '<span title="Estimated: no confirmed exit fill">~' +
+                        formatCurrency(v) + '</span>';
+                },
             },
             {
                 title: 'Real. Return', field: 'realized_return',

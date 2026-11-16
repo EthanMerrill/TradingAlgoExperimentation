@@ -176,6 +176,14 @@ def _fetch_positions_from_storage(storage_backend, data_provider=None) -> list[d
             PositionsManager._closed_from_row(t)) for t in trades]
         for out, t in zip(closed_rows, trades):
             out['exit_price_estimated'] = bool(t.get('exit_price_estimated'))
+            if t.get('exit_price') is None:
+                # No exit recorded: show it as unknown.  Position needs a
+                # current_price, and normalize_position_for_save fills a
+                # missing exit from it, which made entry/exit/current all
+                # read as the entry price with a 0% return.
+                out['exit_price'] = None
+                out['current_price'] = None
+                out['realized_return'] = None
 
     if open_rows is None or closed_rows is None:
         df = storage_backend.get_latest_positions_df(openPosition=None)
